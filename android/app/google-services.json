@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "439342747193",
+    "project_id": "swan-match",
+    "storage_bucket": "swan-match.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:439342747193:android:542bef64044473e618c7e8",
+        "android_client_info": {
+          "package_name": "com.example.swam_match_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "439342747193-rhenheupqe4t2bmv869p8a2nag64sajt.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.swam_match_app",
+            "certificate_hash": "ae83694fd50483cf9d9962337cca2f8586f2bcea"
+          }
+        },
+        {
+          "client_id": "439342747193-kls49966hp990safq5okhrqsgf1519sm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAOnxB4GHy0RdM2t6HNReC5Vf4ceBG_Ksg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "439342747193-kls49966hp990safq5okhrqsgf1519sm.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "439342747193-hbe2s6ca6om9f6qirg132r4i26u4hrff.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.swamMatchApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

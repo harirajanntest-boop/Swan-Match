@@ -1,0 +1,1225 @@
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import '../../../../core/constants/colors.dart';
+import '../../../../services/interest_service.dart';
+import '../../../../services/match_service.dart';
+import '../../../../services/user_service.dart';
+import '../../../../shared/widgets/linear_message.dart';
+import 'home_page.dart'; // ─── IMPORT THE NEW FILE HERE ───
+import 'interests_view.dart';
+import 'match_profile_detail_page.dart';
+import 'messages_view.dart';
+
+class MainDashboard extends StatefulWidget {
+  final int initialIndex;
+  final Map<String, dynamic>? initialProfileToOpen;
+
+  const MainDashboard({
+    super.key,
+    this.initialIndex = 0,
+    this.initialProfileToOpen,
+  });
+
+  @override
+  State<MainDashboard> createState() => _MainDashboardState();
+}
+
+class _MainDashboardState extends State<MainDashboard> {
+  // Opening on the Home page (Index 0)
+  late int _currentIndex;
+  Map<String, dynamic>? _pendingProfileToOpen;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pendingProfileToOpen = widget.initialProfileToOpen;
+  }
+
+  void _openMatchesTab({Map<String, dynamic>? profile}) {
+    setState(() {
+      _currentIndex = 1;
+      _pendingProfileToOpen = profile;
+    });
+  }
+
+  void _openUpgradeTab() {
+    setState(() => _currentIndex = 4);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget currentPage;
+    switch (_currentIndex) {
+      case 0:
+        currentPage = HomePage(
+          onOpenMatches: ({Map<String, dynamic>? profile}) => _openMatchesTab(profile: profile),
+          onOpenUpgrade: _openUpgradeTab,
+        );
+        break;
+      case 1:
+        currentPage = _MatchesView(
+          pendingProfileToOpen: _pendingProfileToOpen,
+          onPendingProfileOpened: () {
+            if (!mounted) return;
+            setState(() => _pendingProfileToOpen = null);
+          },
+        );
+        break;
+      case 2:
+        currentPage = const InterestsView();
+        break;
+      case 3:
+        currentPage = const MessagesView();
+        break;
+      default:
+        currentPage = const _UpgradePlansPage();
+    }
+
+    return Scaffold(
+      backgroundColor: AppColors.obsidian,
+      body: currentPage,
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: AppColors.obsidian,
+          border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
+          boxShadow: [
+            BoxShadow(color: Colors.black.withOpacity(0.8), blurRadius: 20, offset: const Offset(0, -5))
+          ],
+        ),
+        child: BottomNavigationBar(
+          currentIndex: _currentIndex,
+          onTap: (index) => setState(() => _currentIndex = index),
+          backgroundColor: AppColors.obsidian,
+          type: BottomNavigationBarType.fixed,
+          selectedItemColor: AppColors.goldMedium,
+          unselectedItemColor: Colors.white.withOpacity(0.4),
+          selectedLabelStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, height: 1.8),
+          unselectedLabelStyle: const TextStyle(fontSize: 10, height: 1.8),
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: "Home"),
+            BottomNavigationBarItem(icon: Icon(Icons.style_outlined), activeIcon: Icon(Icons.style), label: "Matches"),
+            BottomNavigationBarItem(icon: Icon(Icons.favorite_border), activeIcon: Icon(Icons.favorite), label: "Interests"),
+            BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), activeIcon: Icon(Icons.chat_bubble), label: "Messages"),
+            BottomNavigationBarItem(icon: Icon(Icons.workspace_premium_outlined), activeIcon: Icon(Icons.workspace_premium), label: "Upgrade"),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ─── THE MATCHES VIEW ────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+class _MatchesView extends StatefulWidget {
+  final Map<String, dynamic>? pendingProfileToOpen;
+  final VoidCallback? onPendingProfileOpened;
+
+  const _MatchesView({
+    this.pendingProfileToOpen,
+    this.onPendingProfileOpened,
+  });
+
+  @override
+  State<_MatchesView> createState() => _MatchesViewState();
+}
+
+class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderStateMixin {
+  String _selectedTier = 'Regular'; 
+  String _sortBy = 'Newest';
+  bool _onlineOnly = false;
+  bool _locationOnly = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  RangeValues _ageRange = const RangeValues(18, 60);
+  String _occupationFilter = '';
+  String _heightFilter = '';
+  String _starFilter = '';
+  final MatchService _matchService = MatchService.instance;
+  String? _lastOpenedProfileUid;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryOpenPendingProfile();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _MatchesView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _tryOpenPendingProfile();
+  }
+
+  void _tryOpenPendingProfile() {
+    final profile = widget.pendingProfileToOpen;
+    if (profile == null) return;
+
+    final uid = (profile['uid'] ?? '').toString();
+    if (uid.isEmpty || uid == _lastOpenedProfileUid || !mounted) return;
+    _lastOpenedProfileUid = uid;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MatchProfileDetailPage(profile: profile),
+        ),
+      );
+      widget.onPendingProfileOpened?.call();
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 4,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text("Discover", style: TextStyle(color: Colors.white, fontSize: 28, fontFamily: 'serif', fontWeight: FontWeight.w600, letterSpacing: 1)),
+                  Container(
+                    decoration: BoxDecoration(color: AppColors.onyx, borderRadius: BorderRadius.circular(30), border: Border.all(color: AppColors.goldMedium.withOpacity(0.3))),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [_buildTierToggle("Regular"), _buildTierToggle("PRIME")]),
+                  ),
+                ],
+              ),
+            ),
+            TabBar(
+              isScrollable: true, dividerColor: Colors.transparent,
+              indicator: const UnderlineTabIndicator(borderSide: BorderSide(color: AppColors.goldMedium, width: 2), insets: EdgeInsets.symmetric(horizontal: 16)),
+              labelColor: AppColors.goldMedium, unselectedLabelColor: Colors.white.withOpacity(0.4),
+              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5),
+              tabs: const [
+                Tab(text: "Recommended"),
+                Tab(text: "New Members"),
+                Tab(text: "Viewed You"),
+                Tab(text: "Saved Matches"),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _buildMatchesList(isNewMembers: false),
+                  _buildMatchesList(isNewMembers: true),
+                  _buildViewedYouList(),
+                  _buildSavedMatchesList(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTierToggle(String title) {
+    bool isSelected = _selectedTier == title;
+    return GestureDetector(
+      onTap: () => setState(() => _selectedTier = title),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(gradient: isSelected ? AppColors.goldGradient : null, borderRadius: BorderRadius.circular(30)),
+        child: Row(
+          children: [
+            if (title == "PRIME" && !isSelected) ...[
+              Container(width: 4, height: 4, decoration: const BoxDecoration(color: AppColors.goldMedium, shape: BoxShape.circle)), const SizedBox(width: 4),
+            ],
+            Text(title, style: TextStyle(color: isSelected ? Colors.black : Colors.white.withOpacity(0.7), fontWeight: isSelected ? FontWeight.bold : FontWeight.w500, fontSize: 12, letterSpacing: 0.5)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMatchesList({required bool isNewMembers}) {
+    final Stream<List<Map<String, dynamic>>> matchStream = isNewMembers
+        ? _matchService.watchAllMatches()
+        : _matchService.watchRecommendedMatches();
+
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, authSnapshot) {
+        if (authSnapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
+        }
+
+        if (authSnapshot.data == null) {
+          return Center(
+            child: Text(
+              'Sign in to view matches.',
+              style: TextStyle(color: Colors.white.withOpacity(0.7)),
+            ),
+          );
+        }
+
+        return StreamBuilder<Map<String, dynamic>?>(
+          stream: UserService.instance.watchCurrentUserProfile(),
+          builder: (context, profileSnapshot) {
+            final profile = profileSnapshot.data ?? <String, dynamic>{};
+            final city = (profile['city'] ?? '').toString().trim();
+
+            return StreamBuilder<Map<String, String>>(
+              stream: InterestService.instance.watchMySentInterestStatusByUserId(),
+              builder: (context, statusSnapshot) {
+                final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
+                final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                    .map((item) => item.toString())
+                    .where((item) => item.isNotEmpty)
+                    .toSet();
+                final hiddenMapRaw = profile['hiddenMatches'];
+                final hiddenMap = hiddenMapRaw is Map
+                    ? Map<String, dynamic>.from(hiddenMapRaw)
+                    : <String, dynamic>{};
+
+                return Column(
+                  children: [
+            const SizedBox(height: 6),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Search by name, occupation, star, city...',
+                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
+                  prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.6)),
+                  suffixIcon: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_searchQuery.isNotEmpty)
+                        IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                          icon: const Icon(Icons.close, color: Colors.white70),
+                        ),
+                      IconButton(
+                        onPressed: _showAdvancedFilterSheet,
+                        icon: const Icon(Icons.filter_list, color: AppColors.goldMedium),
+                      ),
+                    ],
+                  ),
+                  filled: true,
+                  fillColor: Colors.white.withOpacity(0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: StreamBuilder<List<Map<String, dynamic>>>(
+                stream: matchStream,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
+                  }
+
+                  final matches = snapshot.data ?? const <Map<String, dynamic>>[];
+                  final now = DateTime.now().millisecondsSinceEpoch;
+                  final filteredMatches = matches.where((item) {
+                    final uid = (item['uid'] ?? '').toString();
+                    if (uid.isEmpty) return false;
+
+                    final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
+                    if (hiddenUntil > now) return false;
+
+                    if (_selectedTier == 'PRIME') {
+                      final isPrime = item['isPrime'] == true ||
+                          item['subscriptionPlan']?.toString().toLowerCase() == 'prime';
+                      if (!isPrime) return false;
+                    }
+
+                    if (_onlineOnly) {
+                      final isOnline = item['isOnline'] == true || item['online'] == true;
+                      if (!isOnline) return false;
+                    }
+
+                    if (_locationOnly && city.isNotEmpty) {
+                      final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
+                      if (matchCity.isEmpty || matchCity != city.toLowerCase()) {
+                        return false;
+                      }
+                    }
+
+                    final rawDob = item['dateOfBirth'];
+                    int? age;
+                    if (rawDob is DateTime) {
+                      final nowDate = DateTime.now();
+                      age = nowDate.year - rawDob.year;
+                      if (nowDate.month < rawDob.month ||
+                          (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) {
+                        age--;
+                      }
+                    } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
+                      try {
+                        final dob = rawDob.toDate() as DateTime;
+                        final nowDate = DateTime.now();
+                        age = nowDate.year - dob.year;
+                        if (nowDate.month < dob.month ||
+                            (nowDate.month == dob.month && nowDate.day < dob.day)) {
+                          age--;
+                        }
+                      } catch (_) {
+                        age = null;
+                      }
+                    }
+
+                    if (age != null && (age < _ageRange.start || age > _ageRange.end)) {
+                      return false;
+                    }
+
+                    if (_occupationFilter.isNotEmpty) {
+                      final occupation = (item['occupation'] ?? '').toString().toLowerCase();
+                      if (!occupation.contains(_occupationFilter.toLowerCase())) return false;
+                    }
+
+                    if (_heightFilter.isNotEmpty) {
+                      final height = (item['height'] ?? '').toString().toLowerCase();
+                      if (!height.contains(_heightFilter.toLowerCase())) return false;
+                    }
+
+                    if (_starFilter.isNotEmpty) {
+                      final star = (item['star'] ?? '').toString().toLowerCase();
+                      if (!star.contains(_starFilter.toLowerCase())) return false;
+                    }
+
+                    if (_searchQuery.isNotEmpty) {
+                      final haystack = [
+                        item['name'],
+                        item['occupation'],
+                        item['star'],
+                        item['height'],
+                        item['city'],
+                      ].map((e) => (e ?? '').toString().toLowerCase()).join(' ');
+
+                      if (!haystack.contains(_searchQuery)) return false;
+                    }
+
+                    return true;
+                  }).toList();
+
+                  filteredMatches.sort((a, b) {
+                    if (_sortBy == 'Name') {
+                      final left = (a['name'] ?? '').toString().toLowerCase();
+                      final right = (b['name'] ?? '').toString().toLowerCase();
+                      return left.compareTo(right);
+                    }
+                    final left = _extractDateTime(b['createdAt']);
+                    final right = _extractDateTime(a['createdAt']);
+                    return left.compareTo(right);
+                  });
+
+                  if (filteredMatches.isEmpty) {
+                    return Center(
+                      child: Text(
+                        'No matches found yet.',
+                        style: TextStyle(color: Colors.white.withOpacity(0.6)),
+                      ),
+                    );
+                  }
+
+                  return ListView.builder(
+                    padding: const EdgeInsets.only(top: 16, bottom: 40),
+                    itemCount: filteredMatches.length,
+                    itemBuilder: (context, index) {
+                      final item = filteredMatches[index];
+                      final uid = (item['uid'] ?? '').toString();
+                      return _EditorialMatchCard(
+                      match: item,
+                      interestStatus: sentStatusByUser[uid] ?? '',
+                      isSaved: savedIds.contains(uid),
+                      onToggleSave: () async {
+                        if (uid.isEmpty) return;
+                        final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                            .map((e) => e.toString())
+                            .toSet();
+                        if (current.contains(uid)) {
+                          current.remove(uid);
+                          showLinearMessage(context, 'Removed from saved matches.');
+                        } else {
+                          current.add(uid);
+                          showLinearMessage(context, 'Saved to saved matches.');
+                        }
+
+                        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                          'savedMatchIds': current.toList(),
+                        });
+                      },
+                      onDismissTemporarily: () async {
+                        if (uid.isEmpty) return;
+                        final currentHidden = profile['hiddenMatches'] is Map
+                            ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map)
+                            : <String, dynamic>{};
+                        currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
+                        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                          'hiddenMatches': currentHidden,
+                        });
+                        if (!context.mounted) return;
+                        showLinearMessage(context, 'Match hidden for 2 hours.');
+                      },
+                      onTap: (profile) {
+                        final viewedUid = (profile['uid'] ?? '').toString();
+                        if (viewedUid.isNotEmpty) {
+                          MatchService.instance.recordProfileView(viewedUserId: viewedUid);
+                        }
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => MatchProfileDetailPage(profile: profile),
+                          ),
+                        );
+                      },
+                    );
+                    },
+                  );
+                },
+              ),
+            ),
+              ],
+            );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildViewedYouList() {
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: UserService.instance.watchCurrentUserProfile(),
+      builder: (context, profileSnapshot) {
+        final profile = profileSnapshot.data ?? const <String, dynamic>{};
+        final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+            .map((item) => item.toString())
+            .where((item) => item.isNotEmpty)
+            .toSet();
+
+        return StreamBuilder<Map<String, String>>(
+          stream: InterestService.instance.watchMySentInterestStatusByUserId(),
+          builder: (context, statusSnapshot) {
+            final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
+
+            return StreamBuilder<List<Map<String, dynamic>>>(
+              stream: _matchService.watchViewedYouMatches(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
+                }
+
+                final items = snapshot.data ?? const <Map<String, dynamic>>[];
+                if (items.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'No one viewed your profile yet.',
+                      style: TextStyle(color: Colors.white.withOpacity(0.6)),
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.only(top: 16, bottom: 40),
+                  itemCount: items.length,
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+                    final uid = (item['uid'] ?? '').toString();
+                    return _EditorialMatchCard(
+                      match: item,
+                      interestStatus: sentStatusByUser[uid] ?? '',
+                      isSaved: savedIds.contains(uid),
+                      onTap: (profile) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => MatchProfileDetailPage(profile: profile),
+                          ),
+                        );
+                      },
+                      onToggleSave: () async {
+                        if (uid.isEmpty) return;
+                        final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                            .map((e) => e.toString())
+                            .toSet();
+                        if (current.contains(uid)) {
+                          current.remove(uid);
+                        } else {
+                          current.add(uid);
+                        }
+                        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                          'savedMatchIds': current.toList(),
+                        });
+                      },
+                      onDismissTemporarily: null,
+                    );
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildSavedMatchesList() {
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: UserService.instance.watchCurrentUserProfile(),
+      builder: (context, profileSnapshot) {
+        final profile = profileSnapshot.data ?? const <String, dynamic>{};
+        final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+            .map((item) => item.toString())
+            .where((item) => item.isNotEmpty)
+            .toSet();
+
+        if (savedIds.isEmpty) {
+          return Center(
+            child: Text(
+              'No saved matches yet.',
+              style: TextStyle(color: Colors.white.withOpacity(0.6)),
+            ),
+          );
+        }
+
+        return StreamBuilder<List<Map<String, dynamic>>>(
+          stream: _matchService.watchRecommendedMatches(limit: 200),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
+            }
+
+            final all = snapshot.data ?? const <Map<String, dynamic>>[];
+            final saved = all.where((item) => savedIds.contains((item['uid'] ?? '').toString())).toList();
+
+            if (saved.isEmpty) {
+              return Center(
+                child: Text(
+                  'Saved profiles are currently unavailable.',
+                  style: TextStyle(color: Colors.white.withOpacity(0.6)),
+                ),
+              );
+            }
+
+            return ListView.builder(
+              padding: const EdgeInsets.only(top: 16, bottom: 40),
+              itemCount: saved.length,
+              itemBuilder: (context, index) {
+                final item = saved[index];
+                final uid = (item['uid'] ?? '').toString();
+                return _EditorialMatchCard(
+                  match: item,
+                  interestStatus: '',
+                  isSaved: true,
+                  onTap: (profile) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => MatchProfileDetailPage(profile: profile)),
+                    );
+                  },
+                  onDismissTemporarily: null,
+                  onToggleSave: () async {
+                    final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                        .map((e) => e.toString())
+                        .toSet();
+                    current.remove(uid);
+                    await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                      'savedMatchIds': current.toList(),
+                    });
+                    if (!context.mounted) return;
+                    showLinearMessage(context, 'Removed from saved matches.');
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showAdvancedFilterSheet() async {
+    final occupationController = TextEditingController(text: _occupationFilter);
+    final heightController = TextEditingController(text: _heightFilter);
+    final starController = TextEditingController(text: _starFilter);
+    RangeValues tempAge = _ageRange;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.onyx,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final fieldDecoration = InputDecoration(
+              labelStyle: TextStyle(color: AppColors.goldMedium.withOpacity(0.9)),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.goldMedium.withOpacity(0.35)),
+              ),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.goldMedium, width: 1.5),
+              ),
+            );
+
+            return Theme(
+              data: Theme.of(context).copyWith(
+                colorScheme: Theme.of(context).colorScheme.copyWith(
+                  primary: AppColors.goldMedium,
+                  secondary: AppColors.goldLight,
+                ),
+              ),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 20,
+                  right: 20,
+                  top: 20,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Advanced Filters', style: TextStyle(color: AppColors.goldLight, fontSize: 20, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 12),
+                    Text('Age: ${tempAge.start.round()} - ${tempAge.end.round()}', style: TextStyle(color: Colors.white.withOpacity(0.8))),
+                    RangeSlider(
+                      activeColor: AppColors.goldMedium,
+                      inactiveColor: AppColors.goldMedium.withOpacity(0.25),
+                      values: tempAge,
+                      min: 18,
+                      max: 70,
+                      divisions: 52,
+                      labels: RangeLabels('${tempAge.start.round()}', '${tempAge.end.round()}'),
+                      onChanged: (values) => setModalState(() => tempAge = values),
+                    ),
+                    TextField(
+                      controller: occupationController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: fieldDecoration.copyWith(labelText: 'Occupation contains'),
+                    ),
+                    TextField(
+                      controller: heightController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: fieldDecoration.copyWith(labelText: 'Height contains'),
+                    ),
+                    TextField(
+                      controller: starController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: fieldDecoration.copyWith(labelText: 'Star contains'),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: ['Ashwini', 'Rohini', 'Punarpoosam', 'Uthiram'].map((star) {
+                        return ActionChip(
+                          label: Text(star, style: const TextStyle(color: AppColors.goldLight)),
+                          backgroundColor: AppColors.goldMedium.withOpacity(0.08),
+                          side: BorderSide(color: AppColors.goldMedium.withOpacity(0.45)),
+                          onPressed: () {
+                            setState(() {
+                              _starFilter = star;
+                              _ageRange = tempAge;
+                              _occupationFilter = occupationController.text.trim();
+                              _heightFilter = heightController.text.trim();
+                            });
+                            Navigator.pop(ctx);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: AppColors.goldMedium.withOpacity(0.6)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _ageRange = const RangeValues(18, 60);
+                                _occupationFilter = '';
+                                _heightFilter = '';
+                                _starFilter = '';
+                              });
+                              Navigator.pop(ctx);
+                            },
+                            child: const Text('Reset', style: TextStyle(color: AppColors.goldLight)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.goldMedium,
+                              foregroundColor: AppColors.obsidian,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _ageRange = tempAge;
+                                _occupationFilter = occupationController.text.trim();
+                                _heightFilter = heightController.text.trim();
+                                _starFilter = starController.text.trim();
+                              });
+                              Navigator.pop(ctx);
+                            },
+                            child: const Text('Apply', style: TextStyle(fontWeight: FontWeight.w700)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  DateTime _extractDateTime(dynamic raw) {
+    if (raw is DateTime) return raw;
+    if (raw != null && raw.runtimeType.toString() == 'Timestamp') {
+      try {
+        return raw.toDate() as DateTime;
+      } catch (_) {
+        return DateTime.fromMillisecondsSinceEpoch(0);
+      }
+    }
+    return DateTime.fromMillisecondsSinceEpoch(0);
+  }
+}
+
+class _EditorialMatchCard extends StatelessWidget {
+  final Map<String, dynamic> match;
+  final ValueChanged<Map<String, dynamic>>? onTap;
+  final String interestStatus;
+  final bool isSaved;
+  final VoidCallback? onToggleSave;
+  final VoidCallback? onDismissTemporarily;
+
+  const _EditorialMatchCard({
+    required this.match,
+    this.onTap,
+    this.interestStatus = '',
+    this.isSaved = false,
+    this.onToggleSave,
+    this.onDismissTemporarily,
+  });
+
+  String _readValue(List<String> keys, {String fallback = ''}) {
+    for (final key in keys) {
+      final value = match[key];
+      if (value != null && value.toString().trim().isNotEmpty) {
+        return value.toString();
+      }
+    }
+    return fallback;
+  }
+
+  String _ageText() {
+    final raw = match['dateOfBirth'];
+    DateTime? dob;
+    if (raw is DateTime) {
+      dob = raw;
+    } else if (raw != null && raw.runtimeType.toString() == 'Timestamp') {
+      try {
+        dob = raw.toDate() as DateTime;
+      } catch (_) {
+        dob = null;
+      }
+    }
+    if (dob == null) return 'Age N/A';
+    final now = DateTime.now();
+    var age = now.year - dob.year;
+    if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) {
+      age--;
+    }
+    return '$age Yrs';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = _readValue(['name'], fallback: 'Member');
+    final height = _readValue(['height'], fallback: 'Height N/A');
+    final caste = _readValue(['caste'], fallback: 'Caste N/A');
+    final education = _readValue(['educationDegree'], fallback: 'Education N/A');
+    final occupation = _readValue(['occupation'], fallback: 'Occupation N/A');
+    final city = _readValue(['city'], fallback: 'City N/A');
+    final uid = _readValue(['uid']);
+    final photoUrl = _readValue(['photoUrl', 'profileImageUrl', 'imageUrl']);
+    final normalizedStatus = interestStatus.toLowerCase();
+    final isPending = normalizedStatus == 'pending';
+    final isAccepted = normalizedStatus == 'accepted' || normalizedStatus == 'replied';
+    final isRejected = normalizedStatus == 'declined' || normalizedStatus == 'rejected';
+
+    return GestureDetector(
+      onTap: () => onTap?.call(match),
+      child: Container(
+        margin: const EdgeInsets.only(left: 20, right: 20, bottom: 32),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              height: 420, width: double.infinity,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(24),
+                gradient: const LinearGradient(colors: [Color(0xFF2A2A2A), Color(0xFF111111)], begin: Alignment.topCenter, end: Alignment.bottomCenter),
+                boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 15, offset: const Offset(0, 10))],
+              ),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: photoUrl.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.only(bottom: 80.0),
+                                child: Icon(
+                                  Icons.person,
+                                  color: AppColors.goldDark,
+                                  size: 100,
+                                ),
+                              ),
+                            )
+                          : Image.network(
+                              photoUrl,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return const Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.only(bottom: 80.0),
+                                    child: Icon(
+                                      Icons.person,
+                                      color: AppColors.goldDark,
+                                      size: 100,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                Positioned(
+                  top: 16, right: 16,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      GestureDetector(
+                        onTap: onToggleSave,
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.6),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white.withOpacity(0.2)),
+                          ),
+                          child: Icon(
+                            isSaved ? Icons.bookmark : Icons.bookmark_border,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Positioned(top: 20, left: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: Colors.blue.shade900.withOpacity(0.8), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.blue.shade300.withOpacity(0.5))), child: const Row(children: [Icon(Icons.verified, color: Colors.white, size: 14), SizedBox(width: 4), Text("Verified", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]))),
+                ],
+              ),
+            ),
+            Positioned(
+              bottom: -20, left: 16, right: 16,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                  child: Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(color: AppColors.onyx.withOpacity(0.85), borderRadius: BorderRadius.circular(20), border: Border.all(color: AppColors.goldMedium.withOpacity(0.3), width: 1), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 10, offset: const Offset(0, -2))]),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(name, style: const TextStyle(color: AppColors.goldLight, fontSize: 22, fontWeight: FontWeight.w600, fontFamily: 'serif', letterSpacing: 0.5), overflow: TextOverflow.ellipsis)), Row(children: [Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle)), const SizedBox(width: 6), Text("Online", style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11))])]),
+                        const SizedBox(height: 12),
+                        _buildAttributeText(_ageText(), height, caste), const SizedBox(height: 6), _buildAttributeText(education, occupation, city),
+                        const SizedBox(height: 20),
+                        Row(
+                          children: [
+                            GestureDetector(
+                              onTap: onDismissTemporarily,
+                              child: Container(
+                                width: 50,
+                                height: 50,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: Colors.white.withOpacity(0.2)),
+                                  color: Colors.white.withOpacity(0.05),
+                                ),
+                                child: const Icon(Icons.close, color: Colors.white54, size: 22),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: GestureDetector(
+                                onTap: () async {
+                                  if (isPending || isAccepted) return;
+                                  if (uid.isEmpty) return;
+                                  final result = await InterestService.instance.sendInterest(toUserId: uid);
+                                  if (!context.mounted) return;
+                                  showLinearMessage(
+                                    context,
+                                    result == InterestSendResult.pending
+                                        ? 'Interest already pending'
+                                        : result == InterestSendResult.alreadyAccepted
+                                            ? 'Interest already accepted. You can message now.'
+                                            : (isRejected
+                                                ? 'Interest request sent again.'
+                                                : 'Interest sent successfully'),
+                                  );
+                                },
+                                child: Container(
+                                  height: 50,
+                                  decoration: BoxDecoration(
+                                    gradient: (isPending || isAccepted) ? null : AppColors.goldGradient,
+                                    color: (isPending || isAccepted) ? Colors.white.withOpacity(0.08) : null,
+                                    borderRadius: BorderRadius.circular(25),
+                                    boxShadow: [
+                                      BoxShadow(color: AppColors.goldDark.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4)),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        isAccepted
+                                            ? Icons.check_circle_outline
+                                            : isPending
+                                                ? Icons.hourglass_top
+                                                : isRejected
+                                                    ? Icons.refresh
+                                                    : Icons.auto_awesome,
+                                        color: (isPending || isAccepted)
+                                            ? Colors.white70
+                                            : AppColors.obsidian,
+                                        size: 18,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        isAccepted
+                                            ? "Accepted"
+                                            : isPending
+                                                ? "Pending"
+                                                : isRejected
+                                                    ? "Retry Interest"
+                                                    : "Send Interest",
+                                        style: TextStyle(
+                                          color: (isPending || isAccepted)
+                                              ? Colors.white70
+                                              : AppColors.obsidian,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 15,
+                                          letterSpacing: 0.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAttributeText(String t1, String t2, String t3) {
+    final style = TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 13);
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            t1,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+        _goldDot(),
+        Flexible(
+          child: Text(
+            t2,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+        _goldDot(),
+        Flexible(
+          child: Text(
+            t3,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _goldDot() {
+    return Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: Container(width: 3, height: 3, decoration: BoxDecoration(color: AppColors.goldMedium.withOpacity(0.6), shape: BoxShape.circle)));
+  }
+}
+
+
+class _UpgradePlansPage extends StatelessWidget {
+  const _UpgradePlansPage();
+
+  @override
+  Widget build(BuildContext context) {
+    const planData = [
+      {
+        'name': 'Premium',
+        'price': '₹1,499',
+        'duration': '3 Months',
+        'features': ['Unlimited interests', 'Chat unlock', 'Priority visibility'],
+      },
+      {
+        'name': 'Prime',
+        'price': '₹2,499',
+        'duration': '6 Months',
+        'features': ['Everything in Premium', 'Direct call/WhatsApp', 'Verified profile boost'],
+      },
+      {
+        'name': 'Elite',
+        'price': '₹3,999',
+        'duration': '12 Months',
+        'features': ['Dedicated relationship manager', 'Top placement', 'Advanced compatibility insights'],
+      },
+    ];
+
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+        children: [
+          const Text(
+            'Upgrade Plans',
+            style: TextStyle(color: Colors.white, fontSize: 28, fontFamily: 'serif', fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Choose a plan to unlock premium features and better matches.',
+            style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 13),
+          ),
+          const SizedBox(height: 18),
+          ...planData.map(
+            (plan) => Container(
+              margin: const EdgeInsets.only(bottom: 14),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.03),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.goldMedium.withOpacity(0.25)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        (plan['name'] ?? '').toString(),
+                        style: const TextStyle(
+                          color: AppColors.goldLight,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'serif',
+                        ),
+                      ),
+                      Text(
+                        (plan['duration'] ?? '').toString(),
+                        style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    (plan['price'] ?? '').toString(),
+                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 10),
+                  ...(plan['features'] as List<String>).map(
+                    (feature) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.check_circle, color: AppColors.goldMedium, size: 16),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              feature,
+                              style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    decoration: BoxDecoration(
+                      gradient: AppColors.goldGradient,
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: const Center(
+                      child: Text(
+                        'Choose Plan',
+                        style: TextStyle(color: AppColors.obsidian, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
