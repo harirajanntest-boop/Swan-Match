@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:country_state_city/country_state_city.dart' as csc;
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -17,6 +18,24 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
   late final AnimationController _entryController;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
+
+  List<csc.Country> _countries = const <csc.Country>[];
+  List<csc.State> _states = const <csc.State>[];
+  List<csc.City> _cities = const <csc.City>[];
+
+  String? _selectedCountry;
+  String? _selectedCountryCode;
+  String? _selectedState;
+  String? _selectedStateCode;
+  String? _selectedCity;
+  bool _locationInitialized = false;
+
+  T? _firstWhereOrNull<T>(Iterable<T> source, bool Function(T item) test) {
+    for (final item in source) {
+      if (test(item)) return item;
+    }
+    return null;
+  }
 
   List<String> _optionsForPreference(String key) {
     switch (key) {
@@ -255,6 +274,310 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     await UserService.instance.updatePartnerPreferences(nextPrefs);
   }
 
+  Future<void> _loadLocationStateFromProfile() async {
+    final profile = await UserService.instance.getCurrentUserProfile();
+    final normalized = _normalizePreferences(
+      profile?['partnerPreference'] is Map
+          ? Map<String, dynamic>.from(profile?['partnerPreference'] as Map)
+          : (profile?['partnerPreferences'] is Map
+              ? Map<String, dynamic>.from(profile?['partnerPreferences'] as Map)
+              : null),
+    );
+
+    final location = Map<String, dynamic>.from(
+      normalized['locationDetails'] as Map,
+    );
+
+    final countries = await csc.getAllCountries();
+    if (!mounted) return;
+
+    String? countryName = (location['country'] ?? '').toString().trim();
+    String? stateName = (location['state'] ?? '').toString().trim();
+    String? cityName = (location['city'] ?? '').toString().trim();
+
+    final selectedCountryObj = countryName.isEmpty
+        ? null
+        : _firstWhereOrNull(
+            countries,
+            (country) => country.name.toLowerCase() == (countryName ?? '').toLowerCase(),
+          );
+
+    List<csc.State> states = const <csc.State>[];
+    csc.State? selectedStateObj;
+    List<csc.City> cities = const <csc.City>[];
+
+    if (selectedCountryObj != null) {
+      states = await csc.getStatesOfCountry(selectedCountryObj.isoCode);
+      selectedStateObj = stateName.isEmpty
+          ? null
+          : _firstWhereOrNull(
+              states,
+              (state) => state.name.toLowerCase() == (stateName ?? '').toLowerCase(),
+            );
+
+      if (selectedStateObj != null) {
+        cities = await csc.getStateCities(
+          selectedCountryObj.isoCode,
+          selectedStateObj.isoCode,
+        );
+
+        final selectedCityObj = cityName.isEmpty
+            ? null
+            : _firstWhereOrNull(
+                cities,
+                (city) => city.name.toLowerCase() == (cityName ?? '').toLowerCase(),
+              );
+
+        cityName = selectedCityObj?.name;
+      } else {
+        cityName = null;
+      }
+    } else {
+      countryName = null;
+      stateName = null;
+      cityName = null;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _countries = countries;
+      _states = states;
+      _cities = cities;
+      _selectedCountry = countryName;
+      _selectedCountryCode = selectedCountryObj?.isoCode;
+      _selectedState = selectedStateObj?.name;
+      _selectedStateCode = selectedStateObj?.isoCode;
+      _selectedCity = cityName;
+      _locationInitialized = true;
+    });
+  }
+
+  Future<String?> _showLocationPicker({
+    required String title,
+    required List<String> options,
+    required String? selected,
+  }) async {
+    final searchController = TextEditingController();
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.onyx,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (sheetContext) {
+        String query = '';
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final filtered = options
+                .where(
+                  (item) => item.toLowerCase().contains(query.toLowerCase()),
+                )
+                .toList();
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: searchController,
+                    style: const TextStyle(color: Colors.white),
+                    onChanged: (value) => setModalState(() => query = value),
+                    decoration: InputDecoration(
+                      hintText: 'Search $title',
+                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
+                      prefixIcon: const Icon(Icons.search, color: AppColors.goldMedium),
+                      filled: true,
+                      fillColor: Colors.black.withOpacity(0.25),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: AppColors.goldMedium),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: filtered.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: Text(
+                              'No results found',
+                              style: TextStyle(color: Colors.white.withOpacity(0.6)),
+                            ),
+                          )
+                        : ListView.separated(
+                            shrinkWrap: true,
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, __) => Divider(color: Colors.white.withOpacity(0.08), height: 1),
+                            itemBuilder: (context, index) {
+                              final item = filtered[index];
+                              final isSelected = selected == item;
+                              return ListTile(
+                                title: Text(
+                                  item,
+                                  style: TextStyle(
+                                    color: isSelected ? AppColors.goldMedium : Colors.white,
+                                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
+                                  ),
+                                ),
+                                onTap: () => Navigator.pop(sheetContext, item),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _persistLocationSelection(Map<String, dynamic> currentPrefs) async {
+    final nextPrefs = Map<String, dynamic>.from(currentPrefs);
+    final nextLocation = Map<String, dynamic>.from(
+      nextPrefs['locationDetails'] as Map<String, dynamic>,
+    );
+
+    nextLocation['country'] = _selectedCountry ?? '';
+    nextLocation['state'] = _selectedState ?? '';
+    nextLocation['city'] = _selectedCity ?? '';
+    nextPrefs['locationDetails'] = nextLocation;
+
+    await UserService.instance.updatePartnerPreferences(nextPrefs);
+  }
+
+  Future<void> _onSelectCountry(Map<String, dynamic> currentPrefs) async {
+    final countryNames = _countries.map((country) => country.name).toList();
+    final picked = await _showLocationPicker(
+      title: 'Country',
+      options: countryNames,
+      selected: _selectedCountry,
+    );
+    if (picked == null) return;
+
+    final selectedCountry = _firstWhereOrNull(
+      _countries,
+      (country) => country.name == picked,
+    );
+    if (selectedCountry == null) return;
+
+    final states = await csc.getStatesOfCountry(selectedCountry.isoCode);
+    if (!mounted) return;
+
+    setState(() {
+      _selectedCountry = selectedCountry.name;
+      _selectedCountryCode = selectedCountry.isoCode;
+      _states = states;
+      _selectedState = null;
+      _selectedStateCode = null;
+      _cities = const <csc.City>[];
+      _selectedCity = null;
+    });
+
+    await _persistLocationSelection(currentPrefs);
+  }
+
+  Future<void> _onSelectState(Map<String, dynamic> currentPrefs) async {
+    if (_selectedCountryCode == null || _selectedCountryCode!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a country first.')),
+      );
+      return;
+    }
+
+    if (_states.isEmpty) {
+      _states = await csc.getStatesOfCountry(_selectedCountryCode!);
+    }
+
+    final stateNames = _states.map((state) => state.name).toList();
+    final picked = await _showLocationPicker(
+      title: 'State',
+      options: stateNames,
+      selected: _selectedState,
+    );
+    if (picked == null) return;
+
+    final selectedState = _firstWhereOrNull(
+      _states,
+      (state) => state.name == picked,
+    );
+    if (selectedState == null) return;
+
+    final cities = await csc.getStateCities(
+      _selectedCountryCode!,
+      selectedState.isoCode,
+    );
+    if (!mounted) return;
+
+    setState(() {
+      _selectedState = selectedState.name;
+      _selectedStateCode = selectedState.isoCode;
+      _cities = cities;
+      _selectedCity = null;
+    });
+
+    await _persistLocationSelection(currentPrefs);
+  }
+
+  Future<void> _onSelectCity(Map<String, dynamic> currentPrefs) async {
+    if (_selectedStateCode == null || _selectedStateCode!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a state first.')),
+      );
+      return;
+    }
+
+    if (_selectedCountryCode == null || _selectedCountryCode!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a country first.')),
+      );
+      return;
+    }
+
+    if (_cities.isEmpty) {
+      _cities = await csc.getStateCities(_selectedCountryCode!, _selectedStateCode!);
+    }
+
+    final cityNames = _cities.map((city) => city.name).toList();
+    final picked = await _showLocationPicker(
+      title: 'City',
+      options: cityNames,
+      selected: _selectedCity,
+    );
+    if (picked == null) return;
+
+    setState(() {
+      _selectedCity = picked;
+    });
+
+    await _persistLocationSelection(currentPrefs);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -281,6 +604,8 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
     });
+
+    _loadLocationStateFromProfile();
   }
 
   @override
@@ -324,9 +649,11 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
             builder: (context, snapshot) {
               final profile = snapshot.data ?? <String, dynamic>{};
               final currentPrefs = _normalizePreferences(
-                profile['partnerPreferences'] is Map
+                (profile['partnerPreference'] is Map
+                  ? Map<String, dynamic>.from(profile['partnerPreference'] as Map)
+                  : (profile['partnerPreferences'] is Map
                     ? Map<String, dynamic>.from(profile['partnerPreferences'] as Map)
-                    : null,
+                    : null)),
               );
 
               String display(dynamic value) {
@@ -339,6 +666,26 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
               final religious = Map<String, dynamic>.from(currentPrefs['religiousDetails'] as Map);
               final professional = Map<String, dynamic>.from(currentPrefs['professionalDetails'] as Map);
               final location = Map<String, dynamic>.from(currentPrefs['locationDetails'] as Map);
+
+                if (!_locationInitialized) {
+                final locationCountry = (location['country'] ?? '').toString().trim();
+                final locationState = (location['state'] ?? '').toString().trim();
+                final locationCity = (location['city'] ?? '').toString().trim();
+
+                if (locationCountry.isNotEmpty) _selectedCountry = locationCountry;
+                if (locationState.isNotEmpty) _selectedState = locationState;
+                if (locationCity.isNotEmpty) _selectedCity = locationCity;
+                }
+
+                final locationCountryValue = (_selectedCountry ?? '').trim().isEmpty
+                  ? display(location['country'])
+                  : _selectedCountry!;
+                final locationStateValue = (_selectedState ?? '').trim().isEmpty
+                  ? display(location['state'])
+                  : _selectedState!;
+                final locationCityValue = (_selectedCity ?? '').trim().isEmpty
+                  ? display(location['city'])
+                  : _selectedCity!;
 
               return Column(
                 children: [
@@ -600,39 +947,24 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       _PreferenceCard(
                         title: "Location Details",
                         children: [
-                          _PreferenceRow(
+                          _LocationPreferenceRow(
                             label: "Country",
-                            value: display(location['country']),
-                            onTap: () => _editPreference(
-                              section: 'locationDetails',
-                              key: 'country',
-                              label: 'Country',
-                              currentValue: location['country'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
+                            value: locationCountryValue,
+                            enabled: true,
+                            onTap: () => _onSelectCountry(currentPrefs),
                           ),
-                          _PreferenceRow(
+                          _LocationPreferenceRow(
                             label: "Residing State",
-                            value: display(location['state']),
-                            onTap: () => _editPreference(
-                              section: 'locationDetails',
-                              key: 'state',
-                              label: 'Residing State',
-                              currentValue: location['state'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
+                            value: locationStateValue,
+                            enabled: (_selectedCountry ?? locationCountryValue) != 'Not set',
+                            onTap: () => _onSelectState(currentPrefs),
                           ),
-                          _PreferenceRow(
+                          _LocationPreferenceRow(
                             label: "City",
-                            value: display(location['city']),
+                            value: locationCityValue,
                             isLast: true,
-                            onTap: () => _editPreference(
-                              section: 'locationDetails',
-                              key: 'city',
-                              label: 'City',
-                              currentValue: location['city'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
+                            enabled: (_selectedState ?? locationStateValue) != 'Not set',
+                            onTap: () => _onSelectCity(currentPrefs),
                           ),
                         ],
                       ),
@@ -642,6 +974,29 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       GoldGradientButton(
                         text: "VIEW MATCHES",
                         onPressed: () async {
+                          try {
+                            final nextPrefs = Map<String, dynamic>.from(currentPrefs);
+                            final nextLocation = Map<String, dynamic>.from(
+                              nextPrefs['locationDetails'] as Map<String, dynamic>,
+                            );
+                            nextLocation['country'] = _selectedCountry ?? nextLocation['country'] ?? '';
+                            nextLocation['state'] = _selectedState ?? nextLocation['state'] ?? '';
+                            nextLocation['city'] = _selectedCity ?? nextLocation['city'] ?? '';
+                            nextPrefs['locationDetails'] = nextLocation;
+
+                            await UserService.instance.updatePartnerPreferences(nextPrefs);
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Partner preferences saved.')),
+                            );
+                          } catch (_) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Unable to save partner preferences.')),
+                            );
+                            return;
+                          }
+
                           if (!context.mounted) return;
                           Navigator.push(
                             context,
@@ -772,6 +1127,86 @@ class _PreferenceRow extends StatelessWidget {
               Icon(
                 Icons.arrow_forward_ios,
                 color: Colors.white.withOpacity(0.3),
+                size: 14,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationPreferenceRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool isLast;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _LocationPreferenceRow({
+    required this.label,
+    required this.value,
+    required this.onTap,
+    this.isLast = false,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isNotSet = value.trim().isEmpty || value == 'Not set';
+    final rightColor = enabled
+        ? (isNotSet ? Colors.white54 : const Color(0xFFFFD700))
+        : Colors.grey;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        splashColor: AppColors.goldMedium.withOpacity(0.1),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          decoration: BoxDecoration(
+            border: isLast
+                ? null
+                : Border(
+                    bottom: BorderSide(
+                      color: Colors.white.withOpacity(0.05),
+                      width: 1,
+                    ),
+                  ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.9),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 3,
+                child: Text(
+                  isNotSet ? 'Not set' : value,
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: rightColor,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.arrow_forward_ios,
+                color: enabled ? rightColor : Colors.grey,
                 size: 14,
               ),
             ],

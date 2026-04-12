@@ -8,9 +8,13 @@ import 'package:swam_match_app/features/auth/presentation/pages/create_account_p
 import 'package:swam_match_app/features/auth/presentation/pages/login_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
-import 'package:swam_match_app/services/auth_service.dart';
-import 'package:app_links/app_links.dart';
-import 'dart:async';
+import 'package:swam_match_app/services/notification_service.dart' as v1;
+import 'package:firebase_messaging/firebase_messaging.dart';
+
+@pragma('vm:entry-point')
+Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,7 +24,9 @@ Future<void> main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
     await PushNotificationService.instance.initialize();
+    await v1.NotificationService.instance.initialize();
   } catch (error) {
     initError = error.toString();
   }
@@ -38,54 +44,18 @@ class SwamMatchApp extends StatefulWidget {
 }
 
 class _SwamMatchAppState extends State<SwamMatchApp> {
-  final AppLinks _appLinks = AppLinks();
-  StreamSubscription<Uri>? _linkSubscription;
-
-  @override
-  void initState() {
-    super.initState();
-    _initEmailLinkListener();
-  }
-
-  Future<void> _initEmailLinkListener() async {
-    try {
-      final initialLink = await _appLinks.getInitialLink();
-      if (initialLink != null) {
-        await _handleEmailLink(initialLink.toString());
-      }
-    } catch (_) {}
-
-    _linkSubscription = _appLinks.uriLinkStream.listen((uri) async {
-      await _handleEmailLink(uri.toString());
-    });
-  }
-
-  Future<void> _handleEmailLink(String link) async {
-    try {
-      if (AuthService.instance.isEmailLink(link)) {
-        await AuthService.instance.completeEmailLinkSignIn(link);
-      }
-    } catch (_) {}
-  }
-
-  @override
-  void dispose() {
-    _linkSubscription?.cancel();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final hasFirebaseError = widget.firebaseInitError != null;
 
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Swam Match',
+      title: 'Swan Match',
       theme: ThemeData(
         brightness: Brightness.dark,
         fontFamily: 'serif',
         // Sets the main background to deep black
-        scaffoldBackgroundColor: AppColors.ivory, 
+        scaffoldBackgroundColor: AppColors.ivory,
         primaryColor: AppColors.goldMedium,
         // Adds cinematic global animations when navigating between pages
         pageTransitionsTheme: const PageTransitionsTheme(
@@ -93,6 +63,25 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
             TargetPlatform.android: ZoomPageTransitionsBuilder(),
             TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
           },
+        ),
+        // ─── Global Gold SnackBar Theme ───────────────────────────────────────
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: const Color(0xFF1A1400),   // deep dark-gold background
+          contentTextStyle: const TextStyle(
+            color: Color(0xFFF1D592),                 // goldLight text
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: const BorderSide(
+              color: Color(0xFFD4AF37),               // goldMedium border
+              width: 1,
+            ),
+          ),
+          behavior: SnackBarBehavior.floating,
+          insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+          elevation: 8,
         ),
       ),
         home: hasFirebaseError

@@ -20,6 +20,19 @@ class _MessagesViewState extends State<MessagesView> {
   String _searchQuery = '';
   bool _onlyUnread = false;
 
+  // ─── STREAMS CACHED IN STATE ───
+  late final Stream<List<Map<String, dynamic>>> _myChatsStream;
+  late final Stream<List<dynamic>> _mySentInterestsStream;
+  late final Stream<List<dynamic>> _interestsForMeStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _myChatsStream = ChatService.instance.watchMyChats();
+    _mySentInterestsStream = InterestService.instance.watchMySentInterests();
+    _interestsForMeStream = InterestService.instance.watchInterestsForMe();
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -29,7 +42,7 @@ class _MessagesViewState extends State<MessagesView> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3,
+      length: 2,
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -58,15 +71,14 @@ class _MessagesViewState extends State<MessagesView> {
               unselectedLabelColor: Colors.white.withOpacity(0.4),
               labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5),
               tabs: const [
-                Tab(text: "Received"),
-                Tab(text: "Awaiting Response"),
+                Tab(text: "Messages"),
                 Tab(text: "Calls"),
               ],
             ),
 
             Expanded(
               child: StreamBuilder<List<Map<String, dynamic>>>(
-                stream: ChatService.instance.watchMyChats(),
+                stream: _myChatsStream,
                 builder: (context, chatsSnapshot) {
                   if (chatsSnapshot.connectionState == ConnectionState.waiting) {
                     return const Center(
@@ -75,7 +87,7 @@ class _MessagesViewState extends State<MessagesView> {
                   }
                   final chats = chatsSnapshot.data ?? const <Map<String, dynamic>>[];
                   return StreamBuilder<List<dynamic>>(
-                    stream: InterestService.instance.watchMySentInterests(),
+                    stream: _mySentInterestsStream,
                     builder: (context, sentSnapshot) {
                       if (sentSnapshot.connectionState == ConnectionState.waiting) {
                         return const Center(
@@ -83,7 +95,7 @@ class _MessagesViewState extends State<MessagesView> {
                         );
                       }
                       return StreamBuilder<List<dynamic>>(
-                        stream: InterestService.instance.watchInterestsForMe(),
+                        stream: _interestsForMeStream,
                         builder: (context, receivedSnapshot) {
                           if (receivedSnapshot.connectionState == ConnectionState.waiting) {
                             return const Center(
@@ -104,15 +116,6 @@ class _MessagesViewState extends State<MessagesView> {
                                 icon: Icons.chat_bubble_outline,
                                 chats: mergedChats,
                                 incomingOnly: true,
-                              ),
-                              _buildMessageContent(
-                                context,
-                                title: "Messages you've sent awaiting a reply",
-                                emptyMessage: "No pending messages.",
-                                emptySub: "Start a conversation with matches you like!",
-                                icon: Icons.schedule_send_outlined,
-                                chats: mergedChats,
-                                incomingOnly: false,
                               ),
                               _buildMessageContent(
                                 context,
@@ -386,7 +389,12 @@ class _ChatThreadTile extends StatelessWidget {
             children: [
               CircleAvatar(
                 backgroundColor: AppColors.goldMedium.withOpacity(0.2),
-                child: const Icon(Icons.person, color: AppColors.goldMedium),
+                backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
+                    ? NetworkImage(profile['photoUrl'])
+                    : null,
+                child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
+                    ? const Icon(Icons.person, color: AppColors.goldMedium)
+                    : null,
               ),
               const SizedBox(width: 12),
               Expanded(

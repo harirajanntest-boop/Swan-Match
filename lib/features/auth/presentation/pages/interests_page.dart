@@ -59,6 +59,41 @@ class _InterestsPageState extends State<InterestsPage>
     'Hip Hop',
     'Jazz',
     'Pop',
+    'Pop - Tamil / Regional',
+    'Rock',
+  ];
+
+  final List<String> _reading = [
+    'Biographies',
+    'Business / Career',
+    'Comics',
+    'Classic Literature',
+    'History',
+    'Mystery / Thriller',
+    'Non-fiction',
+    'Philosophy',
+    'Poetry',
+    'Psychology',
+    'Religious / Spiritual',
+    'Science Fiction',
+    'Self-help',
+    'Travel',
+  ];
+
+  final List<String> _movies = [
+    'Action',
+    'Animation',
+    'Comedy',
+    'Documentary',
+    'Drama',
+    'Horror',
+    'International',
+    'Musical',
+    'Romantic',
+    'Sci-Fi',
+    'Short Films',
+    'Thriller',
+    'World Cinema',
   ];
 
   @override
@@ -107,6 +142,8 @@ class _InterestsPageState extends State<InterestsPage>
 
   @override
   Widget build(BuildContext context) {
+    final canSubmit = _selectedInterests.isNotEmpty;
+
     return DefaultTabController(
       length: 4,
       child: Scaffold(
@@ -177,18 +214,20 @@ class _InterestsPageState extends State<InterestsPage>
                             setState(() => _showAllMusic = !_showAllMusic),
                       ),
 
-                      // ─── TAB 3 & 4: Placeholders for now ───
-                      const Center(
-                        child: Text(
-                          "Reading options coming soon...",
-                          style: TextStyle(color: Colors.white54),
-                        ),
+                      // ─── TAB 3: Reading ───
+                      _buildSelectionGrid(
+                        title: "Choose Reading Interests",
+                        items: _reading,
+                        showAll: true,
+                        onToggleShowAll: () {},
                       ),
-                      const Center(
-                        child: Text(
-                          "Movie options coming soon...",
-                          style: TextStyle(color: Colors.white54),
-                        ),
+
+                      // ─── TAB 4: Movies ───
+                      _buildSelectionGrid(
+                        title: "Choose Movies genre",
+                        items: _movies,
+                        showAll: true,
+                        onToggleShowAll: () {},
                       ),
                     ],
                   ),
@@ -216,9 +255,16 @@ class _InterestsPageState extends State<InterestsPage>
                       children: [
                         GoldGradientButton(
                           text: "SUBMIT",
+                          enabled: canSubmit,
                           onPressed: () async {
+                            if (!canSubmit) return;
                             await UserService.instance.updateInterests(
                               _selectedInterests.toList(),
+                            );
+
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Interests saved.')),
                             );
 
                             if (!context.mounted) return;
@@ -234,7 +280,12 @@ class _InterestsPageState extends State<InterestsPage>
                         const SizedBox(height: 16),
                         GestureDetector(
                           onTap: () {
-                            // Skip for now
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const LifestyleDetailsPage(),
+                              ),
+                            );
                           },
                           child: Text(
                             "I will do this later",

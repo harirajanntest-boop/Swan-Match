@@ -4,6 +4,7 @@ import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
 import 'premium_side_menu.dart'; // ─── IMPORT THE MENU HERE ───
 import 'notifications_page.dart';
+import 'edit_profile_page.dart';
 
 class HomePage extends StatefulWidget {
   final void Function({Map<String, dynamic>? profile})? onOpenMatches;
@@ -25,9 +26,20 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   late final Animation<Offset> _slideAnim;
   final MatchService _matchService = MatchService.instance;
 
+  // ─── STREAMS CACHED IN STATE ───
+  late final Stream<Map<String, dynamic>?> _userProfileStream;
+  late final Stream<List<Map<String, dynamic>>> _recommendedMatchesStream;
+  late final Stream<List<Map<String, dynamic>>> _newMatchesStream;
+
   @override
   void initState() {
     super.initState();
+
+    // Initialize streams here to avoid re-creating them on every build
+    _userProfileStream = UserService.instance.watchCurrentUserProfile();
+    _recommendedMatchesStream = _matchService.watchRecommendedMatches(limit: 12);
+    _newMatchesStream = _matchService.watchNewMatches(days: 30);
+
     _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000));
     _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.1, 1.0, curve: Curves.easeOut)));
     _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic)));
@@ -50,7 +62,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       backgroundColor: AppColors.obsidian, // Matches the parent dashboard
       drawer: const PremiumSideMenu(), // ─── DRAWER LIVES HERE NOW ───
       body: StreamBuilder<Map<String, dynamic>?>(
-        stream: UserService.instance.watchCurrentUserProfile(),
+        stream: _userProfileStream,
         builder: (context, snapshot) {
           final profile = snapshot.data ?? <String, dynamic>{};
 
@@ -73,8 +85,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           title: "Daily Recommendations",
                           subtitle: "Matches handpicked for you today",
                           hasTimer: true,
-                          showViewAll: false,
-                          stream: _matchService.watchRecommendedMatches(limit: 12),
+                          showViewAll: true,
+                          stream: _recommendedMatchesStream,
                         ),
                         _buildPremiumBanner(),
                         _buildHorizontalList(
@@ -82,7 +94,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                           subtitle: "Joined in the last 30 days",
                           hasTimer: false,
                           showViewAll: true,
-                          stream: _matchService.watchNewMatches(days: 30),
+                          stream: _newMatchesStream,
                         ),
                         const SizedBox(height: 20),
                         Center(
@@ -218,10 +230,76 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     );
   }
 
+  bool _hasText(Map<String, dynamic> profile, String key) {
+    return (profile[key] ?? '').toString().trim().isNotEmpty;
+  }
+
+  bool _hasAge(Map<String, dynamic> profile) {
+    if (_hasText(profile, 'age')) return true;
+    final rawDob = profile['dateOfBirth'];
+    if (rawDob is DateTime) return true;
+    if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
+      try {
+        rawDob.toDate();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  bool _hasLocation(Map<String, dynamic> profile) {
+    return _hasText(profile, 'country') &&
+        _hasText(profile, 'state') &&
+        _hasText(profile, 'city');
+  }
+
+  bool _hasProfilePhoto(Map<String, dynamic> profile) {
+    final photoCandidates = <String>[
+      (profile['photoUrl'] ?? '').toString(),
+      (profile['profileImageUrl'] ?? '').toString(),
+      (profile['imageUrl'] ?? '').toString(),
+    ];
+
+    final list = profile['photos'];
+    if (list is List) {
+      photoCandidates.addAll(list.map((e) => e.toString()));
+    }
+
+    return photoCandidates.any((url) => url.trim().isNotEmpty);
+  }
+
+  bool _hasPartnerPreference(Map<String, dynamic> profile) {
+    final raw = profile['partnerPreference'] ?? profile['partnerPreferences'];
+    if (raw is! Map) return false;
+
+    final mapped = Map<String, dynamic>.from(raw);
+    bool hasValue(dynamic value) {
+      if (value is Map) {
+        return value.values.any(hasValue);
+      }
+      if (value is List) {
+        return value.isNotEmpty;
+      }
+      return value != null && value.toString().trim().isNotEmpty;
+    }
+
+    return mapped.values.any(hasValue);
+  }
+
+  bool _hasInterests(Map<String, dynamic> profile) {
+    final list = profile['interests'];
+    return list is List && list.isNotEmpty;
+  }
+
+  bool _hasLifestyle(Map<String, dynamic> profile) {
+    return profile['lifestyle'] != null;
+  }
+
   Widget _buildProfileTracker(Map<String, dynamic> profile) {
-    final completed = profile['registrationCompleted'] == true;
-    final progress = completed ? 1.0 : 0.4;
-    final progressText = completed ? '100%' : '40%';
+    final progress = UserService.instance.calculateProfileCompletion(profile);
+    final progressText = '${(progress * 100).round()}%';
 
     return Container(
       margin: const EdgeInsets.all(20),
@@ -252,29 +330,27 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             ),
           ),
           const SizedBox(height: 24),
-          const Row(
+          Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _ActionPill(icon: Icons.add_a_photo_outlined, label: "Add Photo"),
-              _ActionPill(icon: Icons.verified_user_outlined, label: "Verify ID"),
-              _ActionPill(icon: Icons.family_restroom, label: "Family Info"),
+              _ActionPill(
+                icon: Icons.add_a_photo_outlined, 
+                label: "Add Photo",
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfilePage())),
+              ),
+              _ActionPill(
+                icon: Icons.verified_user_outlined, 
+                label: "Verify ID",
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfilePage())),
+              ),
+              _ActionPill(
+                icon: Icons.family_restroom, 
+                label: "Family Info",
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfilePage())),
+              ),
             ],
           ),
-          const SizedBox(height: 16),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: widget.onOpenUpgrade,
-              child: const Text(
-                'Update Now',
-                style: TextStyle(
-                  color: AppColors.goldMedium,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.3,
-                ),
-              ),
-            ),
-          ),
+          const SizedBox(height: 8),
         ],
       ),
     );
@@ -306,31 +382,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   ],
                 ),
               ),
-              if (hasTimer)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.green.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.green.withOpacity(0.3)),
-                  ),
-                  child: const Text(
-                    "Refreshed daily",
-                    style: TextStyle(
-                      color: Colors.greenAccent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                )
-              else if (showViewAll)
+              if (showViewAll)
                 GestureDetector(
                   onTap: () => widget.onOpenMatches?.call(),
-                  child: const Text("View All >", style: TextStyle(color: AppColors.goldMedium, fontSize: 12)),
-                )
-              else
-                const SizedBox.shrink(),
+                  child: const Text("View All >", style: TextStyle(color: AppColors.goldMedium, fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
             ],
           ),
         ),
@@ -423,25 +479,29 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 class _ActionPill extends StatelessWidget {
   final IconData icon;
   final String label;
+  final VoidCallback? onTap;
 
-  const _ActionPill({required this.icon, required this.label});
+  const _ActionPill({required this.icon, required this.label, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.05),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white.withOpacity(0.1)),
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white.withOpacity(0.1)),
+            ),
+            child: Icon(icon, color: AppColors.goldMedium, size: 20),
           ),
-          child: Icon(icon, color: AppColors.goldMedium, size: 20),
-        ),
-        const SizedBox(height: 8),
-        Text(label, style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 11)),
-      ],
+          const SizedBox(height: 8),
+          Text(label, style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 11)),
+        ],
+      ),
     );
   }
 }
@@ -506,10 +566,10 @@ class _MiniMatchCard extends StatelessWidget {
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                child: photoUrl.isEmpty
-                    ? const Center(
+                child: (match['showPhotosToEveryone'] == false || photoUrl.isEmpty)
+                    ? Center(
                         child: Icon(
-                          Icons.person_outline,
+                          match['showPhotosToEveryone'] == false ? Icons.lock_outline : Icons.person_outline,
                           color: Colors.white24,
                           size: 50,
                         ),
@@ -541,6 +601,35 @@ class _MiniMatchCard extends StatelessWidget {
             ),
           ),
           Positioned(
+            top: 10,
+            left: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: (match['isOnline'] == true) ? Colors.green.withOpacity(0.8) : Colors.black.withOpacity(0.6),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: (match['isOnline'] == true) ? Colors.greenAccent : Colors.grey,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    (match['isOnline'] == true) ? "Online" : "Offline",
+                    style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
             bottom: 12,
             left: 12,
             right: 12,
@@ -551,15 +640,6 @@ class _MiniMatchCard extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text("${_ageText()} • $height", style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 11)),
               ],
-            ),
-          ),
-          Positioned(
-            top: 8,
-            right: 8,
-            child: Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(color: Colors.black.withOpacity(0.5), shape: BoxShape.circle),
-              child: const Icon(Icons.favorite_border, color: Colors.white, size: 14),
             ),
           ),
           ],

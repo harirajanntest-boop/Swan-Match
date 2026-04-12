@@ -25,6 +25,15 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
   final TextEditingController _messageController = TextEditingController();
   bool _isSending = false;
 
+  // ─── STREAM CACHED IN STATE ───
+  late final Stream<List<MessageModel>> _messageStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageStream = ChatService.instance.watchMessages(widget.otherUserId);
+  }
+
   @override
   void dispose() {
     _messageController.dispose();
@@ -115,7 +124,7 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
             children: [
               Expanded(
                 child: StreamBuilder<List<MessageModel>>(
-                  stream: ChatService.instance.watchMessages(widget.otherUserId),
+                  stream: _messageStream,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(

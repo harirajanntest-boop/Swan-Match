@@ -11,11 +11,10 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isSignedIn() &&
-        (isOwner(userId) ||
-         (resource.data.registrationCompleted == true && resource.data.showProfileToEveryone != false));
+        (isOwner(userId) || resource.data.registrationCompleted == true);
       allow create: if isOwner(userId);
       allow update: if isOwner(userId);
-      allow delete: if false;
+      allow delete: if isOwner(userId);
     }
 
     match /interests/{interestId} {
@@ -24,8 +23,34 @@ service cloud.firestore {
         resource.data.fromUserId == request.auth.uid ||
         resource.data.toUserId == request.auth.uid
       );
-      allow update: if isSignedIn() && resource.data.toUserId == request.auth.uid;
-      allow delete: if false;
+      allow update: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        resource.data.toUserId == request.auth.uid
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        resource.data.toUserId == request.auth.uid
+      );
+    }
+
+    match /profileViews/{viewId} {
+      allow create: if isSignedIn() &&
+        request.resource.data.fromUserId == request.auth.uid;
+      allow read: if isSignedIn() && (
+        resource.data.fromUserId == request.auth.uid ||
+        resource.data.toUserId == request.auth.uid
+      );
+      allow update: if isSignedIn() &&
+        resource.data.fromUserId == request.auth.uid;
+      allow delete: if isSignedIn() &&
+        resource.data.fromUserId == request.auth.uid;
+    }
+
+    match /notifications/{notificationId} {
+      allow create: if isSignedIn() &&
+        request.resource.data.fromUserId == request.auth.uid;
+      allow read, update, delete: if isSignedIn() &&
+        (resource.data.toUserId == request.auth.uid || resource.data.fromUserId == request.auth.uid);
     }
 
     match /chats/{chatId} {

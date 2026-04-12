@@ -18,7 +18,7 @@ class SafeSwamMatchPage extends StatelessWidget {
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          "Safe Swam Match",
+          "Safe Swan Match",
           style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
@@ -29,12 +29,12 @@ class SafeSwamMatchPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              "Why Safe Swam Match?",
+              "Why Safe Swan Match?",
               style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
             ),
             const SizedBox(height: 12),
             Text(
-              "Safe Swam Match is our initiative to guide you to a safe online matrimony service. You can trust us with your information and credentials. We are always there to support you in case of privacy abuse.",
+              "Safe Swan Match is our initiative to guide you to a safe online matrimony service. You can trust us with your information and credentials. We are always there to support you in case of privacy abuse.",
               style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 14, height: 1.5),
             ),
             const SizedBox(height: 32),
@@ -56,7 +56,7 @@ class SafeSwamMatchPage extends StatelessWidget {
             Row(
               children: [
                 Expanded(child: _buildContactMethod(icon: Icons.phone_in_talk, title: "Call us", value: "0-893-945-5547")),
-                Expanded(child: _buildContactMethod(icon: Icons.email_outlined, title: "Write to us", value: "reportfraud@\nswammatch.com")),
+                Expanded(child: _buildContactMethod(icon: Icons.email_outlined, title: "Write to us", value: "reportfraud@\nswanmatch.com")),
               ],
             ),
             const SizedBox(height: 40),

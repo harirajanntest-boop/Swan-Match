@@ -408,7 +408,7 @@ class _BrandName extends StatelessWidget {
             transform: GradientRotation(shimmer.value * 0.4),
           ).createShader(b),
           child: const Text(
-            "SWAM MATCH",
+            "SWAN MATCH",
             style: TextStyle(
               color: Colors.white, fontSize: 30,
               fontWeight: FontWeight.w700, letterSpacing: 7,

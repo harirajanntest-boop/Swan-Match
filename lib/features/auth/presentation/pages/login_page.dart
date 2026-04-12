@@ -1,8 +1,11 @@
 import 'dart:ui';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
+import 'main_dashboard.dart';
+import 'onboarding_page.dart';
 import 'otp_verification_page.dart';
 
 class LoginPage extends StatefulWidget {
@@ -26,6 +29,19 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   bool _isPhoneLogin = false; // Toggle between Email and Phone
   bool _obscurePassword = true;
   bool _isSendingOtp = false;
+  bool _isGoogleLoading = false;
+  String _selectedCountryCode = '+1'; // Defaulting to US
+
+  final List<String> _countryCodes = [
+    '+1', // USA / Canada
+    '+91', // India
+    '+44', // UK
+    '+61', // Australia
+    '+971', // UAE
+    '+65', // Singapore
+    '+60', // Malaysia
+    '+94', // Sri Lanka
+  ];
 
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
@@ -92,54 +108,47 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  Future<void> _startLoginOtpFlow() async {
-    if (_isSendingOtp) return;
-    setState(() => _isSendingOtp = true);
-    try {
-    if (_isPhoneLogin) {
-      await _startPhoneLoginOtpFlow();
-    } else {
-      await _startEmailLoginOtpFlow();
-    }
-    } finally {
-      if (mounted) {
-        setState(() => _isSendingOtp = false);
-      }
-    }
-  }
-
-  Future<void> _startEmailLoginOtpFlow() async {
+  Future<void> _handleEmailLogin() async {
     final email = _emailController.text.trim();
+    final password = _passwordController.text;
 
-    if (email.isEmpty) {
+    if (email.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Email is required.'),
-        ),
+        const SnackBar(content: Text('Email and password are required.')),
       );
       return;
     }
 
+    setState(() => _isSendingOtp = true); // Using same loading state for simplicity
     try {
-      await AuthService.instance.sendEmailSignInLink(email: email);
-
+      await AuthService.instance.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Verification link sent to $email')),
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const MainDashboard()),
       );
     } catch (error) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
       );
+    } finally {
+      if (mounted) setState(() => _isSendingOtp = false);
     }
   }
 
   Future<void> _startPhoneLoginOtpFlow() async {
-    if (_phoneController.text.trim().isEmpty) {
+    if (_isSendingOtp) return;
+    setState(() => _isSendingOtp = true);
+    
+    final phone = _phoneController.text.trim();
+    if (phone.isEmpty) {
+      setState(() => _isSendingOtp = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Phone number is required.'),
-        ),
+        const SnackBar(content: Text('Phone number is required.')),
       );
       return;
     }
@@ -147,9 +156,11 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     String formattedPhone;
     try {
       formattedPhone = AuthService.instance.normalizePhoneE164(
-        _phoneController.text.trim(),
+        phone,
+        defaultCountryCode: _selectedCountryCode,
       );
     } catch (error) {
+      setState(() => _isSendingOtp = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
       );
@@ -158,7 +169,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
 
     try {
       await AuthService.instance.sendOtp(phoneNumber: formattedPhone);
-
       if (!mounted) return;
       Navigator.push(
         context,
@@ -176,6 +186,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
       );
+    } finally {
+      if (mounted) setState(() => _isSendingOtp = false);
     }
   }
 
@@ -199,6 +211,139 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
       );
     }
+  }
+
+  Future<void> _handleGoogleSignIn() async {
+    setState(() => _isGoogleLoading = true);
+    try {
+      final credential = await AuthService.instance.signInWithGoogle();
+      if (!mounted) return;
+      if (credential != null) {
+        // Sign-in successful or linked! Provide feedback and navigate.
+        if (context.mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const MainDashboard()),
+          );
+        }
+      } else {
+        // Canceled
+        setState(() => _isGoogleLoading = false);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      if (error is GoogleNeedsLinkingException) {
+        await _showLinkAccountDialog(error.email);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isGoogleLoading = false);
+      }
+    }
+  }
+
+  Future<void> _showLinkAccountDialog(String email) async {
+    final passwordController = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.obsidian,
+        title: const Text(
+          'Link Your Google Account',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'An account with $email already exists.',
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Enter your password to link Google to your account.',
+              style: TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Your password',
+                hintStyle: const TextStyle(color: Colors.white38),
+                enabledBorder: OutlineInputBorder(
+                  borderSide: const BorderSide(color: Colors.amber),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderSide: const BorderSide(color: Colors.amber, width: 2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white54),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.amber,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              try {
+                await FirebaseAuth.instance.signInWithEmailAndPassword(
+                  email: email,
+                  password: passwordController.text,
+                );
+
+                await AuthService.instance.linkPendingGoogleCredential();
+
+                if (mounted) {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MainDashboard()),
+                  );
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Google linked to your account! ✅'),
+                    ),
+                  );
+                }
+              } catch (error) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        'Wrong password or error: ${AuthService.instance.readableAuthError(error)}',
+                      ),
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text(
+              'Link Account',
+              style: TextStyle(color: Colors.black),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -231,21 +376,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                 ),
               );
             },
-          ),
-
-          // ─── Back Button ───
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.only(left: 10, top: 10),
-              child: IconButton(
-                icon: const Icon(
-                  Icons.arrow_back_ios_new,
-                  color: AppColors.goldMedium,
-                  size: 20,
-                ),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
           ),
 
           // ─── Main Content ───
@@ -391,9 +521,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                             // ─── Google Login Button ───
                             _SocialLoginButton(
                               text: "Continue with Google",
-                              icon: Icons
-                                  .g_mobiledata, // Standard flutter icon for Google
-                              onPressed: () {},
+                              icon: Icons.g_mobiledata, // Standard flutter icon for Google
+                              isLoading: _isGoogleLoading,
+                              onPressed: _handleGoogleSignIn,
                             ),
 
                             const SizedBox(height: 40),
@@ -436,6 +566,34 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               ),
             ),
           ),
+
+          // ─── Back Button (on top so it receives taps) ───
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.only(left: 10, top: 10),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: IconButton(
+                  icon: const Icon(
+                    Icons.arrow_back_ios_new,
+                    color: AppColors.goldMedium,
+                    size: 20,
+                  ),
+                  onPressed: () {
+                    if (Navigator.of(context).canPop()) {
+                      Navigator.of(context).pop();
+                      return;
+                    }
+                    Navigator.of(context).pushReplacement(
+                      MaterialPageRoute(
+                        builder: (_) => const OnboardingPage(),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -465,16 +623,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               setState(() => _obscurePassword = !_obscurePassword),
         ),
         const SizedBox(height: 15),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-			"OTP will be sent to your email address.",
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.4),
-              fontSize: 11,
-            ),
-          ),
-        ),
         const SizedBox(height: 15),
         Align(
           alignment: Alignment.centerRight,
@@ -493,8 +641,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         ),
         const SizedBox(height: 30),
         GoldGradientButton(
-			text: "SEND EMAIL OTP",
-          onPressed: _startLoginOtpFlow,
+          text: "LOGIN",
+          onPressed: _handleEmailLogin,
           isLoading: _isSendingOtp,
         ),
       ],
@@ -506,29 +654,19 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       key: const ValueKey('phone_form'),
       children: [
         _PremiumInputField(
-          label: "Password",
-          icon: Icons.key_outlined,
-          focusNode: _passwordFocus,
-          obscureText: _obscurePassword,
-          isPassword: true,
-          controller: _passwordController,
-          onTogglePassword: () =>
-              setState(() => _obscurePassword = !_obscurePassword),
-        ),
-        const SizedBox(height: 25),
-        _PremiumInputField(
           label: "Phone Number",
           icon: Icons.phone_outlined,
           focusNode: _phoneFocus,
           keyboardType: TextInputType.phone,
-          prefixText: "+91 ",
+          prefixText: "$_selectedCountryCode ",
+          onPrefixTapped: _showCountryCodePicker,
           controller: _phoneController,
         ),
         const SizedBox(height: 15),
         Align(
           alignment: Alignment.centerLeft,
           child: Text(
-            "OTP will be sent to your mobile number by SMS.",
+            "An OTP will be sent to your mobile number via SMS.",
             style: TextStyle(
               color: Colors.white.withOpacity(0.4),
               fontSize: 11,
@@ -537,11 +675,63 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         ),
         const SizedBox(height: 30),
         GoldGradientButton(
-          text: "SEND SMS OTP",
-          onPressed: _startLoginOtpFlow,
+          text: "SEND OTP",
+          onPressed: _startPhoneLoginOtpFlow,
           isLoading: _isSendingOtp,
         ),
       ],
+    );
+  }
+
+  void _showCountryCodePicker() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.obsidian,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
+      builder: (BuildContext context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Select Country Code",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontFamily: 'serif',
+                ),
+              ),
+              const SizedBox(height: 15),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _countryCodes.length,
+                  itemBuilder: (context, index) {
+                    final code = _countryCodes[index];
+                    return ListTile(
+                      title: Text(
+                        code,
+                        textAlign: TextAlign.center,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                      onTap: () {
+                        setState(() {
+                          _selectedCountryCode = code;
+                        });
+                        Navigator.pop(context);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
@@ -640,11 +830,13 @@ class _SocialLoginButton extends StatelessWidget {
   final String text;
   final IconData icon;
   final VoidCallback onPressed;
+  final bool isLoading;
 
   const _SocialLoginButton({
     required this.text,
     required this.icon,
     required this.onPressed,
+    this.isLoading = false,
   });
 
   @override
@@ -667,19 +859,32 @@ class _SocialLoginButton extends StatelessWidget {
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: AppColors.goldLight, size: 32),
-              const SizedBox(width: 12),
-              Text(
-                text,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 15,
-                  letterSpacing: 1,
-                ),
-              ),
-            ],
+            children: isLoading
+                ? [
+                    SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          AppColors.goldLight,
+                        ),
+                      ),
+                    ),
+                  ]
+                : [
+                    Icon(icon, color: AppColors.goldLight, size: 32),
+                    const SizedBox(width: 12),
+                    Text(
+                      text,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
           ),
         ),
       ),
@@ -698,6 +903,7 @@ class _PremiumInputField extends StatefulWidget {
   final VoidCallback? onTogglePassword;
   final TextInputType keyboardType;
   final String? prefixText;
+  final VoidCallback? onPrefixTapped;
 
   const _PremiumInputField({
     required this.label,
@@ -709,6 +915,7 @@ class _PremiumInputField extends StatefulWidget {
     this.onTogglePassword,
     this.keyboardType = TextInputType.text,
     this.prefixText,
+    this.onPrefixTapped,
   });
 
   @override
@@ -766,14 +973,17 @@ class _PremiumInputFieldState extends State<_PremiumInputField> {
             ),
             const SizedBox(width: 16),
             if (widget.prefixText != null)
-              Padding(
-                padding: const EdgeInsets.only(right: 8.0),
-                child: Text(
-                  widget.prefixText!,
-                  style: const TextStyle(
-                    color: AppColors.goldMedium,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+              GestureDetector(
+                onTap: widget.onPrefixTapped,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8.0),
+                  child: Text(
+                    widget.prefixText!,
+                    style: const TextStyle(
+                      color: AppColors.goldMedium,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ),

@@ -125,6 +125,11 @@ class _SubscriptionPageState extends State<SubscriptionPage>
 
   @override
   Widget build(BuildContext context) {
+    final useRedesignedLayout = ModalRoute.of(context) != null;
+    if (useRedesignedLayout) {
+      return const _SwanProSubscriptionBody();
+    }
+
     List<Map<String, dynamic>> benefits = _getBenefits();
     String currentGoldPrice = _pricing[_selectedDuration]!["Gold"]!;
     String currentPrimePrice = _pricing[_selectedDuration]!["Prime"]!;
@@ -466,6 +471,206 @@ class _SubscriptionPageState extends State<SubscriptionPage>
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SwanProSubscriptionBody extends StatelessWidget {
+  const _SwanProSubscriptionBody();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        color: Colors.black,
+        child: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 30),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const SizedBox(height: 8),
+                Container(
+                  width: 88,
+                  height: 88,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: AppColors.goldGradient,
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.goldMedium.withOpacity(0.35),
+                        blurRadius: 20,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.workspace_premium, color: Colors.black, size: 40),
+                ),
+                const SizedBox(height: 22),
+                const Text(
+                  'Upgrade to SWAN Pro',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 30,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'serif',
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Find your perfect match without limits',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.75),
+                    fontSize: 14,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 26),
+                _FeatureCard(
+                  features: const [
+                    'Unlimited Send Interest',
+                    'See Who Liked You',
+                    'Advanced Filters',
+                    'Priority Profile Boost',
+                    'Ad-Free Experience',
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    gradient: LinearGradient(
+                      colors: [
+                        AppColors.goldMedium.withOpacity(0.22),
+                        AppColors.goldLight.withOpacity(0.1),
+                      ],
+                    ),
+                    border: Border.all(color: AppColors.goldMedium.withOpacity(0.35)),
+                  ),
+                  child: const Column(
+                    children: [
+                      Text(
+                        'Monthly Plan',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(height: 8),
+                      Text(
+                        '\$19.99 / month',
+                        style: TextStyle(
+                          color: AppColors.goldLight,
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'serif',
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Cancel anytime',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 28),
+                SizedBox(
+                  width: double.infinity,
+                  height: 54,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pushAndRemoveUntil(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const MainDashboard(initialIndex: 4),
+                        ),
+                        (route) => false,
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.goldMedium,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      textStyle: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.8,
+                        fontSize: 16,
+                      ),
+                    ),
+                    child: const Text('Pay Now'),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pushAndRemoveUntil(
+                      context,
+                      MaterialPageRoute(builder: (context) => const MainDashboard()),
+                      (route) => false,
+                    );
+                  },
+                  child: Text(
+                    "I'll do it later",
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.8),
+                      decoration: TextDecoration.underline,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FeatureCard extends StatelessWidget {
+  final List<String> features;
+
+  const _FeatureCard({required this.features});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.12)),
+      ),
+      child: Column(
+        children: features
+            .map(
+              (feature) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle, color: AppColors.goldMedium, size: 20),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        feature,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+            .toList(),
       ),
     );
   }

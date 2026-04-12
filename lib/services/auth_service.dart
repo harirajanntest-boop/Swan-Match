@@ -1,7 +1,8 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import 'user_service.dart';
 
@@ -13,42 +14,59 @@ class AuthService {
 	final FirebaseAuth _auth = FirebaseAuth.instance;
 	String? _verificationId;
 	int? _resendToken;
-	static const String _emailLinkPrefKey = 'email_link_sign_in_email';
+	OAuthCredential? pendingGoogleCredential;
+	String? pendingGoogleEmail;
 
 	Stream<User?> get authStateChanges => _auth.authStateChanges();
 
 	User? get currentUser => _auth.currentUser;
 
-	Future<void> sendOtp({required String phoneNumber}) async {
-		final normalizedPhone = normalizePhoneE164(phoneNumber);
+	Future<void> sendOtp({
+		required String phoneNumber,
+		String? defaultCountryCode,
+	}) async {
+		final normalizedPhone = normalizePhoneE164(
+			phoneNumber,
+			defaultCountryCode: defaultCountryCode ?? '+1',
+		);
 		final completer = Completer<void>();
 
 		await _auth.verifyPhoneNumber(
 			phoneNumber: normalizedPhone,
 			forceResendingToken: _resendToken,
-			verificationCompleted: (credential) async {
+			verificationCompleted: (PhoneAuthCredential credential) async {
+				// Auto-retrieval on Android — sign in silently
+				await _auth.signInWithCredential(credential);
 				if (!completer.isCompleted) {
 					completer.complete();
 				}
 			},
-			verificationFailed: (error) {
+			verificationFailed: (FirebaseAuthException error) {
+				// Handle error
+				debugPrint('Phone verification failed: ${error.message}');
 				if (!completer.isCompleted) {
 					completer.completeError(error);
 				}
 			},
-			codeSent: (verificationId, resendToken) {
+			codeSent: (String verificationId, int? resendToken) {
+				// Save verificationId and navigate to OTP screen
 				_verificationId = verificationId;
 				_resendToken = resendToken;
 				if (!completer.isCompleted) {
 					completer.complete();
 				}
 			},
-			codeAutoRetrievalTimeout: (verificationId) {
+			codeAutoRetrievalTimeout: (String verificationId) {
+				debugPrint('Auto retrieval timeout');
 				_verificationId = verificationId;
 			},
 			timeout: const Duration(seconds: 60),
 		);
 
+		// Note: Browser reCAPTCHA occurs BEFORE completer.future resolve.
+		// To avoid reCAPTCHA:
+		// 1. Android: Add SHA-1/SHA-256 to Firebase & Enable Play Integrity API in Google Cloud Console.
+		// 2. iOS: Configure APNs in Firebase & Add REVERSED_CLIENT_ID to Info.plist URL Schemes.
 		await completer.future;
 	}
 
@@ -56,7 +74,7 @@ class AuthService {
 		if (_verificationId == null) {
 			throw FirebaseAuthException(
 				code: 'missing-verification-id',
-				message: 'OTP session expired. Please request OTP again.',
+				message: 'Verification is still in progress. Please wait a moment and try again.',
 			);
 		}
 
@@ -93,13 +111,18 @@ class AuthService {
 			);
 		}
 
+		final sanitizedData = <String, dynamic>{...profileSeed};
+		sanitizedData.remove('password');
+		sanitizedData.remove('confirmPassword');
+		sanitizedData.remove('selectedCountryCode');
+
 		await UserService.instance.upsertUserProfile(
 			uid: user.uid,
 			data: <String, dynamic>{
-				...profileSeed,
+				...sanitizedData,
 				'uid': user.uid,
 				'email': email.trim(),
-				'phoneNumber': user.phoneNumber ?? profileSeed['phoneNumber'] ?? '',
+				'phoneNumber': user.phoneNumber ?? sanitizedData['phoneNumber'] ?? '',
 				'createdAt': DateTime.now(),
 				'updatedAt': DateTime.now(),
 			},
@@ -111,8 +134,12 @@ class AuthService {
 		required String password,
 		required String otpCode,
 		required String phoneNumber,
+		String? defaultCountryCode,
 	}) async {
-		final normalizedPhone = normalizePhoneE164(phoneNumber);
+		final normalizedPhone = normalizePhoneE164(
+			phoneNumber,
+			defaultCountryCode: defaultCountryCode ?? '+1',
+		);
 
 		final phoneCredential = createPhoneCredential(otpCode);
 		final tempPhoneSession = await _auth.signInWithCredential(phoneCredential);
@@ -174,14 +201,21 @@ class AuthService {
 		}
 	}
 
+	Future<UserCredential> signInWithEmailAndPassword({
+		required String email,
+		required String password,
+	}) async {
+		return await _auth.signInWithEmailAndPassword(
+			email: email.trim(),
+			password: password,
+		);
+	}
+
 	Future<void> validateEmailPassword({
 		required String email,
 		required String password,
 	}) async {
-		await _auth.signInWithEmailAndPassword(
-			email: email.trim(),
-			password: password,
-		);
+		await signInWithEmailAndPassword(email: email, password: password);
 		await _auth.signOut();
 	}
 
@@ -214,66 +248,103 @@ class AuthService {
 		await _auth.sendPasswordResetEmail(email: email.trim());
 	}
 
-	ActionCodeSettings _emailLinkSettings() {
-		return ActionCodeSettings(
-			url: 'https://swan-match.firebaseapp.com',
-			handleCodeInApp: true,
-			androidPackageName: 'com.example.swam_match_app',
-			androidInstallApp: true,
-			androidMinimumVersion: '1',
-			iOSBundleId: 'com.example.swamMatchApp',
-		);
-	}
+	final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-	Future<void> sendEmailSignInLink({required String email}) async {
-		final trimmedEmail = email.trim().toLowerCase();
-		if (trimmedEmail.isEmpty) {
-			throw FirebaseAuthException(
-				code: 'invalid-email',
-				message: 'Email is required to send a sign-in link.',
-			);
-		}
+	Future<UserCredential?> signInWithGoogle() async {
+		final account = await _googleSignIn.signIn();
+		if (account == null) return null;
 
-		await _auth.sendSignInLinkToEmail(
-			email: trimmedEmail,
-			actionCodeSettings: _emailLinkSettings(),
+		final auth = await account.authentication;
+		final googleCredential = GoogleAuthProvider.credential(
+			accessToken: auth.accessToken,
+			idToken: auth.idToken,
 		);
 
-		final prefs = await SharedPreferences.getInstance();
-		await prefs.setString(_emailLinkPrefKey, trimmedEmail);
-	}
-
-	bool isEmailLink(String link) {
-		return _auth.isSignInWithEmailLink(link);
-	}
-
-	Future<UserCredential> completeEmailLinkSignIn(String link) async {
-		if (!isEmailLink(link)) {
-			throw FirebaseAuthException(
-				code: 'invalid-email-link',
-				message: 'Invalid or expired email sign-in link.',
-			);
+		final current = _auth.currentUser;
+		if (current != null) {
+			return await current.linkWithCredential(googleCredential);
 		}
 
-		final prefs = await SharedPreferences.getInstance();
-		final email = (prefs.getString(_emailLinkPrefKey) ?? '').trim();
-		if (email.isEmpty) {
-			throw FirebaseAuthException(
-				code: 'missing-email-otp',
-				message: 'Email is required to complete sign-in.',
-			);
+		try {
+			final result = await _auth.signInWithCredential(googleCredential);
+			final user = result.user;
+
+			if (user != null) {
+				final existingProfile = await UserService.instance.getUserProfile(user.uid);
+				if (existingProfile == null) {
+					final userEmail = (user.email ?? '').trim();
+					if (userEmail.isNotEmpty) {
+						final emailProfile = await UserService.instance.getUserProfileByEmail(userEmail);
+						final existingUid = (emailProfile?['uid'] ?? '').toString();
+						if (emailProfile != null && existingUid.isNotEmpty && existingUid != user.uid) {
+							await _auth.signOut();
+							pendingGoogleCredential = googleCredential;
+							pendingGoogleEmail = user.email;
+							throw GoogleNeedsLinkingException(email: userEmail);
+						}
+					}
+
+					await UserService.instance.upsertUserProfile(
+						uid: user.uid,
+						data: <String, dynamic>{
+							'uid': user.uid,
+							'email': user.email ?? account.email,
+							'displayName': user.displayName ?? account.displayName ?? '',
+							'createdAt': DateTime.now(),
+							'updatedAt': DateTime.now(),
+							'registrationCompleted': false,
+						},
+					);
+				}
+			}
+
+			return result;
+		} on FirebaseAuthException catch (error) {
+			if (error.code == 'account-exists-with-different-credential') {
+				pendingGoogleCredential = googleCredential;
+				pendingGoogleEmail = error.email;
+				throw GoogleNeedsLinkingException(email: (error.email ?? '').trim());
+			}
+			rethrow;
 		}
-
-		final credential = await _auth.signInWithEmailLink(
-			email: email,
-			emailLink: link,
-		);
-
-		await prefs.remove(_emailLinkPrefKey);
-		return credential;
 	}
 
-	Future<void> signOut() => _auth.signOut();
+	Future<UserCredential> linkPendingGoogleCredential() async {
+		final current = _auth.currentUser;
+		if (current == null) {
+			throw Exception('No user logged in to link Google to.');
+		}
+		if (pendingGoogleCredential == null) {
+			throw Exception('No pending Google credential to link.');
+		}
+
+		final result = await current.linkWithCredential(pendingGoogleCredential!);
+		pendingGoogleCredential = null;
+		pendingGoogleEmail = null;
+		return result;
+	}
+
+	Future<void> signOut() async {
+		try {
+			await _googleSignIn.signOut();
+		} catch (_) {}
+		return _auth.signOut();
+	}
+
+	Future<void> changePassword(String currentPassword, String newPassword) async {
+		final user = _auth.currentUser;
+		if (user == null) throw Exception('No user logged in.');
+
+		final email = user.email;
+		if (email == null) throw Exception('User email not found.');
+
+		// Re-authenticate user
+		final credential = EmailAuthProvider.credential(email: email, password: currentPassword);
+		await user.reauthenticateWithCredential(credential);
+
+		// Update password
+		await user.updatePassword(newPassword);
+	}
 
 	String readableAuthError(Object error) {
 		if (error is FirebaseAuthException) {
@@ -282,6 +353,8 @@ class AuthService {
 					return 'Invalid OTP code. Please check the SMS code and try again.';
 				case 'session-expired':
 					return 'OTP expired. Please request a new OTP.';
+				case 'missing-verification-id':
+					return 'App verification is still in progress. Please wait 2-3 seconds and try again.';
 				case 'missing-email-otp':
 					return 'Email OTP session expired. Please request OTP again.';
 				case 'email-mismatch':
@@ -300,6 +373,8 @@ class AuthService {
 					return 'Phone authentication is not enabled in Firebase Console.';
 				case 'missing-email-otp-config':
 					return 'Email OTP is not configured. Set SMTP dart-defines and restart the app.';
+				case 'account-exists-with-different-credential':
+					return 'An account already exists with this email. Please log in with your phone number or email and password.';
 				default:
 					if ((error.message ?? '').isNotEmpty) {
 						return error.message!;
@@ -376,4 +451,10 @@ class AuthService {
 			return '';
 		}
 	}
+}
+
+class GoogleNeedsLinkingException implements Exception {
+	final String email;
+
+	GoogleNeedsLinkingException({required this.email});
 }

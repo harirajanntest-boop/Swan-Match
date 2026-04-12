@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({super.key});
@@ -17,18 +18,102 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
   late final Animation<Offset> _slideAnim;
 
   String _selectedFilter = 'All';
-  final List<String> _filters = ['All', 'Interactions', 'Urgent'];
+  final List<String> _filters = ['All', 'Interactions', 'Request'];
+
+  // ─── STREAM CACHED IN STATE ───
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _notificationStream;
 
   @override
   void initState() {
     super.initState();
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _notificationStream = const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+    } else {
+      _notificationStream = FirebaseFirestore.instance
+          .collection('notifications')
+          .where('toUserId', isEqualTo: user.uid)
+          .snapshots();
+    }
+
     _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
     _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.1, 1.0, curve: Curves.easeOut)));
     _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic)));
 
     Future.delayed(const Duration(milliseconds: 50), () {
-      if (mounted) _entryController.forward();
+      if (mounted) {
+        _entryController.forward();
+        _markNotificationsAsSeen();
+      }
     });
+  }
+
+  Future<void> _clearAllNotifications() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.onyx,
+        title: const Text("Clear All?", style: TextStyle(color: Colors.white)),
+        content: const Text("This will permanently remove all notifications.", style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Clear", style: TextStyle(color: Colors.red))),
+        ],
+      )
+    );
+
+    if (confirm != true) return;
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('notifications')
+          .where('toUserId', isEqualTo: user.uid)
+          .get();
+
+      if (snapshot.docs.isEmpty) return;
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (var doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+      
+      if (mounted) {
+        showLinearMessage(context, "Notifications cleared.");
+      }
+    } catch (e) {
+      debugPrint("Error clearing notifications: $e");
+    }
+  }
+
+  Future<void> _markNotificationsAsSeen() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('notifications')
+          .where('toUserId', isEqualTo: user.uid)
+          .where('isRead', isNotEqualTo: true)
+          .get();
+
+      if (snapshot.docs.isEmpty) return;
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (var doc in snapshot.docs) {
+        batch.update(doc.reference, {
+          'isRead': true,
+          'seenAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    } catch (e) {
+      debugPrint("Error marking notifications as seen: $e");
+    }
   }
 
   @override
@@ -53,6 +138,13 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
           style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
+        actions: [
+          TextButton(
+            onPressed: () => _clearAllNotifications(),
+            child: const Text("Clear All", style: TextStyle(color: AppColors.goldMedium, fontSize: 12)),
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
       body: FadeTransition(
         opacity: _fadeAnim,
@@ -112,12 +204,7 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
               // ─── Notifications List ───
               Expanded(
                 child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseAuth.instance.currentUser == null
-                      ? const Stream<QuerySnapshot<Map<String, dynamic>>>.empty()
-                      : FirebaseFirestore.instance
-                          .collection('notifications')
-                          .where('toUserId', isEqualTo: FirebaseAuth.instance.currentUser!.uid)
-                          .snapshots(),
+                  stream: _notificationStream,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(
@@ -125,16 +212,28 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
                       );
                     }
 
+                    final now = DateTime.now();
                     final docs = snapshot.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
                     final notifications = docs
                         .map((doc) => <String, dynamic>{...doc.data(), 'id': doc.id})
                         .where((item) {
+                          // 1 HOUR VANISH LOGIC:
+                          // If notification is seen and it's been more than 1 hour, vanish it.
+                          final isRead = item['isRead'] == true;
+                          final seenAt = item['seenAt'];
+                          if (isRead && seenAt is Timestamp) {
+                            final seenDateTime = seenAt.toDate();
+                            if (now.difference(seenDateTime).inHours >= 1) {
+                              return false;
+                            }
+                          }
+
                           if (_selectedFilter == 'All') return true;
                           final type = (item['type'] ?? '').toString().toLowerCase();
                           if (_selectedFilter == 'Interactions') {
-                            return type == 'interaction';
+                            return type == 'interaction' || type == 'message' || type == 'chat';
                           }
-                          return type == 'urgent';
+                          return type == 'urgent' || type == 'request' || type == 'interest' || type == 'like';
                         })
                         .toList()
                       ..sort((a, b) {

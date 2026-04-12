@@ -1,9 +1,10 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import '../core/utils/stream_utils.dart';
 import '../services/app_notification_service.dart';
-import '../services/chat_service.dart';
 import '../models/interest_model.dart';
+import 'chat_service.dart';
 
 enum InterestSendResult {
 	sent,
@@ -21,6 +22,9 @@ class InterestService {
 
 	CollectionReference<Map<String, dynamic>> get _interests =>
 			_firestore.collection('interests');
+
+	Stream<String?> get _uidStream =>
+			_auth.authStateChanges().map((u) => u?.uid).distinct();
 
 	Future<InterestSendResult> sendInterest({required String toUserId}) async {
 		final user = _auth.currentUser;
@@ -143,21 +147,24 @@ class InterestService {
 	}
 
 	Stream<List<InterestModel>> watchMySentInterests() {
-		final user = _auth.currentUser;
-		if (user == null) return const Stream<List<InterestModel>>.empty();
+		return switchMap(_uidStream, (uid) {
+			if (uid == null) {
+				return Stream.value(<InterestModel>[]);
+			}
 
-		return _interests
-				.where('fromUserId', isEqualTo: user.uid)
-				.snapshots()
-				.map(
-					(snapshot) {
-						final items = snapshot.docs
-								.map((doc) => InterestModel.fromMap(doc.data()))
-								.toList();
-						items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-						return items;
-					},
-				);
+			return _interests
+					.where('fromUserId', isEqualTo: uid)
+					.snapshots()
+					.map(
+						(snapshot) {
+							final items = snapshot.docs
+									.map((doc) => InterestModel.fromMap(doc.data()))
+									.toList();
+							items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+							return items;
+						},
+					);
+		});
 	}
 
 	Stream<Set<String>> watchMyPendingSentInterestUserIds() {
@@ -186,20 +193,23 @@ class InterestService {
 	}
 
 	Stream<List<InterestModel>> watchInterestsForMe() {
-		final user = _auth.currentUser;
-		if (user == null) return const Stream<List<InterestModel>>.empty();
+		return switchMap(_uidStream, (uid) {
+			if (uid == null) {
+				return Stream.value(<InterestModel>[]);
+			}
 
-		return _interests
-				.where('toUserId', isEqualTo: user.uid)
-				.snapshots()
-				.map(
-					(snapshot) {
-						final items = snapshot.docs
-								.map((doc) => InterestModel.fromMap(doc.data()))
-								.toList();
-						items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-						return items;
-					},
-				);
+			return _interests
+					.where('toUserId', isEqualTo: uid)
+					.snapshots()
+					.map(
+						(snapshot) {
+							final items = snapshot.docs
+									.map((doc) => InterestModel.fromMap(doc.data()))
+									.toList();
+							items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+							return items;
+						},
+					);
+		});
 	}
 }

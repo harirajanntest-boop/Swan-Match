@@ -39,12 +39,12 @@ class PrivacyPolicyPage extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    "Privacy Policy of Swam Match",
+                    "Privacy Policy of Swan Match",
                     style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    "SwamMatch.com is an online matrimonial portal endeavouring constantly to provide you with premium matrimonial services. This privacy statement is common to all the matrimonial apps operated under Swam Match. Since we are strongly committed to your right to privacy, we have drawn out a privacy statement with regard to the information we collect from you.\n\nYou acknowledge that you are disclosing information voluntarily. By accessing/using the app and/or by providing your information, you consent to the collection and use of the info you disclose in accordance with this Privacy Policy.",
+                    "SwanMatch.com is an online matrimonial portal endeavouring constantly to provide you with premium matrimonial services. This privacy statement is common to all the matrimonial apps operated under Swan Match. Since we are strongly committed to your right to privacy, we have drawn out a privacy statement with regard to the information we collect from you.\n\nYou acknowledge that you are disclosing information voluntarily. By accessing/using the app and/or by providing your information, you consent to the collection and use of the info you disclose in accordance with this Privacy Policy.",
                     style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 14, height: 1.6),
                   ),
                   const SizedBox(height: 24),

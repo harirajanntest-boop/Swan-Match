@@ -60,6 +60,11 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
 
   @override
   Widget build(BuildContext context) {
+    final canSubmit =
+        (_selectedDiet?.isNotEmpty == true) ||
+        (_selectedSmoking?.isNotEmpty == true) ||
+        (_selectedDrinking?.isNotEmpty == true);
+
     return Scaffold(
       backgroundColor: AppColors.obsidian,
       appBar: AppBar(
@@ -273,11 +278,18 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
                     children: [
                       GoldGradientButton(
                         text: "SUBMIT",
+                        enabled: canSubmit,
                         onPressed: () async {
+                          if (!canSubmit) return;
                           await UserService.instance.updateLifestyle(
                             eatingHabits: _selectedDiet ?? '',
                             smokingHabits: _selectedSmoking ?? '',
                             drinkingHabits: _selectedDrinking ?? '',
+                          );
+
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Lifestyle habits saved.')),
                           );
 
                           if (!context.mounted) return;
@@ -292,7 +304,12 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
                       const SizedBox(height: 16),
                       GestureDetector(
                         onTap: () {
-                          // Skip for now
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const SubscriptionPage(),
+                            ),
+                          );
                         },
                         child: Text(
                           "I will do this later",

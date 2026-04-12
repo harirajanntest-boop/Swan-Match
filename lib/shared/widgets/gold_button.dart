@@ -5,12 +5,14 @@ class GoldGradientButton extends StatelessWidget {
   final String text;
   final VoidCallback onPressed;
   final bool isLoading;
+  final bool enabled;
 
   const GoldGradientButton({
     super.key, 
     required this.text, 
     required this.onPressed,
     this.isLoading = false,
+    this.enabled = true,
   });
 
   @override
@@ -19,18 +21,26 @@ class GoldGradientButton extends StatelessWidget {
       width: double.infinity,
       height: 55,
       decoration: BoxDecoration(
-        gradient: AppColors.goldGradient,
+        gradient: enabled
+            ? AppColors.goldGradient
+            : LinearGradient(
+                colors: [
+                  Colors.grey.shade700,
+                  Colors.grey.shade600,
+                ],
+              ),
         borderRadius: BorderRadius.circular(30),
         boxShadow: [
           BoxShadow(
-            color: AppColors.goldDark.withOpacity(0.4),
+            color: (enabled ? AppColors.goldDark : Colors.black)
+                .withOpacity(0.35),
             blurRadius: 12,
             offset: const Offset(0, 5),
           ),
         ],
       ),
       child: ElevatedButton(
-        onPressed: isLoading ? null : onPressed,
+        onPressed: (isLoading || !enabled) ? null : onPressed,
         style: ElevatedButton.styleFrom(
           backgroundColor: Colors.transparent,
           shadowColor: Colors.transparent,

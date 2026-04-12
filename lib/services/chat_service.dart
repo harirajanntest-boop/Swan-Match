@@ -1,6 +1,7 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import '../core/utils/stream_utils.dart';
 import 'app_notification_service.dart';
 import '../models/message_model.dart';
 
@@ -11,6 +12,9 @@ class ChatService {
 
 	final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 	final FirebaseAuth _auth = FirebaseAuth.instance;
+
+	Stream<String?> get _uidStream =>
+			_auth.authStateChanges().map((u) => u?.uid).distinct();
 
 	String chatIdFor(String first, String second) {
 		final ids = [first, second]..sort();
@@ -81,33 +85,39 @@ class ChatService {
 	}
 
 	Stream<List<Map<String, dynamic>>> watchMyChats() {
-		final current = _auth.currentUser;
-		if (current == null) return const Stream<List<Map<String, dynamic>>>.empty();
+		return switchMap(_uidStream, (uid) {
+			if (uid == null) {
+				return Stream.value(<Map<String, dynamic>>[]);
+			}
 
-		return _firestore
-				.collection('chats')
-				.where('participants', arrayContains: current.uid)
-				.orderBy('lastMessageAt', descending: true)
-				.snapshots()
-				.map(
-					(snapshot) => snapshot.docs
-							.map((doc) => <String, dynamic>{...doc.data(), 'id': doc.id})
-							.toList(),
-				);
+			return _firestore
+					.collection('chats')
+					.where('participants', arrayContains: uid)
+					.orderBy('lastMessageAt', descending: true)
+					.snapshots()
+					.map(
+						(snapshot) => snapshot.docs
+								.map((doc) => <String, dynamic>{...doc.data(), 'id': doc.id})
+								.toList(),
+					);
+		});
 	}
 
 	Stream<List<MessageModel>> watchMessages(String otherUserId) {
-		final current = _auth.currentUser;
-		if (current == null) return const Stream<List<MessageModel>>.empty();
+		return switchMap(_uidStream, (uid) {
+			if (uid == null) {
+				return Stream.value(<MessageModel>[]);
+			}
 
-		final chatId = chatIdFor(current.uid, otherUserId);
-		return _messagesRef(chatId)
-				.orderBy('sentAt', descending: true)
-				.snapshots()
-				.map(
-					(snapshot) => snapshot.docs
-							.map((doc) => MessageModel.fromMap(doc.data()))
-							.toList(),
-				);
+			final chatId = chatIdFor(uid, otherUserId);
+			return _messagesRef(chatId)
+					.orderBy('sentAt', descending: true)
+					.snapshots()
+					.map(
+						(snapshot) => snapshot.docs
+								.map((doc) => MessageModel.fromMap(doc.data()))
+								.toList(),
+					);
+		});
 	}
 }

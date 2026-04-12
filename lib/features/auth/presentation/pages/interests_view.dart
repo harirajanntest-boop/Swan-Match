@@ -16,10 +16,20 @@ class InterestsView extends StatefulWidget {
 class _InterestsViewState extends State<InterestsView> with SingleTickerProviderStateMixin {
   String _selectedTier = 'Regular'; 
   String _selectedFilter = 'All';
-  final InterestService _interestService = InterestService.instance;
+  final interestService = InterestService.instance;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
+  // ─── STREAMS CACHED IN STATE ───
+  late final Stream<List<InterestModel>> _receivedInterestsStream;
+  late final Stream<List<InterestModel>> _sentInterestsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _receivedInterestsStream = InterestService.instance.watchInterestsForMe();
+    _sentInterestsStream = InterestService.instance.watchMySentInterests();
+  }
 
   @override
   void dispose() {
@@ -156,8 +166,8 @@ class _InterestsViewState extends State<InterestsView> with SingleTickerProvider
   // ─── Helper: Content Area (Header + Empty State) ───
   Widget _buildContentArea({required bool isReceived}) {
     final baseStream = isReceived
-        ? _interestService.watchInterestsForMe()
-        : _interestService.watchMySentInterests();
+        ? _receivedInterestsStream
+        : _sentInterestsStream;
 
     return Column(
       children: [
@@ -260,7 +270,12 @@ class _InterestTile extends StatelessWidget {
                 children: [
                   CircleAvatar(
                     backgroundColor: AppColors.goldMedium.withOpacity(0.2),
-                    child: const Icon(Icons.person, color: AppColors.goldMedium),
+                    backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
+                        ? NetworkImage(profile['photoUrl'])
+                        : null,
+                    child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
+                        ? const Icon(Icons.person, color: AppColors.goldMedium)
+                        : null,
                   ),
                   const SizedBox(width: 12),
                   Expanded(

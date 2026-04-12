@@ -14,6 +14,7 @@ import 'verify_profile_page.dart';
 import 'success_stories_page.dart';
 import 'rate_us_dialog.dart';
 import 'main_dashboard.dart';
+import 'help_center_page.dart';
 
 class PremiumSideMenu extends StatelessWidget {
   const PremiumSideMenu({super.key});
@@ -322,8 +323,15 @@ class PremiumSideMenu extends StatelessWidget {
                   _buildMenuItem(
                     Icons.help_outline,
                     "Help",
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (context) => const HelpCenterPage()),
+                      );
+                    },
                     trailing: const Icon(
-                      Icons.keyboard_arrow_down,
+                      Icons.keyboard_arrow_right,
                       color: Colors.white54,
                       size: 18,
                     ),
@@ -465,7 +473,7 @@ class _ExpandableMoreMenuState extends State<_ExpandableMoreMenu> {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   dense: true,
-                  title: Text("Safe Swam Match", style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 13)),
+                  title: Text("Safe Swan Match", style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 13)),
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.push(context, MaterialPageRoute(builder: (context) => const SafeSwamMatchPage()));

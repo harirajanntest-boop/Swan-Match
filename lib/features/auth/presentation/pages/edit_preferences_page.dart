@@ -19,6 +19,46 @@ class _EditPreferencesPageState extends State<EditPreferencesPage> with SingleTi
   String _ageRange = '';
   String _heightRange = '';
 
+  Map<String, dynamic> _extractFlatPreferenceMap(Map<String, dynamic> profile) {
+    final raw = profile['partnerPreference'] ?? profile['partnerPreferences'];
+    final source = raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+
+    final basic = source['basicDetails'] is Map
+        ? Map<String, dynamic>.from(source['basicDetails'] as Map)
+        : <String, dynamic>{};
+    final lifestyle = source['lifestyle'] is Map
+        ? Map<String, dynamic>.from(source['lifestyle'] as Map)
+        : <String, dynamic>{};
+    final religious = source['religiousDetails'] is Map
+        ? Map<String, dynamic>.from(source['religiousDetails'] as Map)
+        : <String, dynamic>{};
+    final professional = source['professionalDetails'] is Map
+        ? Map<String, dynamic>.from(source['professionalDetails'] as Map)
+        : <String, dynamic>{};
+
+    final flat = <String, dynamic>{
+      ...source,
+      'ageRange': source['ageRange'] ?? basic['age'] ?? '',
+      'heightRange': source['heightRange'] ?? basic['height'] ?? '',
+      'maritalStatus': source['maritalStatus'] ?? basic['maritalStatus'] ?? '',
+      'motherTongue': source['motherTongue'] ?? basic['motherTongue'] ?? '',
+      'physicalStatus': source['physicalStatus'] ?? basic['physicalStatus'] ?? '',
+      'eatingHabits': source['eatingHabits'] ?? lifestyle['eatingHabits'] ?? '',
+      'smokingHabits': source['smokingHabits'] ?? lifestyle['smokingHabits'] ?? '',
+      'drinkingHabits': source['drinkingHabits'] ?? lifestyle['drinkingHabits'] ?? '',
+      'religion': source['religion'] ?? religious['religion'] ?? '',
+      'caste': source['caste'] ?? religious['caste'] ?? '',
+      'star': source['star'] ?? religious['star'] ?? '',
+      'dosham': source['dosham'] ?? religious['dosham'] ?? '',
+      'occupation': source['occupation'] ?? professional['occupation'] ?? '',
+      'annualIncome': source['annualIncome'] ?? professional['annualIncome'] ?? '',
+      'employmentType': source['employmentType'] ?? professional['employedIn'] ?? '',
+      'education': source['education'] ?? professional['education'] ?? '',
+    };
+
+    return flat;
+  }
+
   List<String> _optionsForPreference(String key) {
     switch (key) {
       case 'maritalStatus':
@@ -337,7 +377,7 @@ class _EditPreferencesPageState extends State<EditPreferencesPage> with SingleTi
         stream: UserService.instance.watchCurrentUserProfile(),
         builder: (context, snapshot) {
           final profile = snapshot.data ?? <String, dynamic>{};
-          final prefs = (profile['partnerPreferences'] as Map<String, dynamic>?) ?? <String, dynamic>{};
+          final prefs = _extractFlatPreferenceMap(profile);
 
           final ageValue = (prefs['ageRange'] ?? _ageRange).toString().trim();
           final heightValue = (prefs['heightRange'] ?? _heightRange).toString().trim();

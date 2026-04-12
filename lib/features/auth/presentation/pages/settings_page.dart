@@ -4,6 +4,10 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
+import 'onboarding_page.dart';
+import 'help_center_page.dart';
+import 'blocked_profiles_page.dart';
+import 'ignored_profiles_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -129,10 +133,12 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     try {
       await UserService.instance.deleteCurrentUserCompletely();
 
-      await AuthService.instance.signOut();
       if (!mounted) return;
-      Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil(
-        '/login',
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Your account has been permanently deleted.')),
+      );
+      Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const OnboardingPage()),
         (route) => false,
       );
     } on FirebaseAuthException catch (error) {
@@ -151,6 +157,76 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         setState(() => _isDeletingAccount = false);
       }
     }
+  }
+
+  Future<void> _showChangePasswordDialog() async {
+    final currentController = TextEditingController();
+    final newController = TextEditingController();
+    final confirmController = TextEditingController();
+    bool isLoading = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) {
+          return AlertDialog(
+            backgroundColor: AppColors.onyx,
+            title: const Text('Change Password', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _PasswordTextField(controller: currentController, hint: 'Current Password'),
+                  const SizedBox(height: 12),
+                  _PasswordTextField(controller: newController, hint: 'New Password'),
+                  const SizedBox(height: 12),
+                  _PasswordTextField(controller: confirmController, hint: 'Confirm New Password'),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: isLoading ? null : () => Navigator.pop(dialogCtx),
+                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              ),
+              ElevatedButton(
+                onPressed: isLoading ? null : () async {
+                  final current = currentController.text.trim();
+                  final newPass = newController.text.trim();
+                  final confirm = confirmController.text.trim();
+
+                  if (current.isEmpty || newPass.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all fields')));
+                    return;
+                  }
+                  if (newPass != confirm) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passwords do not match')));
+                    return;
+                  }
+
+                  setDialogState(() => isLoading = true);
+                  try {
+                    await AuthService.instance.changePassword(current, newPass);
+                    if (!mounted) return;
+                    Navigator.pop(dialogCtx);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated successfully')));
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
+                  } finally {
+                    setDialogState(() => isLoading = false);
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
+                child: isLoading 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Update'),
+              ),
+            ],
+          );
+        }
+      ),
+    );
   }
 
   @override
@@ -179,6 +255,11 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             builder: (context, snapshot) {
               final profile = snapshot.data ?? <String, dynamic>{};
               final showProfileToEveryone = profile['showProfileToEveryone'] != false;
+              final showPhotosToEveryone = profile['showPhotosToEveryone'] != false;
+              
+              final user = FirebaseAuth.instance.currentUser;
+              final providers = user?.providerData.map((p) => p.providerId).toList() ?? [];
+              final isPasswordUser = providers.contains('password');
 
               return SingleChildScrollView(
                 padding: const EdgeInsets.only(bottom: 60),
@@ -204,10 +285,8 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                           onChanged: (val) => setState(() => _horoscopeVisibility = val!),
                         ),
                         _SettingsToggleRow(
-                          label: "Photo Privacy Settings",
-                          subtitle: showProfileToEveryone
-                              ? "Show my profile and photos to everyone"
-                              : "Hide my profile and photos from matches",
+                          label: "Show Profile to Everyone",
+                          subtitle: "Turn off to hide your profile from matches & recommendations.",
                           value: showProfileToEveryone,
                           onChanged: (value) async {
                             await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
@@ -215,10 +294,15 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                             });
                           },
                         ),
-                        _SettingsActionRow(
-                          label: showProfileToEveryone ? "Visibility: Everyone" : "Visibility: Hidden",
-                          subtitle: "Turn this off to hide your profile from recommendations.",
-                          onTap: () {},
+                        _SettingsToggleRow(
+                          label: "Show Photos to Everyone",
+                          subtitle: "Turn off to hide your photos from public view.",
+                          value: showPhotosToEveryone,
+                          onChanged: (value) async {
+                            await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                              'showPhotosToEveryone': value,
+                            });
+                          },
                           isLast: true,
                         ),
                       ],
@@ -249,12 +333,13 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                         _SettingsActionRow(
                           label: "Blocked Profiles",
                           subtitle: "Manage profiles you have blocked",
-                          onTap: () {},
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const BlockedProfilesPage())),
                         ),
                         _SettingsActionRow(
                           label: "Ignored Profiles",
                           subtitle: "Profiles you didn't want to see again",
-                          onTap: () {},
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const IgnoredProfilesPage())),
+                          isLast: true,
                         ),
                       ],
                     ),
@@ -285,16 +370,46 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                       ],
                     ),
 
+                    // ─── Help & Support ───
+                    _SettingsSection(
+                      title: "Help & Support",
+                      icon: Icons.help_outline,
+                      children: [
+                        _SettingsActionRow(
+                          label: "Help Us",
+                          subtitle: "Visit our help desk & contact support",
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HelpCenterPage())),
+                        ),
+                        _SettingsActionRow(
+                          label: "About Swan Match",
+                          subtitle: "Version 1.0.0",
+                          isLast: true,
+                          onTap: () {
+                            showAboutDialog(
+                              context: context,
+                              applicationName: 'Swan Match',
+                              applicationVersion: '1.0.0',
+                              applicationIcon: const Icon(Icons.favorite, color: AppColors.goldMedium),
+                              children: [
+                                const Text("The premium matchmaking app for finding your perfect partner."),
+                              ],
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+
                     // ─── Account Management ───
                     _SettingsSection(
                       title: "Account",
                       icon: Icons.manage_accounts_outlined,
                       children: [
-                        _SettingsActionRow(
-                          label: "Change Password",
-                          icon: Icons.key_outlined,
-                          onTap: () {},
-                        ),
+                        if (isPasswordUser)
+                          _SettingsActionRow(
+                            label: "Change Password",
+                            icon: Icons.key_outlined,
+                            onTap: () => _showChangePasswordDialog(),
+                          ),
                         _SettingsActionRow(
                           label: _isLoggingOut ? "Logging out..." : "Logout",
                           icon: Icons.logout,
@@ -399,6 +514,39 @@ class _SettingsSection extends StatelessWidget {
   }
 }
 
+class _PasswordTextField extends StatefulWidget {
+  final TextEditingController controller;
+  final String hint;
+
+  const _PasswordTextField({required this.controller, required this.hint});
+
+  @override
+  State<_PasswordTextField> createState() => _PasswordTextFieldState();
+}
+
+class _PasswordTextFieldState extends State<_PasswordTextField> {
+  bool _obscure = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: widget.controller,
+      obscureText: _obscure,
+      style: const TextStyle(color: Colors.white),
+      decoration: InputDecoration(
+        hintText: widget.hint,
+        hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.goldMedium)),
+        suffixIcon: IconButton(
+          icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, color: Colors.white38, size: 18),
+          onPressed: () => setState(() => _obscure = !_obscure),
+        ),
+      ),
+    );
+  }
+}
+
 // Clickable Row for Navigation (e.g. Change Password, Logout)
 class _SettingsActionRow extends StatelessWidget {
   final String label;
@@ -460,12 +608,14 @@ class _SettingsToggleRow extends StatelessWidget {
   final String subtitle;
   final bool value;
   final Function(bool) onChanged;
+  final bool isLast;
 
   const _SettingsToggleRow({
     required this.label,
     required this.subtitle,
     required this.value,
     required this.onChanged,
+    this.isLast = false,
   });
 
   @override
@@ -473,7 +623,7 @@ class _SettingsToggleRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: isLast ? null : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
       ),
       child: Row(
         children: [
@@ -507,12 +657,14 @@ class _SettingsDropdownRow extends StatelessWidget {
   final String value;
   final List<String> options;
   final Function(String?) onChanged;
+  final bool isLast;
 
   const _SettingsDropdownRow({
     required this.label,
     required this.value,
     required this.options,
     required this.onChanged,
+    this.isLast = false,
   });
 
   @override
@@ -520,7 +672,7 @@ class _SettingsDropdownRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: isLast ? null : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -32,7 +32,18 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
   final _phoneController = TextEditingController();
 
   bool _obscurePassword = true;
-  String _selectedCountryCode = '+91'; // Defaulting based on context
+  String _selectedCountryCode = '+1'; // Defaulting to US
+
+  final List<String> _countryCodes = [
+    '+1', // USA / Canada
+    '+91', // India
+    '+44', // UK
+    '+61', // Australia
+    '+971', // UAE
+    '+65', // Singapore
+    '+60', // Malaysia
+    '+94', // Sri Lanka
+  ];
 
   @override
   void initState() {
@@ -109,8 +120,23 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
         'selectedCountryCode': _selectedCountryCode,
       });
 
-      await AuthService.instance.sendOtp(phoneNumber: formattedPhone);
+      // Show a loading snackbar or indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Starting verification...'),
+          duration: Duration(seconds: 2),
+        ),
+      );
 
+      // Start the OTP process in the background
+      AuthService.instance.sendOtp(phoneNumber: formattedPhone).catchError((error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
+        );
+      });
+
+      // Navigate immediately to OTP screen
       if (!mounted) return;
       Navigator.push(
         context,
@@ -277,7 +303,7 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
                                       countryCode: _selectedCountryCode,
                                       controller: _phoneController,
                                       onCountryCodeTapped: () {
-                                        // Open a bottom sheet to select country code later
+                                        _showCountryCodePicker();
                                       },
                                     ),
                                   ],
@@ -306,6 +332,58 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
       ),
     );
   }
+
+  void _showCountryCodePicker() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.obsidian,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
+      builder: (BuildContext context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Select Country Code",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontFamily: 'serif',
+                ),
+              ),
+              const SizedBox(height: 15),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _countryCodes.length,
+                  itemBuilder: (context, index) {
+                    final code = _countryCodes[index];
+                    return ListTile(
+                      title: Text(
+                        code,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                      onTap: () {
+                        setState(() {
+                          _selectedCountryCode = code;
+                        });
+                        Navigator.pop(context);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
 }
 
 // ─── Special Premium Phone Input Field ───────────────────────────────────────

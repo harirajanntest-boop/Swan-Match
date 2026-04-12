@@ -3,15 +3,30 @@ import 'package:intl/intl.dart';
 
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
+import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
 
-class MatchProfileDetailPage extends StatelessWidget {
+class MatchProfileDetailPage extends StatefulWidget {
   final Map<String, dynamic> profile;
 
   const MatchProfileDetailPage({super.key, required this.profile});
 
+  @override
+  State<MatchProfileDetailPage> createState() => _MatchProfileDetailPageState();
+}
+
+class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
+  // ─── STREAM CACHED IN STATE ───
+  late final Stream<Set<String>> _interestStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _interestStream = InterestService.instance.watchMyPendingSentInterestUserIds();
+  }
+
   String _read(String key, {String fallback = '-'}) {
-    final raw = profile[key];
+    final raw = widget.profile[key];
     if (raw == null) return fallback;
     final text = raw.toString().trim();
     return text.isEmpty ? fallback : text;
@@ -19,6 +34,7 @@ class MatchProfileDetailPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final profile = widget.profile;
     final uid = _read('uid', fallback: '');
     final name = _read('name', fallback: 'Member');
     final photoUrl = [
@@ -29,6 +45,10 @@ class MatchProfileDetailPage extends StatelessWidget {
       (value) => value != null && value.toString().trim().isNotEmpty,
       orElse: () => '',
     ).toString();
+
+    final myUid = UserService.instance.currentUid;
+    final isMe = uid == myUid;
+    final showPhoto = isMe || profile['showPhotosToEveryone'] != false;
 
     return Scaffold(
       backgroundColor: AppColors.obsidian,
@@ -55,9 +75,13 @@ class MatchProfileDetailPage extends StatelessWidget {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(20),
-              child: photoUrl.isEmpty
-                  ? const Center(
-                      child: Icon(Icons.person, color: AppColors.goldMedium, size: 90),
+              child: (!showPhoto || photoUrl.isEmpty)
+                  ? Center(
+                      child: Icon(
+                        !showPhoto ? Icons.privacy_tip_outlined : Icons.person,
+                        color: AppColors.goldMedium,
+                        size: 90,
+                      ),
                     )
                   : Image.network(
                       photoUrl,
@@ -84,35 +108,123 @@ class MatchProfileDetailPage extends StatelessWidget {
           ..._buildAllInfoTiles(),
           const SizedBox(height: 18),
           StreamBuilder<Set<String>>(
-            stream: InterestService.instance.watchMyPendingSentInterestUserIds(),
+            stream: _interestStream,
             builder: (context, snapshot) {
               final pendingIds = snapshot.data ?? const <String>{};
               final isPending = pendingIds.contains(uid);
 
-              return OutlinedButton(
-                onPressed: (uid.isEmpty || isPending)
-                    ? null
-                    : () async {
-                        final result = await InterestService.instance.sendInterest(toUserId: uid);
-                        if (!context.mounted) return;
-                        showLinearMessage(
-                          context,
-                          result == InterestSendResult.pending
-                              ? 'Interest already pending'
-                              : result == InterestSendResult.alreadyAccepted
-                                  ? 'Interest already accepted. You can message now.'
-                                  : 'Interest sent successfully',
-                        );
-                      },
-                style: OutlinedButton.styleFrom(
-                  side: BorderSide(
-                    color: isPending ? Colors.white54 : AppColors.goldMedium,
-                    width: 1.5,
+              return Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: (uid.isEmpty || isPending)
+                              ? null
+                              : () async {
+                                  final result = await InterestService.instance.sendInterest(toUserId: uid);
+                                  if (!context.mounted) return;
+                                  showLinearMessage(
+                                    context,
+                                    result == InterestSendResult.pending
+                                        ? 'Interest already pending'
+                                        : result == InterestSendResult.alreadyAccepted
+                                            ? 'Interest already accepted. You can message now.'
+                                            : 'Interest sent successfully',
+                                  );
+                                },
+                          style: OutlinedButton.styleFrom(
+                            side: BorderSide(
+                              color: isPending ? Colors.white54 : AppColors.goldMedium,
+                              width: 1.5,
+                            ),
+                            foregroundColor: isPending ? Colors.white70 : AppColors.goldMedium,
+                            minimumSize: const Size.fromHeight(50),
+                          ),
+                          child: Text(isPending ? 'Pending' : 'Send Interest'),
+                        ),
+                      ),
+                      if (!isPending) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          height: 50,
+                          width: 50,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.white24),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white70),
+                            onPressed: uid.isEmpty ? null : () async {
+                              await UserService.instance.ignoreUser(uid);
+                              if (!context.mounted) return;
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Profile hidden for 2 days')),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  foregroundColor: isPending ? Colors.white70 : AppColors.goldMedium,
-                  minimumSize: const Size.fromHeight(50),
-                ),
-                child: Text(isPending ? 'Pending' : 'Send Interest'),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton.icon(
+                          onPressed: uid.isEmpty ? null : () async {
+                            await UserService.instance.ignoreUser(uid);
+                            if (!context.mounted) return;
+                            Navigator.pop(context);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Profile hidden for 2 days')),
+                            );
+                          },
+                          icon: const Icon(Icons.visibility_off_outlined, size: 18),
+                          label: const Text('Ignore Match'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextButton.icon(
+                          onPressed: uid.isEmpty ? null : () async {
+                            final confirm = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                backgroundColor: AppColors.onyx,
+                                title: const Text('Block Match', style: TextStyle(color: Colors.white)),
+                                content: const Text('Are you sure you want to block this profile?', style: TextStyle(color: Colors.white70)),
+                                actions: [
+                                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                                  TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Block', style: TextStyle(color: Colors.redAccent))),
+                                ],
+                              ),
+                            );
+                            if (confirm == true) {
+                              await UserService.instance.blockUser(uid);
+                              if (!context.mounted) return;
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Profile blocked')),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.block, size: 18),
+                          label: const Text('Block Match'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.redAccent.shade100,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               );
             },
           ),
@@ -122,8 +234,8 @@ class MatchProfileDetailPage extends StatelessWidget {
   }
 
   List<Widget> _buildAllInfoTiles() {
-    final lifestyle = profile['lifestyle'] is Map
-        ? Map<String, dynamic>.from(profile['lifestyle'] as Map)
+    final lifestyle = widget.profile['lifestyle'] is Map
+        ? Map<String, dynamic>.from(widget.profile['lifestyle'] as Map)
         : const <String, dynamic>{};
 
     final items = <MapEntry<String, String>>[
@@ -131,7 +243,7 @@ class MatchProfileDetailPage extends StatelessWidget {
       MapEntry('Gender', _read('gender')),
       MapEntry('Height', _read('height')),
       MapEntry('Weight', _read('weight')),
-      MapEntry('Date of Birth', _formatDateOfBirth(profile['dateOfBirth'])),
+      MapEntry('Date of Birth', _formatDateOfBirth(widget.profile['dateOfBirth'])),
       MapEntry('Marital Status', _read('maritalStatus')),
       MapEntry('Mother Tongue', _read('motherTongue')),
       MapEntry('Physical Status', _read('physicalStatus')),

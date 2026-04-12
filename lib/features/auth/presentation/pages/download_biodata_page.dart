@@ -7,6 +7,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:http/http.dart' as http;
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -96,37 +99,238 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     return file;
   }
 
-  Future<void> _handleDownload() async {
-    final bytes = await _capturePreviewPng();
-    if (bytes == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to generate biodata image right now.')),
-      );
-      return;
-    }
+  Future<File> _generatePdf(Uint8List imageBytes) async {
+    final pdf = pw.Document();
+    final image = pw.MemoryImage(imageBytes);
 
-    final file = await _writePreviewFile(bytes);
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        build: (pw.Context context) {
+          return pw.Center(
+            child: pw.ConstrainedBox(
+              constraints: const pw.BoxConstraints(maxWidth: 500),
+              child: pw.Image(image, fit: pw.BoxFit.contain),
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    await file.writeAsBytes(await pdf.save());
+    return file;
+  }
+
+  Future<void> _handleDownload() async {
+    final profile = await UserService.instance.getCurrentUserProfile() ?? {};
+    final file = await _generateNativePdf(_themes[_currentThemeIndex], profile);
+    
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Biodata saved to ${file.path}')),
+      SnackBar(content: Text('Biodata PDF saved to ${file.path}')),
     );
   }
 
   Future<void> _handleShare() async {
-    final bytes = await _capturePreviewPng();
-    if (bytes == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to generate biodata image right now.')),
-      );
-      return;
-    }
-
-    final file = await _writePreviewFile(bytes);
+    final profile = await UserService.instance.getCurrentUserProfile() ?? {};
+    final file = await _generateNativePdf(_themes[_currentThemeIndex], profile);
+    
     await Share.shareXFiles(
       [XFile(file.path)],
-      text: 'My SWAN Match biodata',
+      text: 'My Swan Match biodata',
+    );
+  }
+
+  Future<File> _generateNativePdf(Map<String, dynamic> theme, Map<String, dynamic> profile) async {
+    final pdf = pw.Document();
+    
+    final List<Color> themeColors = theme['colors'];
+    final pdfColors = themeColors.map((c) => PdfColor.fromInt(c.value)).toList();
+    final bool isObsidian = theme['name'] == 'Obsidian & Gold';
+    
+    final bgColor = isObsidian ? PdfColor.fromInt(0xFF1E1E1E) : PdfColors.white;
+    final textColor = isObsidian ? PdfColors.white : PdfColors.black;
+    final labelColor = isObsidian ? PdfColors.grey400 : PdfColors.grey700;
+    final dividerColor = isObsidian ? PdfColors.grey800 : PdfColors.grey300;
+
+    String read(String key, {String fallback = '-'}) {
+      final val = profile[key];
+      if (val == null || val.toString().trim().isEmpty) return fallback;
+      return val.toString();
+    }
+    
+    // Fetch Profile Image
+    pw.ImageProvider? profileImage;
+    final photoUrl = profile['photoUrl']?.toString() ?? '';
+    if (photoUrl.isNotEmpty) {
+      try {
+        final response = await http.get(Uri.parse(photoUrl)).timeout(const Duration(seconds: 5));
+        if (response.statusCode == 200) {
+          profileImage = pw.MemoryImage(response.bodyBytes);
+        }
+      } catch (e) {
+        debugPrint("Error fetching profile image for PDF: $e");
+      }
+    }
+
+    // Calculate Age
+    String dobText = '-';
+    final dobRaw = profile['dateOfBirth'];
+    DateTime? dob;
+    if (dobRaw is Timestamp) dob = dobRaw.toDate();
+    else if (dobRaw is DateTime) dob = dobRaw;
+    if (dob != null) {
+      final age = ((DateTime.now().difference(dob).inDays) / 365.25).floor();
+      dobText = '${DateFormat('d MMM yyyy').format(dob)} ($age Yrs)';
+    }
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        margin: pw.EdgeInsets.zero,
+        build: (pw.Context context) {
+          return pw.FullPage(
+            ignoreMargins: true,
+            child: pw.Container(
+              color: bgColor,
+              child: pw.Column(
+                children: [
+                  // Luxury Header
+                  pw.Container(
+                    height: 180,
+                    width: double.infinity,
+                    decoration: pw.BoxDecoration(
+                      gradient: pw.LinearGradient(
+                        colors: pdfColors,
+                        begin: pw.Alignment.topLeft,
+                        end: pw.Alignment.bottomRight,
+                      ),
+                    ),
+                    child: pw.Center(
+                      child: pw.Column(
+                        mainAxisAlignment: pw.MainAxisAlignment.center,
+                        children: [
+                          if (profileImage != null)
+                            pw.Container(
+                              width: 80,
+                              height: 80,
+                              decoration: pw.BoxDecoration(
+                                border: pw.Border.all(color: PdfColors.white, width: 2),
+                                shape: pw.BoxShape.circle,
+                                image: pw.DecorationImage(image: profileImage, fit: pw.BoxFit.cover),
+                              ),
+                            )
+                          else
+                            pw.Container(
+                              width: 80,
+                              height: 80,
+                              decoration: pw.BoxDecoration(
+                                color: PdfColors.grey300,
+                                shape: pw.BoxShape.circle,
+                              ),
+                              child: pw.Center(
+                                child: pw.Text(
+                                  "P",
+                                  style: pw.TextStyle(color: PdfColors.grey700, fontSize: 32, fontWeight: pw.FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                          pw.SizedBox(height: 12),
+                          pw.Text(
+                            "BIODATA",
+                            style: pw.TextStyle(
+                              color: PdfColors.white,
+                              fontSize: 24,
+                              fontWeight: pw.FontWeight.bold,
+                              letterSpacing: 4,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  
+                  pw.Expanded(
+                    child: pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 50, vertical: 40),
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          _buildPdfRow("Name", read('name'), labelColor, textColor),
+                          _buildPdfRow("Height", read('height'), labelColor, textColor),
+                          _buildPdfRow("Date of Birth", dobText, labelColor, textColor),
+                          _buildPdfRow("Marital Status", read('maritalStatus'), labelColor, textColor),
+                          _buildPdfRow("Religion", read('religion'), labelColor, textColor),
+                          _buildPdfRow("Caste", read('caste'), labelColor, textColor),
+                          _buildPdfRow("Star", read('star'), labelColor, textColor),
+                          _buildPdfRow("Location", '${read('city')}, ${read('state')}', labelColor, textColor),
+                          _buildPdfRow("Education", read('educationDegree'), labelColor, textColor),
+                          _buildPdfRow("Occupation", read('occupation'), labelColor, textColor),
+                          _buildPdfRow("Gothram", read('gothram'), labelColor, textColor),
+                          _buildPdfRow("Family Details", read('familyInfo', fallback: read('familyDetails')), labelColor, textColor),
+                          
+                          pw.Spacer(),
+                          pw.Divider(color: dividerColor),
+                          pw.SizedBox(height: 20),
+                          
+                          // Footer
+                          pw.Center(
+                            child: pw.Column(
+                              children: [
+                                pw.Text("Powered By", style: pw.TextStyle(color: labelColor, fontSize: 10)),
+                                pw.SizedBox(height: 6),
+                                pw.Text(
+                                  "Swan Match",
+                                  style: pw.TextStyle(
+                                    color: isObsidian ? PdfColors.white : PdfColors.black,
+                                    fontSize: 18,
+                                    fontWeight: pw.FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          pw.SizedBox(height: 20),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    await file.writeAsBytes(await pdf.save());
+    return file;
+  }
+
+  pw.Widget _buildPdfRow(String label, String value, PdfColor labelColor, PdfColor textColor) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(bottom: 16),
+      child: pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          pw.SizedBox(
+            width: 140,
+            child: pw.Text(label, style: pw.TextStyle(color: labelColor, fontSize: 14)),
+          ),
+          pw.Text(" :  ", style: pw.TextStyle(color: labelColor, fontSize: 14)),
+          pw.Expanded(
+            child: pw.Text(
+              value,
+              style: pw.TextStyle(color: textColor, fontSize: 14, fontWeight: pw.FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -230,10 +434,6 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                     ),
                     child: Column(
                       children: [
-                        GoldGradientButton(
-                          text: "DOWNLOAD BIODATA",
-                          onPressed: _handleDownload,
-                        ),
                         const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
@@ -383,43 +583,34 @@ class _BiodataPreviewCard extends StatelessWidget {
                           _BioRow(label: "Location", value: _location(), isDark: isObsidian),
                           _BioRow(label: "Education", value: _read('educationDegree'), isDark: isObsidian),
                           _BioRow(label: "Occupation", value: _read('occupation'), isDark: isObsidian),
+                          _BioRow(label: "Gothram", value: _read('gothram'), isDark: isObsidian),
+                          _BioRow(label: "Family Details", value: _read('familyInfo', fallback: _read('familyDetails')), isDark: isObsidian),
                           const SizedBox(height: 8),
                           Divider(color: isObsidian ? Colors.white.withOpacity(0.1) : Colors.grey.shade300),
                           const SizedBox(height: 8),
                           Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            crossAxisAlignment: CrossAxisAlignment.end,
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  border: Border.all(color: AppColors.goldMedium, width: 2),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: const Icon(Icons.qr_code_2, size: 50, color: Colors.black),
-                              ),
-                              const SizedBox(width: 10),
                               Expanded(
                                 child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
                                     Text("Powered By", style: TextStyle(color: isObsidian ? Colors.white54 : Colors.grey.shade600, fontSize: 10)),
                                     const SizedBox(height: 4),
                                     Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      mainAxisAlignment: MainAxisAlignment.center,
                                       children: [
                                         Container(
                                           padding: const EdgeInsets.all(4),
-                                          decoration: BoxDecoration(color: Colors.green, borderRadius: BorderRadius.circular(4)),
+                                          decoration: BoxDecoration(color: AppColors.goldMedium, borderRadius: BorderRadius.circular(4)),
                                           child: const Icon(Icons.favorite, color: Colors.white, size: 12),
                                         ),
                                         const SizedBox(width: 4),
                                         Flexible(
                                           child: Text(
-                                            "matrimony.com",
+                                            "Swan Match",
                                             overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(color: isObsidian ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 12),
+                                            style: TextStyle(color: isObsidian ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 14),
                                           ),
                                         ),
                                       ],
@@ -447,14 +638,19 @@ class _BiodataPreviewCard extends StatelessWidget {
                         child: CircleAvatar(
                           radius: 40,
                           backgroundColor: Colors.grey.shade300,
-                          child: Text(
-                            initials,
-                            style: TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey.shade700,
-                            ),
-                          ),
+                          backgroundImage: profile['photoUrl'] != null 
+                              ? NetworkImage(profile['photoUrl'].toString()) 
+                              : null,
+                          child: profile['photoUrl'] == null
+                              ? Text(
+                                  initials,
+                                  style: TextStyle(
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                )
+                              : null,
                         ),
                       ),
                     ),

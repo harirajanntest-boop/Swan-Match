@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:country_state_city/country_state_city.dart' as csc;
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -20,44 +21,25 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
   late final Animation<Offset> _slideAnim;
 
   // ─── Form State ────────────────────────────────────────────────────────────
-  String? _selectedCountry = 'India'; // Defaulting based on your screenshot
+  String? _selectedCountry;
+  String? _selectedCountryCode;
   String? _selectedState;
+  String? _selectedStateCode;
   String? _selectedCity;
 
-  // ─── Mock Data ─────────────────────────────────────────────────────────────
-  final List<String> _countries = [
-    'India',
-    'United States',
-    'United Kingdom',
-    'Canada',
-    'Australia',
-    'UAE',
-    'Singapore',
-    'Malaysia',
-  ];
+  List<csc.Country> _countries = const <csc.Country>[];
+  List<csc.State> _states = const <csc.State>[];
+  List<csc.City> _cities = const <csc.City>[];
+  bool _isLoadingCountries = true;
+  bool _isLoadingStates = false;
+  bool _isLoadingCities = false;
 
-  // In a real app, these would load from an API based on the selected country
-  final List<String> _statesInIndia = [
-    'Tamil Nadu',
-    'Kerala',
-    'Karnataka',
-    'Andhra Pradesh',
-    'Telangana',
-    'Maharashtra',
-    'Delhi',
-  ];
-
-  // In a real app, these would load based on the selected state
-  final List<String> _citiesInTN = [
-    'Chennai',
-    'Coimbatore',
-    'Madurai',
-    'Salem',
-    'Tiruchirappalli',
-    'Tirunelveli',
-    'Erode',
-    'Vellore',
-  ];
+  T? _firstWhereOrNull<T>(Iterable<T> list, bool Function(T item) test) {
+    for (final item in list) {
+      if (test(item)) return item;
+    }
+    return null;
+  }
 
   @override
   void initState() {
@@ -82,8 +64,129 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
           ),
         );
 
+    _loadCountryStateCityData();
+
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
+    });
+  }
+
+  Future<void> _loadCountryStateCityData() async {
+    try {
+      final profile = await UserService.instance.getCurrentUserProfile();
+      final countries = await csc.getAllCountries();
+
+      if (!mounted) return;
+
+      final savedCountry = (profile?['country'] ?? '').toString().trim();
+      if (countries.isEmpty) {
+        if (mounted) {
+          setState(() => _isLoadingCountries = false);
+        }
+        return;
+      }
+
+      final defaultCountry = countries.firstWhere(
+        (country) => country.name.toLowerCase() == (savedCountry.isEmpty ? 'india' : savedCountry.toLowerCase()),
+        orElse: () => countries.first,
+      );
+
+      final defaultCountryCode = defaultCountry.isoCode.trim();
+
+      setState(() {
+        _countries = countries;
+        _selectedCountry = defaultCountry.name;
+        _selectedCountryCode = defaultCountryCode;
+        _isLoadingCountries = false;
+      });
+
+      if (defaultCountryCode.isNotEmpty) {
+        await _loadStatesForCountry(
+          countryCode: defaultCountryCode,
+          preferredState: (profile?['state'] ?? '').toString().trim(),
+          preferredCity: (profile?['city'] ?? '').toString().trim(),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingCountries = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to load country/state/city list.')),
+      );
+    }
+  }
+
+  Future<void> _loadStatesForCountry({
+    required String countryCode,
+    String preferredState = '',
+    String preferredCity = '',
+  }) async {
+    setState(() {
+      _isLoadingStates = true;
+      _states = const <csc.State>[];
+      _cities = const <csc.City>[];
+      _selectedState = null;
+      _selectedStateCode = null;
+      _selectedCity = null;
+    });
+
+    final states = await csc.getStatesOfCountry(countryCode);
+    if (!mounted) return;
+
+    csc.State? selectedState;
+    if (preferredState.isNotEmpty) {
+      for (final state in states) {
+        if (state.name.toLowerCase() == preferredState.toLowerCase()) {
+          selectedState = state;
+          break;
+        }
+      }
+    }
+
+    setState(() {
+      _states = states;
+      _selectedState = selectedState?.name;
+      _selectedStateCode = selectedState?.isoCode;
+      _isLoadingStates = false;
+    });
+
+    if (selectedState != null) {
+      await _loadCitiesForState(
+        countryCode: countryCode,
+        stateCode: selectedState.isoCode,
+        preferredCity: preferredCity,
+      );
+    }
+  }
+
+  Future<void> _loadCitiesForState({
+    required String countryCode,
+    required String stateCode,
+    String preferredCity = '',
+  }) async {
+    setState(() {
+      _isLoadingCities = true;
+      _cities = const <csc.City>[];
+      _selectedCity = null;
+    });
+
+    final cities = await csc.getStateCities(countryCode, stateCode);
+    if (!mounted) return;
+
+    csc.City? selectedCity;
+    if (preferredCity.isNotEmpty) {
+      for (final city in cities) {
+        if (city.name.toLowerCase() == preferredCity.toLowerCase()) {
+          selectedCity = city;
+          break;
+        }
+      }
+    }
+
+    setState(() {
+      _cities = cities;
+      _selectedCity = selectedCity?.name;
+      _isLoadingCities = false;
     });
   }
 
@@ -95,14 +198,6 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
 
   @override
   Widget build(BuildContext context) {
-    // Dynamic lists based on selection (Mock logic for UI demo)
-    List<String> currentStates = _selectedCountry == 'India'
-        ? _statesInIndia
-        : [];
-    List<String> currentCities = _selectedState == 'Tamil Nadu'
-        ? _citiesInTN
-        : [];
-
     return Scaffold(
       backgroundColor: AppColors.obsidian,
       appBar: AppBar(
@@ -179,15 +274,28 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                       _PremiumDropdown(
                         hint: "Select Country",
                         value: _selectedCountry,
-                        items: _countries,
-                        onChanged: (v) {
+                        items: _countries
+                            .map((country) => country.name.trim())
+                          .where((name) => name.isNotEmpty)
+                          .toList(),
+                        enabled: !_isLoadingCountries,
+                        onChanged: (v) async {
+                              final selected = _countries
+                                  .where((country) => country.name.trim() == v)
+                                  .toList();
+                                final picked = _firstWhereOrNull(selected, (_) => true);
+                                final isoCode = picked?.isoCode.trim() ?? '';
+                                if (picked == null || isoCode.isEmpty) return;
+
                           setState(() {
-                            _selectedCountry = v;
-                            _selectedState =
-                                null; // Reset state when country changes
-                            _selectedCity =
-                                null; // Reset city when country changes
+                            _selectedCountry = picked.name;
+                            _selectedCountryCode = isoCode;
+                            _selectedState = null;
+                            _selectedStateCode = null;
+                            _selectedCity = null;
                           });
+
+                          await _loadStatesForCountry(countryCode: isoCode);
                         },
                       ),
                       const SizedBox(height: 24),
@@ -199,13 +307,29 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                             ? "Select Country first"
                             : "Select State",
                         value: _selectedState,
-                        items: currentStates,
-                        onChanged: (v) {
+                        items: _states
+                            .map((state) => state.name.trim())
+                          .where((name) => name.isNotEmpty)
+                          .toList(),
+                        enabled: !_isLoadingStates && _selectedCountryCode != null,
+                        onChanged: (v) async {
+                              final selected = _states
+                                  .where((state) => state.name.trim() == v)
+                                  .toList();
+                                final picked = _firstWhereOrNull(selected, (_) => true);
+                                final stateCode = picked?.isoCode.trim() ?? '';
+                                if (picked == null || _selectedCountryCode == null || stateCode.isEmpty) return;
+
                           setState(() {
-                            _selectedState = v;
-                            _selectedCity =
-                                null; // Reset city when state changes
+                            _selectedState = picked.name;
+                            _selectedStateCode = stateCode;
+                            _selectedCity = null;
                           });
+
+                          await _loadCitiesForState(
+                            countryCode: _selectedCountryCode!,
+                            stateCode: stateCode,
+                          );
                         },
                       ),
                       const SizedBox(height: 24),
@@ -217,7 +341,11 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                             ? "Select State first"
                             : "Select City",
                         value: _selectedCity,
-                        items: currentCities,
+                        items: _cities
+                            .map((city) => city.name.trim())
+                          .where((name) => name.isNotEmpty)
+                          .toList(),
+                        enabled: !_isLoadingCities && _selectedStateCode != null,
                         onChanged: (v) => setState(() => _selectedCity = v),
                       ),
                       const SizedBox(height: 48),
@@ -226,11 +354,24 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                       GoldGradientButton(
                         text: "NEXT",
                         onPressed: () async {
-                          await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                            'country': _selectedCountry ?? '',
-                            'state': _selectedState ?? '',
-                            'city': _selectedCity ?? '',
-                          });
+                          try {
+                            await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                              'country': _selectedCountry ?? '',
+                              'state': _selectedState ?? '',
+                              'city': _selectedCity ?? '',
+                            });
+
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Location details saved.')),
+                            );
+                          } catch (_) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Failed to save location details.')),
+                            );
+                            return;
+                          }
 
                           if (!context.mounted) return;
                           Navigator.push(
@@ -316,51 +457,74 @@ class _PremiumDropdown extends StatelessWidget {
   final String? value;
   final List<String> items;
   final Function(String?) onChanged;
+  final bool enabled;
 
   const _PremiumDropdown({
     required this.hint,
     required this.value,
     required this.items,
     required this.onChanged,
+    this.enabled = true,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
+    return SizedBox(
+      width: double.infinity,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 55),
+        child: DropdownButtonFormField<String>(
           value: value,
-          hint: Text(
-            hint,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.3),
+          isExpanded: true,
+          dropdownColor: const Color(0xFF1A1A1A),
+          iconEnabledColor: AppColors.goldMedium,
+          iconDisabledColor: Colors.white54,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+          decoration: InputDecoration(
+            labelText: hint,
+            labelStyle: const TextStyle(color: Colors.white70, fontSize: 14),
+            floatingLabelStyle: const TextStyle(
+              color: AppColors.goldMedium,
               fontSize: 14,
             ),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                color: AppColors.goldMedium,
+                width: 1.5,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                color: AppColors.goldMedium,
+                width: 2.0,
+              ),
+            ),
+            disabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                color: Colors.white.withOpacity(0.25),
+                width: 1.2,
+              ),
+            ),
           ),
-          isExpanded: true,
-          icon: const Icon(
-            Icons.keyboard_arrow_down,
-            color: AppColors.goldMedium,
-            size: 18,
-          ),
-          dropdownColor: AppColors.onyx,
-          style: const TextStyle(color: Colors.white, fontSize: 14),
           items: items.map((String item) {
             return DropdownMenuItem<String>(
               value: item,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: Text(item),
+              child: Text(
+                item,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 16),
               ),
             );
           }).toList(),
-          onChanged: onChanged,
+          onChanged: enabled ? onChanged : null,
         ),
       ),
     );

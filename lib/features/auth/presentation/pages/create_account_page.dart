@@ -146,7 +146,7 @@ class _CreateAccountPageState extends State<CreateAccountPage>
                     const SizedBox(height: 20),
                     const Center(
                       child: Text(
-                        "Welcome to Swam Match!",
+                        "Welcome to Swan Match!",
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 22,

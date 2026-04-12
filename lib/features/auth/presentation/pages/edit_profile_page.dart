@@ -293,6 +293,35 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     }
   }
 
+  Future<void> _deleteProfilePhoto(Map<String, dynamic> profile) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.onyx,
+        title: const Text("Delete Photo?", style: TextStyle(color: Colors.white)),
+        content: const Text("Your profile will look better with a photo. Are you sure?", style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Delete", style: TextStyle(color: Colors.red))),
+        ],
+      )
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      await UserService.instance.updateCurrentUserProfile({'photoUrl': null});
+      if (!mounted) return;
+      showLinearMessage(context, 'Profile photo removed.');
+    } catch (e) {
+      if (!mounted) return;
+      showLinearMessage(context, 'Failed to delete photo.', isError: true);
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
+  }
+
   // ─── Sub-Components ───
 
   String _cleanValue(String value) {
@@ -676,9 +705,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Widget _buildProgressHeader(Map<String, dynamic> profile) {
-    final isCompleted = profile['registrationCompleted'] == true;
-    final progressValue = isCompleted ? 1.0 : 0.4;
-    final progressLabel = isCompleted ? '100%' : '40%';
+    final progress = UserService.instance.calculateProfileCompletion(profile);
+    final progressValue = progress;
+    final progressLabel = '${(progress * 100).round()}%';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -739,27 +768,34 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
             onTap: () => _manageHoroscope(profile),
           ),
           if (photoUrl.isNotEmpty)
-            Container(
-              margin: const EdgeInsets.only(left: 4),
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.goldMedium.withOpacity(0.6)),
-              ),
-              child: ClipOval(
-                child: Image.network(
-                  photoUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return const Icon(
-                      Icons.person,
-                      color: AppColors.goldMedium,
-                      size: 18,
-                    );
-                  },
+            Stack(
+              alignment: Alignment.topRight,
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(left: 4, right: 8),
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.goldMedium.withOpacity(0.6)),
+                  ),
+                  child: ClipOval(
+                    child: Image.network(photoUrl, fit: BoxFit.cover),
+                  ),
                 ),
-              ),
+                Positioned(
+                  top: 0,
+                  right: 4,
+                  child: GestureDetector(
+                    onTap: () => _deleteProfilePhoto(profile),
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      child: const Icon(Icons.close, color: Colors.white, size: 10),
+                    ),
+                  ),
+                ),
+              ],
             ),
         ],
       ),

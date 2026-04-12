@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '../services/notification_service.dart' as fcm;
 
 class AppNotificationService {
   AppNotificationService._();
@@ -36,5 +37,21 @@ class AppNotificationService {
       'name': title,
       'meta': meta ?? <String, dynamic>{},
     });
+
+    // Send Push Notification
+    try {
+      final userDoc = await _firestore.collection('users').doc(toUserId).get();
+      final fcmToken = userDoc.data()?['fcmToken'] as String?;
+      if (fcmToken != null && fcmToken.isNotEmpty) {
+        await fcm.NotificationService.instance.sendNotification(
+          fcmToken: fcmToken,
+          title: title,
+          body: message,
+          data: meta?.map((key, value) => MapEntry(key, value.toString())),
+        );
+      }
+    } catch (e) {
+      // Log error or ignore
+    }
   }
 }

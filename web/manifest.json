@@ -1,6 +1,6 @@
 {
-    "name": "swam_match_app",
-    "short_name": "swam_match_app",
+    "name": "Swan Match",
+    "short_name": "Swan Match",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

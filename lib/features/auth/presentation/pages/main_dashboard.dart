@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/match_service.dart';
@@ -10,6 +9,10 @@ import 'home_page.dart'; // ─── IMPORT THE NEW FILE HERE ───
 import 'interests_view.dart';
 import 'match_profile_detail_page.dart';
 import 'messages_view.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../../../services/stripe_service.dart';
+import 'package:in_app_review/in_app_review.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MainDashboard extends StatefulWidget {
   final int initialIndex;
@@ -140,9 +143,26 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
   final MatchService _matchService = MatchService.instance;
   String? _lastOpenedProfileUid;
 
+  // ─── STREAMS CACHED IN STATE ───
+  late final Stream<Map<String, dynamic>?> _userProfileStream;
+  late final Stream<Map<String, String>> _sentInterestStatusStream;
+  late final Stream<List<Map<String, dynamic>>> _recommendedMatchesStream;
+  late final Stream<List<Map<String, dynamic>>> _allMatchesStream;
+  late final Stream<List<Map<String, dynamic>>> _viewedYouStream;
+  late final Stream<List<Map<String, dynamic>>> _savedMatchesSourceStream;
+
   @override
   void initState() {
     super.initState();
+
+    // Initialize streams here to avoid re-creating them on every build
+    _userProfileStream = UserService.instance.watchCurrentUserProfile();
+    _sentInterestStatusStream = InterestService.instance.watchMySentInterestStatusByUserId();
+    _recommendedMatchesStream = _matchService.watchRecommendedMatches();
+    _allMatchesStream = _matchService.watchAllMatches();
+    _viewedYouStream = _matchService.watchViewedYouMatches();
+    _savedMatchesSourceStream = _matchService.watchRecommendedMatches(limit: 200);
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _tryOpenPendingProfile();
     });
@@ -250,256 +270,255 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
 
   Widget _buildMatchesList({required bool isNewMembers}) {
     final Stream<List<Map<String, dynamic>>> matchStream = isNewMembers
-        ? _matchService.watchAllMatches()
-        : _matchService.watchRecommendedMatches();
+        ? _allMatchesStream
+        : _recommendedMatchesStream;
 
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnapshot) {
-        if (authSnapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
-        }
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: _userProfileStream,
+      builder: (context, profileSnapshot) {
+        final profile = profileSnapshot.data ?? <String, dynamic>{};
+        final city = (profile['city'] ?? '').toString().trim();
 
-        if (authSnapshot.data == null) {
-          return Center(
-            child: Text(
-              'Sign in to view matches.',
-              style: TextStyle(color: Colors.white.withOpacity(0.7)),
-            ),
-          );
-        }
+        return StreamBuilder<Map<String, String>>(
+          stream: _sentInterestStatusStream,
+          builder: (context, statusSnapshot) {
+            final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
+            final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                .map((item) => item.toString())
+                .where((item) => item.isNotEmpty)
+                .toSet();
+            final hiddenMapRaw = profile['hiddenMatches'];
+            final hiddenMap = hiddenMapRaw is Map
+                ? Map<String, dynamic>.from(hiddenMapRaw)
+                : <String, dynamic>{};
 
-        return StreamBuilder<Map<String, dynamic>?>(
-          stream: UserService.instance.watchCurrentUserProfile(),
-          builder: (context, profileSnapshot) {
-            final profile = profileSnapshot.data ?? <String, dynamic>{};
-            final city = (profile['city'] ?? '').toString().trim();
-
-            return StreamBuilder<Map<String, String>>(
-              stream: InterestService.instance.watchMySentInterestStatusByUserId(),
-              builder: (context, statusSnapshot) {
-                final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
-                final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
-                    .map((item) => item.toString())
-                    .where((item) => item.isNotEmpty)
-                    .toSet();
-                final hiddenMapRaw = profile['hiddenMatches'];
-                final hiddenMap = hiddenMapRaw is Map
-                    ? Map<String, dynamic>.from(hiddenMapRaw)
-                    : <String, dynamic>{};
-
-                return Column(
-                  children: [
-            const SizedBox(height: 6),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: TextField(
-                controller: _searchController,
-                onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Search by name, occupation, star, city...',
-                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
-                  prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.6)),
-                  suffixIcon: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_searchQuery.isNotEmpty)
-                        IconButton(
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _searchQuery = '');
-                          },
-                          icon: const Icon(Icons.close, color: Colors.white70),
+            return Column(
+              children: [
+                const SizedBox(height: 6),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 30),
+                  child: Center(
+                    child: TextField(
+                      controller: _searchController,
+                      onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Search by name, occupation, star, city...',
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
+                        prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.6)),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_searchQuery.isNotEmpty)
+                              IconButton(
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() => _searchQuery = '');
+                                },
+                                icon: const Icon(Icons.close, color: Colors.white70),
+                              ),
+                            IconButton(
+                              onPressed: _showAdvancedFilterSheet,
+                              icon: const Icon(Icons.filter_list, color: AppColors.goldMedium),
+                            ),
+                          ],
                         ),
-                      IconButton(
-                        onPressed: _showAdvancedFilterSheet,
-                        icon: const Icon(Icons.filter_list, color: AppColors.goldMedium),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
-                    ],
-                  ),
-                  filled: true,
-                  fillColor: Colors.white.withOpacity(0.05),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
+                    ),
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Expanded(
-              child: StreamBuilder<List<Map<String, dynamic>>>(
-                stream: matchStream,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
-                  }
-
-                  final matches = snapshot.data ?? const <Map<String, dynamic>>[];
-                  final now = DateTime.now().millisecondsSinceEpoch;
-                  final filteredMatches = matches.where((item) {
-                    final uid = (item['uid'] ?? '').toString();
-                    if (uid.isEmpty) return false;
-
-                    final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
-                    if (hiddenUntil > now) return false;
-
-                    if (_selectedTier == 'PRIME') {
-                      final isPrime = item['isPrime'] == true ||
-                          item['subscriptionPlan']?.toString().toLowerCase() == 'prime';
-                      if (!isPrime) return false;
-                    }
-
-                    if (_onlineOnly) {
-                      final isOnline = item['isOnline'] == true || item['online'] == true;
-                      if (!isOnline) return false;
-                    }
-
-                    if (_locationOnly && city.isNotEmpty) {
-                      final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
-                      if (matchCity.isEmpty || matchCity != city.toLowerCase()) {
-                        return false;
+                const SizedBox(height: 10),
+                Expanded(
+                  child: StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: matchStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
                       }
-                    }
 
-                    final rawDob = item['dateOfBirth'];
-                    int? age;
-                    if (rawDob is DateTime) {
-                      final nowDate = DateTime.now();
-                      age = nowDate.year - rawDob.year;
-                      if (nowDate.month < rawDob.month ||
-                          (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) {
-                        age--;
-                      }
-                    } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
-                      try {
-                        final dob = rawDob.toDate() as DateTime;
-                        final nowDate = DateTime.now();
-                        age = nowDate.year - dob.year;
-                        if (nowDate.month < dob.month ||
-                            (nowDate.month == dob.month && nowDate.day < dob.day)) {
-                          age--;
-                        }
-                      } catch (_) {
-                        age = null;
-                      }
-                    }
+                      final ignoredProfiles = profile['ignoredProfiles'] is Map
+                          ? Map<String, dynamic>.from(profile['ignoredProfiles'] as Map)
+                          : <String, dynamic>{};
+                      final blockedUids = List<String>.from(profile['blockedUids'] ?? []);
 
-                    if (age != null && (age < _ageRange.start || age > _ageRange.end)) {
-                      return false;
-                    }
+                      final matches = snapshot.data ?? const <Map<String, dynamic>>[];
+                      final now = DateTime.now().millisecondsSinceEpoch;
+                      final filteredMatches = matches.where((item) {
+                        final uid = (item['uid'] ?? '').toString();
+                        if (uid.isEmpty) return false;
 
-                    if (_occupationFilter.isNotEmpty) {
-                      final occupation = (item['occupation'] ?? '').toString().toLowerCase();
-                      if (!occupation.contains(_occupationFilter.toLowerCase())) return false;
-                    }
+                        // 1. Check blocked
+                        if (blockedUids.contains(uid)) return false;
 
-                    if (_heightFilter.isNotEmpty) {
-                      final height = (item['height'] ?? '').toString().toLowerCase();
-                      if (!height.contains(_heightFilter.toLowerCase())) return false;
-                    }
-
-                    if (_starFilter.isNotEmpty) {
-                      final star = (item['star'] ?? '').toString().toLowerCase();
-                      if (!star.contains(_starFilter.toLowerCase())) return false;
-                    }
-
-                    if (_searchQuery.isNotEmpty) {
-                      final haystack = [
-                        item['name'],
-                        item['occupation'],
-                        item['star'],
-                        item['height'],
-                        item['city'],
-                      ].map((e) => (e ?? '').toString().toLowerCase()).join(' ');
-
-                      if (!haystack.contains(_searchQuery)) return false;
-                    }
-
-                    return true;
-                  }).toList();
-
-                  filteredMatches.sort((a, b) {
-                    if (_sortBy == 'Name') {
-                      final left = (a['name'] ?? '').toString().toLowerCase();
-                      final right = (b['name'] ?? '').toString().toLowerCase();
-                      return left.compareTo(right);
-                    }
-                    final left = _extractDateTime(b['createdAt']);
-                    final right = _extractDateTime(a['createdAt']);
-                    return left.compareTo(right);
-                  });
-
-                  if (filteredMatches.isEmpty) {
-                    return Center(
-                      child: Text(
-                        'No matches found yet.',
-                        style: TextStyle(color: Colors.white.withOpacity(0.6)),
-                      ),
-                    );
-                  }
-
-                  return ListView.builder(
-                    padding: const EdgeInsets.only(top: 16, bottom: 40),
-                    itemCount: filteredMatches.length,
-                    itemBuilder: (context, index) {
-                      final item = filteredMatches[index];
-                      final uid = (item['uid'] ?? '').toString();
-                      return _EditorialMatchCard(
-                      match: item,
-                      interestStatus: sentStatusByUser[uid] ?? '',
-                      isSaved: savedIds.contains(uid),
-                      onToggleSave: () async {
-                        if (uid.isEmpty) return;
-                        final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
-                            .map((e) => e.toString())
-                            .toSet();
-                        if (current.contains(uid)) {
-                          current.remove(uid);
-                          showLinearMessage(context, 'Removed from saved matches.');
-                        } else {
-                          current.add(uid);
-                          showLinearMessage(context, 'Saved to saved matches.');
+                        // 2. Check ignored (2 days hide)
+                        if (ignoredProfiles.containsKey(uid)) {
+                          final expiry = (ignoredProfiles[uid] as Timestamp).toDate().millisecondsSinceEpoch;
+                          if (expiry > now) return false;
                         }
 
-                        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                          'savedMatchIds': current.toList(),
-                        });
-                      },
-                      onDismissTemporarily: () async {
-                        if (uid.isEmpty) return;
-                        final currentHidden = profile['hiddenMatches'] is Map
-                            ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map)
-                            : <String, dynamic>{};
-                        currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
-                        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                          'hiddenMatches': currentHidden,
-                        });
-                        if (!context.mounted) return;
-                        showLinearMessage(context, 'Match hidden for 2 hours.');
-                      },
-                      onTap: (profile) {
-                        final viewedUid = (profile['uid'] ?? '').toString();
-                        if (viewedUid.isNotEmpty) {
-                          MatchService.instance.recordProfileView(viewedUserId: viewedUid);
+                        // 3. User manual hide
+                        final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
+                        if (hiddenUntil > now) return false;
+
+                          if (_selectedTier == 'PRIME') {
+                          final isPrime = item['isPrime'] == true ||
+                              item['subscriptionPlan']?.toString().toLowerCase() == 'prime';
+                          if (!isPrime) return false;
                         }
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => MatchProfileDetailPage(profile: profile),
+
+                        if (_onlineOnly) {
+                          final isOnline = item['isOnline'] == true || item['online'] == true;
+                          if (!isOnline) return false;
+                        }
+
+                        if (_locationOnly && city.isNotEmpty) {
+                          final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
+                          if (matchCity.isEmpty || matchCity != city.toLowerCase()) {
+                            return false;
+                          }
+                        }
+
+                        final rawDob = item['dateOfBirth'];
+                        int? age;
+                        if (rawDob is DateTime) {
+                          final nowDate = DateTime.now();
+                          age = nowDate.year - rawDob.year;
+                          if (nowDate.month < rawDob.month ||
+                              (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) {
+                            age--;
+                          }
+                        } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
+                          try {
+                            final dob = rawDob.toDate() as DateTime;
+                            final nowDate = DateTime.now();
+                            age = nowDate.year - dob.year;
+                            if (nowDate.month < dob.month ||
+                                (nowDate.month == dob.month && nowDate.day < dob.day)) {
+                              age--;
+                            }
+                          } catch (_) {
+                            age = null;
+                          }
+                        }
+
+                        if (age != null && (age < _ageRange.start || age > _ageRange.end)) {
+                          return false;
+                        }
+
+                        if (_occupationFilter.isNotEmpty) {
+                          final occupation = (item['occupation'] ?? '').toString().toLowerCase();
+                          if (!occupation.contains(_occupationFilter.toLowerCase())) return false;
+                        }
+
+                        if (_heightFilter.isNotEmpty) {
+                          final height = (item['height'] ?? '').toString().toLowerCase();
+                          if (!height.contains(_heightFilter.toLowerCase())) return false;
+                        }
+
+                        if (_starFilter.isNotEmpty) {
+                          final star = (item['star'] ?? '').toString().toLowerCase();
+                          if (!star.contains(_starFilter.toLowerCase())) return false;
+                        }
+
+                        if (_searchQuery.isNotEmpty) {
+                          final haystack = [
+                            item['name'],
+                            item['occupation'],
+                            item['star'],
+                            item['height'],
+                            item['city'],
+                          ].map((e) => (e ?? '').toString().toLowerCase()).join(' ');
+
+                          if (!haystack.contains(_searchQuery)) return false;
+                        }
+
+                        return true;
+                      }).toList();
+
+                      filteredMatches.sort((a, b) {
+                        if (_sortBy == 'Name') {
+                          final left = (a['name'] ?? '').toString().toLowerCase();
+                          final right = (b['name'] ?? '').toString().toLowerCase();
+                          return left.compareTo(right);
+                        }
+                        final left = _extractDateTime(b['createdAt']);
+                        final right = _extractDateTime(a['createdAt']);
+                        return left.compareTo(right);
+                      });
+
+                      if (filteredMatches.isEmpty) {
+                        return Center(
+                          child: Text(
+                            'No matches found yet.',
+                            style: TextStyle(color: Colors.white.withOpacity(0.6)),
                           ),
                         );
-                      },
-                    );
+                      }
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.only(top: 16, bottom: 40),
+                        itemCount: filteredMatches.length,
+                        itemBuilder: (context, index) {
+                          final item = filteredMatches[index];
+                          final uid = (item['uid'] ?? '').toString();
+                          return _EditorialMatchCard(
+                            match: item,
+                            interestStatus: sentStatusByUser[uid] ?? '',
+                            isSaved: savedIds.contains(uid),
+                            onToggleSave: () async {
+                              if (uid.isEmpty) return;
+                              final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                                  .map((e) => e.toString())
+                                  .toSet();
+                              if (current.contains(uid)) {
+                                current.remove(uid);
+                                showLinearMessage(context, 'Removed from saved matches.');
+                              } else {
+                                current.add(uid);
+                                showLinearMessage(context, 'Saved to saved matches.');
+                              }
+
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                                'savedMatchIds': current.toList(),
+                              });
+                            },
+                            onDismissTemporarily: () async {
+                              if (uid.isEmpty) return;
+                              final currentHidden = profile['hiddenMatches'] is Map
+                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map)
+                                  : <String, dynamic>{};
+                              currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                                'hiddenMatches': currentHidden,
+                              });
+                              if (!context.mounted) return;
+                              showLinearMessage(context, 'Match hidden for 2 hours.');
+                            },
+                            onTap: (profile) {
+                              final viewedUid = (profile['uid'] ?? '').toString();
+                              if (viewedUid.isNotEmpty) {
+                                MatchService.instance.recordProfileView(viewedUserId: viewedUid);
+                              }
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => MatchProfileDetailPage(profile: profile),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      );
                     },
-                  );
-                },
-              ),
-            ),
+                  ),
+                ),
               ],
-            );
-              },
             );
           },
         );
@@ -509,7 +528,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
 
   Widget _buildViewedYouList() {
     return StreamBuilder<Map<String, dynamic>?>(
-      stream: UserService.instance.watchCurrentUserProfile(),
+      stream: _userProfileStream,
       builder: (context, profileSnapshot) {
         final profile = profileSnapshot.data ?? const <String, dynamic>{};
         final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
@@ -518,12 +537,12 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
             .toSet();
 
         return StreamBuilder<Map<String, String>>(
-          stream: InterestService.instance.watchMySentInterestStatusByUserId(),
+          stream: _sentInterestStatusStream,
           builder: (context, statusSnapshot) {
             final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
 
             return StreamBuilder<List<Map<String, dynamic>>>(
-              stream: _matchService.watchViewedYouMatches(),
+              stream: _viewedYouStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
@@ -585,7 +604,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
 
   Widget _buildSavedMatchesList() {
     return StreamBuilder<Map<String, dynamic>?>(
-      stream: UserService.instance.watchCurrentUserProfile(),
+      stream: _userProfileStream,
       builder: (context, profileSnapshot) {
         final profile = profileSnapshot.data ?? const <String, dynamic>{};
         final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
@@ -603,7 +622,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
         }
 
         return StreamBuilder<List<Map<String, dynamic>>>(
-          stream: _matchService.watchRecommendedMatches(limit: 200),
+          stream: _savedMatchesSourceStream,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
@@ -814,6 +833,24 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
   }
 }
 
+// ─── Google / App Store In-App Review Trigger ────────────────────────────────
+Future<void> _maybeRequestReview() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final count = (prefs.getInt('interest_send_count') ?? 0) + 1;
+    await prefs.setInt('interest_send_count', count);
+    // Show review dialog on every 3rd successful send
+    if (count % 3 == 0) {
+      final inAppReview = InAppReview.instance;
+      if (await inAppReview.isAvailable()) {
+        await inAppReview.requestReview();
+      }
+    }
+  } catch (_) {
+    // Never crash the UI for a review prompt
+  }
+}
+
 class _EditorialMatchCard extends StatelessWidget {
   final Map<String, dynamic> match;
   final ValueChanged<Map<String, dynamic>>? onTap;
@@ -896,12 +933,12 @@ class _EditorialMatchCard extends StatelessWidget {
                   Positioned.fill(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(24),
-                      child: photoUrl.isEmpty
-                          ? const Center(
+                      child: (match['showPhotosToEveryone'] == false || photoUrl.isEmpty)
+                          ? Center(
                               child: Padding(
-                                padding: EdgeInsets.only(bottom: 80.0),
+                                padding: const EdgeInsets.only(bottom: 80.0),
                                 child: Icon(
-                                  Icons.person,
+                                  match['showPhotosToEveryone'] == false ? Icons.lock_person_outlined : Icons.person,
                                   color: AppColors.goldDark,
                                   size: 100,
                                 ),
@@ -965,7 +1002,43 @@ class _EditorialMatchCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text(name, style: const TextStyle(color: AppColors.goldLight, fontSize: 22, fontWeight: FontWeight.w600, fontFamily: 'serif', letterSpacing: 0.5), overflow: TextOverflow.ellipsis)), Row(children: [Container(width: 8, height: 8, decoration: const BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle)), const SizedBox(width: 6), Text("Online", style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11))])]),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                name,
+                                style: const TextStyle(
+                                  color: AppColors.goldLight,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w600,
+                                  fontFamily: 'serif',
+                                  letterSpacing: 0.5,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: (match['isOnline'] == true || match['online'] == true)
+                                        ? Colors.greenAccent
+                                        : Colors.grey,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  (match['isOnline'] == true || match['online'] == true) ? "Online" : "Offline",
+                                  style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 11),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                         const SizedBox(height: 12),
                         _buildAttributeText(_ageText(), height, caste), const SizedBox(height: 6), _buildAttributeText(education, occupation, city),
                         const SizedBox(height: 20),
@@ -1002,6 +1075,11 @@ class _EditorialMatchCard extends StatelessWidget {
                                                 ? 'Interest request sent again.'
                                                 : 'Interest sent successfully'),
                                   );
+                                  // ─── Google Review after every 3rd send interest ───
+                                  if (result != InterestSendResult.pending &&
+                                      result != InterestSendResult.alreadyAccepted) {
+                                    _maybeRequestReview();
+                                  }
                                 },
                                 child: Container(
                                   height: 50,
@@ -1101,125 +1179,247 @@ class _EditorialMatchCard extends StatelessWidget {
   }
 
   Widget _goldDot() {
-    return Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: Container(width: 3, height: 3, decoration: BoxDecoration(color: AppColors.goldMedium.withOpacity(0.6), shape: BoxShape.circle)));
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Container(
+        width: 3,
+        height: 3,
+        decoration: BoxDecoration(color: AppColors.goldMedium.withOpacity(0.6), shape: BoxShape.circle),
+      ),
+    );
   }
 }
 
-
-class _UpgradePlansPage extends StatelessWidget {
+class _UpgradePlansPage extends StatefulWidget {
   const _UpgradePlansPage();
 
   @override
-  Widget build(BuildContext context) {
-    const planData = [
-      {
-        'name': 'Premium',
-        'price': '₹1,499',
-        'duration': '3 Months',
-        'features': ['Unlimited interests', 'Chat unlock', 'Priority visibility'],
-      },
-      {
-        'name': 'Prime',
-        'price': '₹2,499',
-        'duration': '6 Months',
-        'features': ['Everything in Premium', 'Direct call/WhatsApp', 'Verified profile boost'],
-      },
-      {
-        'name': 'Elite',
-        'price': '₹3,999',
-        'duration': '12 Months',
-        'features': ['Dedicated relationship manager', 'Top placement', 'Advanced compatibility insights'],
-      },
-    ];
+  State<_UpgradePlansPage> createState() => _UpgradePlansPageState();
+}
 
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
-        children: [
-          const Text(
-            'Upgrade Plans',
-            style: TextStyle(color: Colors.white, fontSize: 28, fontFamily: 'serif', fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Choose a plan to unlock premium features and better matches.',
-            style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 13),
-          ),
-          const SizedBox(height: 18),
-          ...planData.map(
-            (plan) => Container(
-              margin: const EdgeInsets.only(bottom: 14),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.03),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.goldMedium.withOpacity(0.25)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+class _UpgradePlansPageState extends State<_UpgradePlansPage> {
+  bool _isLoading = false;
+
+  static const _priceId = StripeService.premiumMonthlyPriceId;
+
+  static const _features = [
+    'Unlimited Send Interest',
+    'See Who Liked You',
+    'Advanced Filters',
+    'Priority Profile Boost',
+    'Ad-Free Experience',
+    'Chat & Video Call Unlock',
+  ];
+
+  Future<void> _onSubscribe() async {
+    setState(() => _isLoading = true);
+    try {
+      const successUrl = 'https://swanmatch.page.link/payment-success';
+      const cancelUrl  = 'https://swanmatch.page.link/payment-cancel';
+      await StripeService.instance.startSubscription(
+        priceId: _priceId,
+        successUrl: successUrl,
+        cancelUrl: cancelUrl,
+      );
+    } catch (e) {
+      if (mounted) showLinearMessage(context, 'Error starting checkout: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                // ─── Crown Icon ───
+                Container(
+                  width: 88,
+                  height: 88,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: AppColors.goldGradient,
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.goldMedium.withOpacity(0.4),
+                        blurRadius: 24,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.workspace_premium, color: Colors.black, size: 42),
+                ),
+                const SizedBox(height: 22),
+
+                // ─── Title ───
+                const Text(
+                  'Upgrade to SWAN Pro',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'serif',
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Find your perfect match without limits',
+                  style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 14),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 28),
+
+                // ─── Feature List Card ───
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.06),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.white.withOpacity(0.12)),
+                  ),
+                  child: Column(
+                    children: _features
+                        .map(
+                          (f) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 7),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle, color: AppColors.goldMedium, size: 20),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    f,
+                                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // ─── Pricing Card ───
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    gradient: LinearGradient(
+                      colors: [
+                        AppColors.goldMedium.withOpacity(0.22),
+                        AppColors.goldLight.withOpacity(0.1),
+                      ],
+                    ),
+                    border: Border.all(color: AppColors.goldMedium.withOpacity(0.4)),
+                  ),
+                  child: Column(
                     children: [
-                      Text(
-                        (plan['name'] ?? '').toString(),
-                        style: const TextStyle(
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: AppColors.goldMedium.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.star, color: AppColors.goldLight, size: 14),
+                            SizedBox(width: 5),
+                            Text(
+                              'Most Popular',
+                              style: TextStyle(color: AppColors.goldLight, fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'Premium Monthly',
+                        style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        '\$19.99',
+                        style: TextStyle(
                           color: AppColors.goldLight,
-                          fontSize: 20,
+                          fontSize: 42,
                           fontWeight: FontWeight.bold,
                           fontFamily: 'serif',
                         ),
                       ),
+                      const Text(
+                        '/ month',
+                        style: TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
+                      const SizedBox(height: 6),
                       Text(
-                        (plan['duration'] ?? '').toString(),
-                        style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 12),
+                        'Cancel anytime · No hidden fees',
+                        style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    (plan['price'] ?? '').toString(),
-                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 10),
-                  ...(plan['features'] as List<String>).map(
-                    (feature) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.check_circle, color: AppColors.goldMedium, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              feature,
-                              style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13),
-                            ),
-                          ),
-                        ],
+                ),
+                const SizedBox(height: 28),
+
+                // ─── Pay Now Button ───
+                SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _onSubscribe,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.goldMedium,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      textStyle: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        letterSpacing: 0.5,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    decoration: BoxDecoration(
-                      gradient: AppColors.goldGradient,
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: const Center(
-                      child: Text(
-                        'Choose Plan',
-                        style: TextStyle(color: AppColors.obsidian, fontWeight: FontWeight.bold),
-                      ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.workspace_premium, size: 20),
+                        SizedBox(width: 10),
+                        Text('Subscribe Now — \$19.99 / mo'),
+                      ],
                     ),
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 16),
+
+                // ─── Legal note ───
+                Text(
+                  'Billed monthly. Cancel anytime from your account settings.',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+                  textAlign: TextAlign.center,
+                ),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+        if (_isLoading)
+          Container(
+            color: Colors.black.withOpacity(0.55),
+            child: const Center(
+              child: CircularProgressIndicator(color: AppColors.goldMedium),
+            ),
+          ),
+      ],
     );
   }
 }

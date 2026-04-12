@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../../../core/constants/colors.dart';
@@ -51,6 +50,8 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
     6,
     (index) => TextEditingController(),
   );
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
 
   bool _isSubmitting = false;
 
@@ -97,6 +98,9 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
     // Start OTP Countdown
     _startTimer();
 
+    _emailController.text = (widget.loginEmail ?? '').trim();
+    _passwordController.text = widget.loginPassword ?? '';
+
     // Listeners for auto-focus shifting
     for (int i = 0; i < 6; i++) {
       _controllers[i].addListener(() {
@@ -133,24 +137,21 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
     for (var controller in _controllers) {
       controller.dispose();
     }
+    _emailController.dispose();
+    _passwordController.dispose();
     super.dispose();
   }
 
   Future<void> _resendOtp() async {
     try {
       if (widget.otpDeliveryChannel == OtpDeliveryChannel.email) {
-        final email = (widget.loginEmail ?? '').trim();
-        if (email.isEmpty) {
-          throw FirebaseAuthException(
-            code: 'invalid-email',
-            message: 'Email is required for email link.',
-          );
-        }
-        await AuthService.instance.sendEmailSignInLink(email: email);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('A new verification link has been sent.')),
+          const SnackBar(
+            content: Text('Use email and password to continue sign in.'),
+          ),
         );
+        return;
       } else {
         await AuthService.instance.sendOtp(phoneNumber: widget.phoneNumber);
       }
@@ -164,6 +165,47 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
   }
 
   Future<void> _submitOtp() async {
+    if (widget.otpDeliveryChannel == OtpDeliveryChannel.email) {
+      final email = _emailController.text.trim();
+      final password = _passwordController.text;
+
+      if (email.isEmpty || password.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Email and password are required.')),
+        );
+        return;
+      }
+
+      setState(() => _isSubmitting = true);
+      try {
+        await AuthService.instance.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+
+        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+          'lastLoginAt': DateTime.now(),
+        });
+
+        if (!mounted) return;
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => const MainDashboard()),
+          (route) => false,
+        );
+      } catch (error) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
+        );
+      } finally {
+        if (mounted) {
+          setState(() => _isSubmitting = false);
+        }
+      }
+      return;
+    }
+
     final otp = _controllers.map((controller) => controller.text).join();
     if (otp.length != 6) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -209,13 +251,9 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
           (route) => false,
         );
       } else {
-        final loginEmail = (widget.loginEmail ?? '').trim();
         final loginPhone = widget.loginPhoneNumber ?? widget.phoneNumber;
 
-        final needsEmail = widget.otpDeliveryChannel == OtpDeliveryChannel.email;
-        final needsPhone = widget.otpDeliveryChannel == OtpDeliveryChannel.sms;
-
-        if ((needsEmail && loginEmail.isEmpty) || (needsPhone && loginPhone.isEmpty)) {
+        if (loginPhone.isEmpty) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -227,18 +265,7 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
           return;
         }
 
-        if (widget.otpDeliveryChannel == OtpDeliveryChannel.email) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Please use the link sent to your email to complete login.',
-              ),
-            ),
-          );
-          return;
-        } else {
-          await AuthService.instance.signInWithPhoneOtp(otp);
-        }
+        await AuthService.instance.signInWithPhoneOtp(otp);
 
         await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
           'lastLoginAt': DateTime.now(),
@@ -390,7 +417,9 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
                                 const SizedBox(height: 32),
 
                                 Text(
-                                  "Please enter the 6-digit code\nsent to ${widget.destination}",
+                                  widget.otpDeliveryChannel == OtpDeliveryChannel.email
+                                      ? "Confirm your email and password\nto continue"
+                                      : "Please enter the 6-digit code\nsent to ${widget.destination}",
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
                                     color: Colors.white,
@@ -404,96 +433,119 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
                                 const SizedBox(height: 40),
 
                                 // ─── OTP Glass Input Area ───
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: List.generate(
-                                    6,
-                                    (index) => _buildOtpBox(index, boxWidth: 44),
+                                if (widget.otpDeliveryChannel == OtpDeliveryChannel.email)
+                                  Column(
+                                    children: [
+                                      _buildAuthField(
+                                        controller: _emailController,
+                                        hintText: 'Email',
+                                        keyboardType: TextInputType.emailAddress,
+                                      ),
+                                      const SizedBox(height: 14),
+                                      _buildAuthField(
+                                        controller: _passwordController,
+                                        hintText: 'Password',
+                                        obscureText: true,
+                                      ),
+                                    ],
+                                  )
+                                else
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: List.generate(
+                                      6,
+                                      (index) =>
+                                          _buildOtpBox(index, boxWidth: 44),
+                                    ),
                                   ),
-                                ),
 
                                 const SizedBox(height: 32),
 
                                 // ─── Timer & Resend ───
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          "Didn't receive the OTP?",
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(
-                                              0.5,
+                                if (widget.otpDeliveryChannel == OtpDeliveryChannel.sms)
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            "Didn't receive the OTP?",
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(
+                                                0.5,
+                                              ),
+                                              fontSize: 12,
                                             ),
-                                            fontSize: 12,
                                           ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        _canResend
-                                            ? GestureDetector(
-                                                onTap: _resendOtp,
-                                                child: const Text(
-                                                  "Resend OTP",
+                                          const SizedBox(height: 4),
+                                          _canResend
+                                              ? GestureDetector(
+                                                  onTap: _resendOtp,
+                                                  child: const Text(
+                                                    "Resend OTP",
+                                                    style: TextStyle(
+                                                      color: AppColors.goldMedium,
+                                                      fontWeight: FontWeight.bold,
+                                                      fontSize: 14,
+                                                    ),
+                                                  ),
+                                                )
+                                              : Text(
+                                                  "Resend OTP in ${_secondsRemaining}s",
                                                   style: TextStyle(
-                                                    color: AppColors.goldMedium,
-                                                    fontWeight: FontWeight.bold,
+                                                    color: AppColors.goldMedium
+                                                        .withOpacity(0.5),
                                                     fontSize: 14,
                                                   ),
                                                 ),
-                                              )
-                                            : Text(
-                                                "Resend OTP in ${_secondsRemaining}s",
-                                                style: TextStyle(
-                                                  color: AppColors.goldMedium
-                                                      .withOpacity(0.5),
-                                                  fontSize: 14,
-                                                ),
-                                              ),
-                                      ],
-                                    ),
+                                        ],
+                                      ),
 
-                                    // Verify with Missed Call (from your screenshot)
-                                    Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.end,
-                                      children: [
-                                        Text(
-                                          "Or use alternative",
-                                          style: TextStyle(
-                                            color: Colors.white.withOpacity(
-                                              0.5,
-                                            ),
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        GestureDetector(
-                                          onTap: () {},
-                                          child: const Text(
-                                            "Verify with Missed call",
+                                      Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            "Or use alternative",
                                             style: TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 13,
-                                              decoration:
-                                                  TextDecoration.underline,
+                                              color: Colors.white.withOpacity(
+                                                0.5,
+                                              ),
+                                              fontSize: 12,
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
+                                          const SizedBox(height: 4),
+                                          GestureDetector(
+                                            onTap: () {},
+                                            child: const Text(
+                                              "Verify with Missed call",
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                                decoration:
+                                                    TextDecoration.underline,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
 
                                 const SizedBox(height: 48),
 
                                 // ─── Submit Button ───
                                 GoldGradientButton(
-                                  text: _isSubmitting ? "VERIFYING..." : "SUBMIT",
+                                  text: _isSubmitting
+                                      ? "VERIFYING..."
+                                      : widget.otpDeliveryChannel == OtpDeliveryChannel.email
+                                          ? "SIGN IN"
+                                          : "SUBMIT",
                                   onPressed: () {
                                     if (_isSubmitting) return;
                                     _submitOtp();
@@ -575,6 +627,38 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAuthField({
+    required TextEditingController controller,
+    required String hintText,
+    bool obscureText = false,
+    TextInputType keyboardType = TextInputType.text,
+  }) {
+    return Container(
+      height: 58,
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.03),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withOpacity(0.12)),
+      ),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        obscureText: obscureText,
+        style: const TextStyle(color: Colors.white),
+        cursorColor: AppColors.goldMedium,
+        decoration: InputDecoration(
+          hintText: hintText,
+          hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 16,
+          ),
+        ),
       ),
     );
   }
