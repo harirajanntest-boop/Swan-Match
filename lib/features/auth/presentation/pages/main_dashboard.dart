@@ -1,3 +1,4 @@
+
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
@@ -13,6 +14,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../../services/stripe_service.dart';
 import 'package:in_app_review/in_app_review.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../../services/auth_service.dart';
+import 'settings_page.dart';
+import '../../../../shared/widgets/gold_button.dart';
+import 'feature_guide_page.dart';
 
 class MainDashboard extends StatefulWidget {
   final int initialIndex;
@@ -38,6 +43,125 @@ class _MainDashboardState extends State<MainDashboard> {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pendingProfileToOpen = widget.initialProfileToOpen;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Show the feature guide first (only once for new users)
+      final guideSeen = await _checkAndShowFeatureGuide();
+      // Only show the linking popup if the guide was already seen
+      // (otherwise we navigated away and this context is disposed)
+      if (guideSeen && mounted) {
+        _checkAndShowLinkingPopup();
+      }
+    });
+  }
+
+  /// Returns `true` if the guide was already seen (no navigation happened).
+  /// Returns `false` if we navigated to the guide page.
+  Future<bool> _checkAndShowFeatureGuide() async {
+    final alreadySeen = await FeatureGuidePage.hasBeenShown();
+    if (!alreadySeen && mounted) {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const FeatureGuidePage(
+            destination: MainDashboard(),
+          ),
+        ),
+        (route) => false,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _checkAndShowLinkingPopup() async {
+    final profile = await UserService.instance.getCurrentUserProfile();
+
+    // Auto-set registrationCompleted if the user is on the dashboard
+    if (profile != null && profile['registrationCompleted'] != true) {
+      await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+        'registrationCompleted': true,
+      });
+    }
+
+    final linkedIds = AuthService.instance.getLinkedProviderIds();
+    final missing = <String>[];
+    if (!linkedIds.contains('google.com')) missing.add('Google');
+    if (!linkedIds.contains('password')) missing.add('Email');
+    if (!linkedIds.contains('phone')) missing.add('Phone Number');
+
+    if (missing.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final lastShown = prefs.getInt('last_linking_popup_time') ?? 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    // Show daily (24 hours = 86400000 ms)
+    if (now - lastShown > 86400000) {
+      if (!mounted) return;
+      await _showLinkingDialog(missing);
+      await prefs.setInt('last_linking_popup_time', now);
+    }
+  }
+
+  Future<void> _showLinkingDialog(List<String> missing) async {
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+        child: AlertDialog(
+          backgroundColor: AppColors.obsidian.withOpacity(0.8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: AppColors.goldMedium.withOpacity(0.3)),
+          ),
+          title: const Column(
+            children: [
+              Icon(Icons.security, color: AppColors.goldMedium, size: 48),
+              SizedBox(height: 16),
+              Text(
+                'Mandatory Account Linking',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontFamily: 'serif', fontSize: 20),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'To ensure 100% security for your profile, please link all your accounts.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: missing.map((m) => Chip(
+                  label: Text(m, style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.bold)),
+                  backgroundColor: AppColors.goldMedium,
+                )).toList(),
+              ),
+            ],
+          ),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16, left: 16, right: 16),
+              child: GoldGradientButton(
+                text: 'LINK NOW',
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsPage()));
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _openMatchesTab({Map<String, dynamic>? profile}) {
@@ -236,8 +360,8 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
             Expanded(
               child: TabBarView(
                 children: [
-                  _buildMatchesList(isNewMembers: false),
-                  _buildMatchesList(isNewMembers: true),
+                  _buildRecommendedSwipeView(),
+                  _buildNewMembersGrid(),
                   _buildViewedYouList(),
                   _buildSavedMatchesList(),
                 ],
@@ -268,29 +392,106 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
     );
   }
 
-  Widget _buildMatchesList({required bool isNewMembers}) {
-    final Stream<List<Map<String, dynamic>>> matchStream = isNewMembers
-        ? _allMatchesStream
-        : _recommendedMatchesStream;
+  // ─── Shared filter logic ───
+  List<Map<String, dynamic>> _applyFilters(
+    List<Map<String, dynamic>> matches,
+    Map<String, dynamic> profile,
+    Map<String, dynamic> hiddenMap,
+  ) {
+    final city = (profile['city'] ?? '').toString().trim();
+    final ignoredProfiles = profile['ignoredProfiles'] is Map
+        ? Map<String, dynamic>.from(profile['ignoredProfiles'] as Map)
+        : <String, dynamic>{};
+    final blockedUids = List<String>.from(profile['blockedUids'] ?? []);
+    final now = DateTime.now().millisecondsSinceEpoch;
 
+    final filtered = matches.where((item) {
+      final uid = (item['uid'] ?? '').toString();
+      if (uid.isEmpty) return false;
+      if (blockedUids.contains(uid)) return false;
+      if (ignoredProfiles.containsKey(uid)) {
+        final expiry = (ignoredProfiles[uid] as Timestamp).toDate().millisecondsSinceEpoch;
+        if (expiry > now) return false;
+      }
+      final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
+      if (hiddenUntil > now) return false;
+
+      if (_selectedTier == 'PRIME') {
+        final isPrime = item['isPrime'] == true ||
+            item['subscriptionPlan']?.toString().toLowerCase() == 'prime';
+        if (!isPrime) return false;
+      }
+      if (_onlineOnly) {
+        final isOnline = item['isOnline'] == true || item['online'] == true;
+        if (!isOnline) return false;
+      }
+      if (_locationOnly && city.isNotEmpty) {
+        final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
+        if (matchCity.isEmpty || matchCity != city.toLowerCase()) return false;
+      }
+
+      final rawDob = item['dateOfBirth'];
+      int? age;
+      if (rawDob is DateTime) {
+        final nowDate = DateTime.now();
+        age = nowDate.year - rawDob.year;
+        if (nowDate.month < rawDob.month || (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) age--;
+      } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
+        try {
+          final dob = rawDob.toDate() as DateTime;
+          final nowDate = DateTime.now();
+          age = nowDate.year - dob.year;
+          if (nowDate.month < dob.month || (nowDate.month == dob.month && nowDate.day < dob.day)) age--;
+        } catch (_) { age = null; }
+      }
+      if (age != null && (age < _ageRange.start || age > _ageRange.end)) return false;
+      if (_occupationFilter.isNotEmpty) {
+        final occ = (item['occupation'] ?? '').toString().toLowerCase();
+        if (!occ.contains(_occupationFilter.toLowerCase())) return false;
+      }
+      if (_heightFilter.isNotEmpty) {
+        final h = (item['height'] ?? '').toString().toLowerCase();
+        if (!h.contains(_heightFilter.toLowerCase())) return false;
+      }
+      if (_starFilter.isNotEmpty) {
+        final s = (item['star'] ?? '').toString().toLowerCase();
+        if (!s.contains(_starFilter.toLowerCase())) return false;
+      }
+      if (_searchQuery.isNotEmpty) {
+        final haystack = [item['name'], item['occupation'], item['star'], item['height'], item['city']]
+            .map((e) => (e ?? '').toString().toLowerCase()).join(' ');
+        if (!haystack.contains(_searchQuery)) return false;
+      }
+      return true;
+    }).toList();
+
+    filtered.sort((a, b) {
+      if (_sortBy == 'Name') {
+        return (a['name'] ?? '').toString().toLowerCase()
+            .compareTo((b['name'] ?? '').toString().toLowerCase());
+      }
+      return _extractDateTime(b['createdAt']).compareTo(_extractDateTime(a['createdAt']));
+    });
+    return filtered;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ─── RECOMMENDED: SWIPE CARD STACK ─────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  Widget _buildRecommendedSwipeView() {
     return StreamBuilder<Map<String, dynamic>?>(
       stream: _userProfileStream,
       builder: (context, profileSnapshot) {
         final profile = profileSnapshot.data ?? <String, dynamic>{};
-        final city = (profile['city'] ?? '').toString().trim();
+        final hiddenMapRaw = profile['hiddenMatches'];
+        final hiddenMap = hiddenMapRaw is Map ? Map<String, dynamic>.from(hiddenMapRaw) : <String, dynamic>{};
 
         return StreamBuilder<Map<String, String>>(
           stream: _sentInterestStatusStream,
           builder: (context, statusSnapshot) {
             final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
             final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
-                .map((item) => item.toString())
-                .where((item) => item.isNotEmpty)
-                .toSet();
-            final hiddenMapRaw = profile['hiddenMatches'];
-            final hiddenMap = hiddenMapRaw is Map
-                ? Map<String, dynamic>.from(hiddenMapRaw)
-                : <String, dynamic>{};
+                .map((item) => item.toString()).where((item) => item.isNotEmpty).toSet();
 
             return Column(
               children: [
@@ -311,24 +512,15 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                           children: [
                             if (_searchQuery.isNotEmpty)
                               IconButton(
-                                onPressed: () {
-                                  _searchController.clear();
-                                  setState(() => _searchQuery = '');
-                                },
+                                onPressed: () { _searchController.clear(); setState(() => _searchQuery = ''); },
                                 icon: const Icon(Icons.close, color: Colors.white70),
                               ),
-                            IconButton(
-                              onPressed: _showAdvancedFilterSheet,
-                              icon: const Icon(Icons.filter_list, color: AppColors.goldMedium),
-                            ),
+                            IconButton(onPressed: _showAdvancedFilterSheet, icon: const Icon(Icons.filter_list, color: AppColors.goldMedium)),
                           ],
                         ),
                         filled: true,
                         fillColor: Colors.white.withOpacity(0.05),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide.none,
-                        ),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
                       ),
                     ),
                   ),
@@ -336,136 +528,23 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                 const SizedBox(height: 10),
                 Expanded(
                   child: StreamBuilder<List<Map<String, dynamic>>>(
-                    stream: matchStream,
+                    stream: _recommendedMatchesStream,
                     builder: (context, snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
                       }
-
-                      final ignoredProfiles = profile['ignoredProfiles'] is Map
-                          ? Map<String, dynamic>.from(profile['ignoredProfiles'] as Map)
-                          : <String, dynamic>{};
-                      final blockedUids = List<String>.from(profile['blockedUids'] ?? []);
-
-                      final matches = snapshot.data ?? const <Map<String, dynamic>>[];
-                      final now = DateTime.now().millisecondsSinceEpoch;
-                      final filteredMatches = matches.where((item) {
-                        final uid = (item['uid'] ?? '').toString();
-                        if (uid.isEmpty) return false;
-
-                        // 1. Check blocked
-                        if (blockedUids.contains(uid)) return false;
-
-                        // 2. Check ignored (2 days hide)
-                        if (ignoredProfiles.containsKey(uid)) {
-                          final expiry = (ignoredProfiles[uid] as Timestamp).toDate().millisecondsSinceEpoch;
-                          if (expiry > now) return false;
-                        }
-
-                        // 3. User manual hide
-                        final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
-                        if (hiddenUntil > now) return false;
-
-                          if (_selectedTier == 'PRIME') {
-                          final isPrime = item['isPrime'] == true ||
-                              item['subscriptionPlan']?.toString().toLowerCase() == 'prime';
-                          if (!isPrime) return false;
-                        }
-
-                        if (_onlineOnly) {
-                          final isOnline = item['isOnline'] == true || item['online'] == true;
-                          if (!isOnline) return false;
-                        }
-
-                        if (_locationOnly && city.isNotEmpty) {
-                          final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
-                          if (matchCity.isEmpty || matchCity != city.toLowerCase()) {
-                            return false;
-                          }
-                        }
-
-                        final rawDob = item['dateOfBirth'];
-                        int? age;
-                        if (rawDob is DateTime) {
-                          final nowDate = DateTime.now();
-                          age = nowDate.year - rawDob.year;
-                          if (nowDate.month < rawDob.month ||
-                              (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) {
-                            age--;
-                          }
-                        } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
-                          try {
-                            final dob = rawDob.toDate() as DateTime;
-                            final nowDate = DateTime.now();
-                            age = nowDate.year - dob.year;
-                            if (nowDate.month < dob.month ||
-                                (nowDate.month == dob.month && nowDate.day < dob.day)) {
-                              age--;
-                            }
-                          } catch (_) {
-                            age = null;
-                          }
-                        }
-
-                        if (age != null && (age < _ageRange.start || age > _ageRange.end)) {
-                          return false;
-                        }
-
-                        if (_occupationFilter.isNotEmpty) {
-                          final occupation = (item['occupation'] ?? '').toString().toLowerCase();
-                          if (!occupation.contains(_occupationFilter.toLowerCase())) return false;
-                        }
-
-                        if (_heightFilter.isNotEmpty) {
-                          final height = (item['height'] ?? '').toString().toLowerCase();
-                          if (!height.contains(_heightFilter.toLowerCase())) return false;
-                        }
-
-                        if (_starFilter.isNotEmpty) {
-                          final star = (item['star'] ?? '').toString().toLowerCase();
-                          if (!star.contains(_starFilter.toLowerCase())) return false;
-                        }
-
-                        if (_searchQuery.isNotEmpty) {
-                          final haystack = [
-                            item['name'],
-                            item['occupation'],
-                            item['star'],
-                            item['height'],
-                            item['city'],
-                          ].map((e) => (e ?? '').toString().toLowerCase()).join(' ');
-
-                          if (!haystack.contains(_searchQuery)) return false;
-                        }
-
-                        return true;
-                      }).toList();
-
-                      filteredMatches.sort((a, b) {
-                        if (_sortBy == 'Name') {
-                          final left = (a['name'] ?? '').toString().toLowerCase();
-                          final right = (b['name'] ?? '').toString().toLowerCase();
-                          return left.compareTo(right);
-                        }
-                        final left = _extractDateTime(b['createdAt']);
-                        final right = _extractDateTime(a['createdAt']);
-                        return left.compareTo(right);
-                      });
-
-                      if (filteredMatches.isEmpty) {
+                      final matches = _applyFilters(snapshot.data ?? [], profile, hiddenMap);
+                      if (matches.isEmpty) {
                         return Center(
-                          child: Text(
-                            'No matches found yet.',
-                            style: TextStyle(color: Colors.white.withOpacity(0.6)),
-                          ),
+                          child: Text('No recommended matches yet.',
+                              style: TextStyle(color: Colors.white.withOpacity(0.6))),
                         );
                       }
-
                       return ListView.builder(
                         padding: const EdgeInsets.only(top: 16, bottom: 40),
-                        itemCount: filteredMatches.length,
+                        itemCount: matches.length,
                         itemBuilder: (context, index) {
-                          final item = filteredMatches[index];
+                          final item = matches[index];
                           final uid = (item['uid'] ?? '').toString();
                           return _EditorialMatchCard(
                             match: item,
@@ -474,8 +553,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                             onToggleSave: () async {
                               if (uid.isEmpty) return;
                               final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
-                                  .map((e) => e.toString())
-                                  .toSet();
+                                  .map((e) => e.toString()).toSet();
                               if (current.contains(uid)) {
                                 current.remove(uid);
                                 showLinearMessage(context, 'Removed from saved matches.');
@@ -483,20 +561,14 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                                 current.add(uid);
                                 showLinearMessage(context, 'Saved to saved matches.');
                               }
-
-                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                                'savedMatchIds': current.toList(),
-                              });
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'savedMatchIds': current.toList()});
                             },
                             onDismissTemporarily: () async {
                               if (uid.isEmpty) return;
                               final currentHidden = profile['hiddenMatches'] is Map
-                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map)
-                                  : <String, dynamic>{};
+                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map) : <String, dynamic>{};
                               currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
-                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                                'hiddenMatches': currentHidden,
-                              });
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'hiddenMatches': currentHidden});
                               if (!context.mounted) return;
                               showLinearMessage(context, 'Match hidden for 2 hours.');
                             },
@@ -505,10 +577,129 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                               if (viewedUid.isNotEmpty) {
                                 MatchService.instance.recordProfileView(viewedUserId: viewedUid);
                               }
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => MatchProfileDetailPage(profile: profile),
+                              Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => MatchProfileDetailPage(profile: profile),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ─── NEW MEMBERS: SCROLL LIST WITH EDITORIAL CARDS ────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  Widget _buildNewMembersGrid() {
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: _userProfileStream,
+      builder: (context, profileSnapshot) {
+        final profile = profileSnapshot.data ?? <String, dynamic>{};
+        final hiddenMapRaw = profile['hiddenMatches'];
+        final hiddenMap = hiddenMapRaw is Map ? Map<String, dynamic>.from(hiddenMapRaw) : <String, dynamic>{};
+
+        return StreamBuilder<Map<String, String>>(
+          stream: _sentInterestStatusStream,
+          builder: (context, statusSnapshot) {
+            final sentStatusByUser = statusSnapshot.data ?? const <String, String>{};
+            final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                .map((item) => item.toString()).where((item) => item.isNotEmpty).toSet();
+
+            return Column(
+              children: [
+                const SizedBox(height: 6),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 30),
+                  child: Center(
+                    child: TextField(
+                      controller: _searchController,
+                      onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Search by name, occupation, star, city...',
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
+                        prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.6)),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (_searchQuery.isNotEmpty)
+                              IconButton(
+                                onPressed: () { _searchController.clear(); setState(() => _searchQuery = ''); },
+                                icon: const Icon(Icons.close, color: Colors.white70),
+                              ),
+                            IconButton(onPressed: _showAdvancedFilterSheet, icon: const Icon(Icons.filter_list, color: AppColors.goldMedium)),
+                          ],
+                        ),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.05),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: _allMatchesStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
+                      }
+                      final matches = _applyFilters(snapshot.data ?? [], profile, hiddenMap);
+                      if (matches.isEmpty) {
+                        return Center(
+                          child: Text('No new members found yet.',
+                              style: TextStyle(color: Colors.white.withOpacity(0.6))),
+                        );
+                      }
+                      return ListView.builder(
+                        padding: const EdgeInsets.only(top: 16, bottom: 40),
+                        itemCount: matches.length,
+                        itemBuilder: (context, index) {
+                          final item = matches[index];
+                          final uid = (item['uid'] ?? '').toString();
+                          return _EditorialMatchCard(
+                            match: item,
+                            interestStatus: sentStatusByUser[uid] ?? '',
+                            isSaved: savedIds.contains(uid),
+                            onToggleSave: () async {
+                              if (uid.isEmpty) return;
+                              final current = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
+                                  .map((e) => e.toString()).toSet();
+                              if (current.contains(uid)) {
+                                current.remove(uid);
+                                showLinearMessage(context, 'Removed from saved matches.');
+                              } else {
+                                current.add(uid);
+                                showLinearMessage(context, 'Saved to saved matches.');
+                              }
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'savedMatchIds': current.toList()});
+                            },
+                            onDismissTemporarily: () async {
+                              if (uid.isEmpty) return;
+                              final currentHidden = profile['hiddenMatches'] is Map
+                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map) : <String, dynamic>{};
+                              currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
+                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'hiddenMatches': currentHidden});
+                              if (!context.mounted) return;
+                              showLinearMessage(context, 'Match hidden for 2 hours.');
+                            },
+                            onTap: (profile) {
+                              final viewedUid = (profile['uid'] ?? '').toString();
+                              if (viewedUid.isNotEmpty) {
+                                MatchService.instance.recordProfileView(viewedUserId: viewedUid);
+                              }
+                              Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => MatchProfileDetailPage(profile: profile),
                                 ),
                               );
                             },
@@ -1222,7 +1413,7 @@ class _UpgradePlansPageState extends State<_UpgradePlansPage> {
         cancelUrl: cancelUrl,
       );
     } catch (e) {
-      if (mounted) showLinearMessage(context, 'Error starting checkout: $e');
+      if (mounted) showLinearMessage(context, 'Unable to open payment. Please check your connection and try again.', isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

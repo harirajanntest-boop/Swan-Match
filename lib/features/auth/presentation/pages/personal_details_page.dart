@@ -1,9 +1,12 @@
+import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'religious_details_page.dart';
+import '../../../../services/storage_service.dart';
+import 'package:image_picker/image_picker.dart';
 
 class PersonalDetailsPage extends StatefulWidget {
   const PersonalDetailsPage({super.key});
@@ -27,6 +30,8 @@ class _PersonalDetailsPageState extends State<PersonalDetailsPage>
   String? _selectedHeight;
   String _physicalStatus = 'Normal';
   String _maritalStatus = '';
+  String _photoUrl = '';
+  bool _isUploadingPhoto = false;
 
   // ─── Mock Data for Dropdowns ───────────────────────────────────────────────
   final List<String> _days = List.generate(
@@ -85,12 +90,65 @@ class _PersonalDetailsPageState extends State<PersonalDetailsPage>
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
     });
+
+    _loadExistingPhoto();
   }
 
   @override
   void dispose() {
     _entryController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadExistingPhoto() async {
+    final profile = await UserService.instance.getCurrentUserProfile();
+    if (!mounted || profile == null) return;
+    final existing = (profile['photoUrl'] ?? profile['profileImageUrl'] ?? profile['imageUrl'] ?? '').toString();
+    if (existing.isEmpty) return;
+    setState(() => _photoUrl = existing);
+  }
+
+  Future<void> _pickAndUploadPhoto() async {
+    if (_isUploadingPhoto) return;
+
+    final uid = UserService.instance.currentUid;
+    if (uid == null || uid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please login again to upload photo.')),
+      );
+      return;
+    }
+
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 85,
+      maxWidth: 1440,
+    );
+
+    if (file == null) return;
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      final photoUrl = await StorageService.instance.uploadProfilePhoto(
+        uid: uid,
+        file: File(file.path),
+      );
+
+      await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+        'photoUrl': photoUrl,
+      });
+
+      if (!mounted) return;
+      setState(() => _photoUrl = photoUrl);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to upload photo. Please try again.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
   }
 
   @override
@@ -167,6 +225,48 @@ class _PersonalDetailsPageState extends State<PersonalDetailsPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ─── Required Profile Photo ───
+                      const _SectionTitle(title: "Upload Profile Photo"),
+                      const SizedBox(height: 12),
+                      Center(
+                        child: GestureDetector(
+                          onTap: _isUploadingPhoto ? null : _pickAndUploadPhoto,
+                          child: Stack(
+                            alignment: Alignment.bottomRight,
+                            children: [
+                              CircleAvatar(
+                                radius: 48,
+                                backgroundColor: Colors.white.withOpacity(0.06),
+                                backgroundImage: _photoUrl.isNotEmpty
+                                    ? NetworkImage(_photoUrl)
+                                    : null,
+                                child: _photoUrl.isEmpty
+                                    ? const Icon(Icons.person, color: AppColors.goldMedium, size: 32)
+                                    : null,
+                              ),
+                              Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: AppColors.goldMedium,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: _isUploadingPhoto
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+                                        ),
+                                      )
+                                    : const Icon(Icons.add_a_photo, size: 16, color: Colors.black),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
                       // ─── Gender ───
                       const _SectionTitle(title: "Gender"),
                       Row(
@@ -295,6 +395,13 @@ class _PersonalDetailsPageState extends State<PersonalDetailsPage>
                       GoldGradientButton(
                         text: "NEXT",
                         onPressed: () async {
+                          if (_photoUrl.isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Please upload your profile photo to continue.')),
+                            );
+                            return;
+                          }
+
                           DateTime? dob;
                           if (_selectedDay != null &&
                               _selectedMonth != null &&

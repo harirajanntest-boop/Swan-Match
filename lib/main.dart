@@ -9,7 +9,9 @@ import 'package:swam_match_app/features/auth/presentation/pages/login_page.dart'
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
 import 'package:swam_match_app/services/notification_service.dart' as v1;
+import 'package:swam_match_app/features/auth/presentation/pages/payment_status_page.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -18,111 +20,122 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  String? initError;
-  try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    await PushNotificationService.instance.initialize();
-    await v1.NotificationService.instance.initialize();
-  } catch (error) {
-    initError = error.toString();
-  }
-
-  runApp(SwamMatchApp(firebaseInitError: initError));
+  runApp(const SwamMatchApp());
 }
 
 class SwamMatchApp extends StatefulWidget {
-  final String? firebaseInitError;
-
-  const SwamMatchApp({super.key, this.firebaseInitError});
+  const SwamMatchApp({super.key});
 
   @override
   State<SwamMatchApp> createState() => _SwamMatchAppState();
 }
 
 class _SwamMatchAppState extends State<SwamMatchApp> {
-  @override
-  Widget build(BuildContext context) {
-    final hasFirebaseError = widget.firebaseInitError != null;
+  late final Future<String?> _initFuture;
 
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Swan Match',
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        fontFamily: 'serif',
-        // Sets the main background to deep black
-        scaffoldBackgroundColor: AppColors.ivory,
-        primaryColor: AppColors.goldMedium,
-        // Adds cinematic global animations when navigating between pages
-        pageTransitionsTheme: const PageTransitionsTheme(
-          builders: {
-            TargetPlatform.android: ZoomPageTransitionsBuilder(),
-            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-          },
-        ),
-        // ─── Global Gold SnackBar Theme ───────────────────────────────────────
-        snackBarTheme: SnackBarThemeData(
-          backgroundColor: const Color(0xFF1A1400),   // deep dark-gold background
-          contentTextStyle: const TextStyle(
-            color: Color(0xFFF1D592),                 // goldLight text
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(
-              color: Color(0xFFD4AF37),               // goldMedium border
-              width: 1,
-            ),
-          ),
-          behavior: SnackBarBehavior.floating,
-          insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-          elevation: 8,
-        ),
-      ),
-        home: hasFirebaseError
-          ? FirebaseSetupRequiredPage(error: widget.firebaseInitError!)
-          : const _AuthGate(),
-      routes: hasFirebaseError
-          ? const {}
-          : {
-              '/create-account': (context) => const CreateAccountPage(),
-              '/login': (context) => const LoginPage(),
-            },
-    );
+  @override
+  void initState() {
+    super.initState();
+    _initFuture = _initializeApp();
   }
-}
 
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
+  Future<String?> _initializeApp() async {
+    try {
+      await _performInitialization().timeout(const Duration(seconds: 12));
+      return null;
+    } catch (error) {
+      return error.toString();
+    }
+  }
+
+  Future<void> _performInitialization() async {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    await PushNotificationService.instance.initialize();
+    await v1.NotificationService.instance.initialize();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
+    return FutureBuilder<String?>(
+      future: _initFuture,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: AppColors.ivory,
-            body: Center(
-              child: CircularProgressIndicator(color: AppColors.goldMedium),
-            ),
-          );
-        }
+        final initDone = snapshot.connectionState == ConnectionState.done;
+        final initError = initDone ? snapshot.data : null;
+        final hasFirebaseError = initError != null;
 
-        final user = snapshot.data;
-        if (user == null) {
-          return const OnboardingPage();
-        }
-        return const MainDashboard();
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'Swan Match',
+          theme: ThemeData(
+            brightness: Brightness.dark,
+            fontFamily: 'serif',
+            // Sets the main background to deep black
+            scaffoldBackgroundColor: AppColors.ivory,
+            primaryColor: AppColors.goldMedium,
+            // Adds cinematic global animations when navigating between pages
+            pageTransitionsTheme: const PageTransitionsTheme(
+              builders: {
+                TargetPlatform.android: ZoomPageTransitionsBuilder(),
+                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+              },
+            ),
+            // ─── Global Gold SnackBar Theme ───────────────────────────────────────
+            snackBarTheme: SnackBarThemeData(
+              backgroundColor: const Color(0xFF1A1400),   // deep dark-gold background
+              contentTextStyle: const TextStyle(
+                color: Color(0xFFF1D592),                 // goldLight text
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(
+                  color: Color(0xFFD4AF37),               // goldMedium border
+                  width: 1,
+                ),
+              ),
+              behavior: SnackBarBehavior.floating,
+              insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+              elevation: 8,
+            ),
+          ),
+          home: !initDone
+              ? const _AppLoadingScreen()
+              : hasFirebaseError
+                  ? FirebaseSetupRequiredPage(error: initError)
+                  : const SplashPage(),
+          routes: !initDone || hasFirebaseError
+              ? const {}
+              : {
+                  '/create-account': (context) => const CreateAccountPage(),
+                  '/login': (context) => const LoginPage(),
+                  '/payment-success': (context) => const PaymentStatusPage(isSuccess: true),
+                  '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
+                },
+        );
       },
     );
   }
 }
+
+class _AppLoadingScreen extends StatelessWidget {
+  const _AppLoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: AppColors.ivory,
+      body: Center(
+        child: CircularProgressIndicator(color: AppColors.goldMedium),
+      ),
+    );
+  }
+}
+
+
 
 class FirebaseSetupRequiredPage extends StatelessWidget {
   final String error;

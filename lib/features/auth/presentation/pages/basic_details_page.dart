@@ -129,10 +129,14 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
       );
 
       // Start the OTP process in the background
-      AuthService.instance.sendOtp(phoneNumber: formattedPhone).catchError((error) {
+      AuthService.instance.sendOtp(phoneNumber: formattedPhone).catchError((
+        error,
+      ) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
+          SnackBar(
+            content: Text(AuthService.instance.readableAuthError(error)),
+          ),
         );
       });
 
@@ -365,7 +369,10 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
                       title: Text(
                         code,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white, fontSize: 16),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
                       ),
                       onTap: () {
                         setState(() {
@@ -383,7 +390,6 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
       },
     );
   }
-
 }
 
 // ─── Special Premium Phone Input Field ───────────────────────────────────────

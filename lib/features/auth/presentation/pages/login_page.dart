@@ -119,7 +119,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       return;
     }
 
-    setState(() => _isSendingOtp = true); // Using same loading state for simplicity
+    setState(
+      () => _isSendingOtp = true,
+    ); // Using same loading state for simplicity
     try {
       await AuthService.instance.signInWithEmailAndPassword(
         email: email,
@@ -143,7 +145,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   Future<void> _startPhoneLoginOtpFlow() async {
     if (_isSendingOtp) return;
     setState(() => _isSendingOtp = true);
-    
+
     final phone = _phoneController.text.trim();
     if (phone.isEmpty) {
       setState(() => _isSendingOtp = false);
@@ -194,9 +196,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   Future<void> _handleForgotPassword() async {
     final email = _emailController.text.trim();
     if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter your email first.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Enter your email first.')));
       return;
     }
 
@@ -204,7 +206,9 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       await AuthService.instance.sendPasswordReset(email: email);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Password reset link sent to your email.')),
+        const SnackBar(
+          content: Text('Password reset link sent to your email.'),
+        ),
       );
     } catch (error) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -218,25 +222,29 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     try {
       final credential = await AuthService.instance.signInWithGoogle();
       if (!mounted) return;
+
       if (credential != null) {
-        // Sign-in successful or linked! Provide feedback and navigate.
-        if (context.mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const MainDashboard()),
-          );
-        }
+        // User has an existing account — go to dashboard
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const MainDashboard()),
+        );
       } else {
-        // Canceled
+        // User cancelled the Google picker
         setState(() => _isGoogleLoading = false);
       }
     } catch (error) {
       if (!mounted) return;
-      if (error is GoogleNeedsLinkingException) {
+      if (error is GoogleNoAccountException) {
+        // No account found → navigate to the signup form
+        await _showNoAccountDialog();
+      } else if (error is GoogleNeedsLinkingException) {
         await _showLinkAccountDialog(error.email);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AuthService.instance.readableAuthError(error))),
+          SnackBar(
+            content: Text(AuthService.instance.readableAuthError(error)),
+          ),
         );
       }
     } finally {
@@ -244,6 +252,129 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         setState(() => _isGoogleLoading = false);
       }
     }
+  }
+
+  /// Shows a premium dialog informing the user they don't have an account
+  /// and redirects them to the Create Account page.
+  Future<void> _showNoAccountDialog() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: AppColors.obsidian,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(24),
+          side: BorderSide(
+            color: AppColors.goldMedium.withOpacity(0.25),
+            width: 1,
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(28, 32, 28, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Icon
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withOpacity(0.03),
+                  border: Border.all(
+                    color: AppColors.goldMedium.withOpacity(0.3),
+                  ),
+                ),
+                child: const Icon(
+                  Icons.person_add_alt_1_rounded,
+                  color: AppColors.goldMedium,
+                  size: 36,
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Title
+              const Text(
+                "Account Not Found",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontFamily: 'serif',
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.8,
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Subtitle
+              Text(
+                "It looks like you don't have a Swan Match account yet. "
+                "Please create a new profile to get started!",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.6),
+                  fontSize: 14,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 28),
+
+              // Create Account button
+              Container(
+                width: double.infinity,
+                height: 50,
+                decoration: BoxDecoration(
+                  gradient: AppColors.goldGradient,
+                  borderRadius: BorderRadius.circular(25),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.goldDark.withOpacity(0.35),
+                      blurRadius: 12,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx); // Close dialog
+                    Navigator.pushReplacementNamed(context, '/create-account');
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.transparent,
+                    shadowColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(25),
+                    ),
+                  ),
+                  child: const Text(
+                    "CREATE ACCOUNT",
+                    style: TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Cancel / Go back
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(
+                  "Go Back",
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.5),
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _showLinkAccountDialog(String email) async {
@@ -300,9 +431,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             ),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.amber,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.amber),
             onPressed: () async {
               Navigator.pop(ctx);
               try {
@@ -521,7 +650,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                             // ─── Google Login Button ───
                             _SocialLoginButton(
                               text: "Continue with Google",
-                              icon: Icons.g_mobiledata, // Standard flutter icon for Google
+                              icon: Icons
+                                  .g_mobiledata, // Standard flutter icon for Google
                               isLoading: _isGoogleLoading,
                               onPressed: _handleGoogleSignIn,
                             ),
@@ -585,9 +715,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                       return;
                     }
                     Navigator.of(context).pushReplacement(
-                      MaterialPageRoute(
-                        builder: (_) => const OnboardingPage(),
-                      ),
+                      MaterialPageRoute(builder: (_) => const OnboardingPage()),
                     );
                   },
                 ),
@@ -715,8 +843,10 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                       title: Text(
                         code,
                         textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(color: Colors.white, fontSize: 16),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
                       ),
                       onTap: () {
                         setState(() {

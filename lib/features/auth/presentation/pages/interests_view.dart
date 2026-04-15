@@ -5,6 +5,7 @@ import '../../../../models/interest_model.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
 import 'main_dashboard.dart';
+import 'match_profile_detail_page.dart';
 
 class InterestsView extends StatefulWidget {
   const InterestsView({super.key});
@@ -268,27 +269,41 @@ class _InterestTile extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  CircleAvatar(
-                    backgroundColor: AppColors.goldMedium.withOpacity(0.2),
-                    backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
-                        ? NetworkImage(profile['photoUrl'])
-                        : null,
-                    child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
-                        ? const Icon(Icons.person, color: AppColors.goldMedium)
-                        : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                  GestureDetector(
+                    onTap: () {
+                      if (profile.isNotEmpty) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => MatchProfileDetailPage(profile: profile),
+                          ),
+                        );
+                      }
+                    },
+                    child: Row(
                       children: [
-                        Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 2),
-                        Text(city, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12)),
+                        CircleAvatar(
+                          backgroundColor: AppColors.goldMedium.withOpacity(0.2),
+                          backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
+                              ? NetworkImage(profile['photoUrl'])
+                              : null,
+                          child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
+                              ? const Icon(Icons.person, color: AppColors.goldMedium)
+                              : null,
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(name, style: const TextStyle(color: AppColors.goldLight, fontWeight: FontWeight.bold, decoration: TextDecoration.underline, decorationColor: AppColors.goldMedium)),
+                            const SizedBox(height: 2),
+                            Text(city, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12)),
+                          ],
+                        ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const Spacer(),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(

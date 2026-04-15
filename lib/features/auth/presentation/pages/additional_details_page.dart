@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/registration_draft_service.dart';
@@ -111,7 +110,7 @@ class _AdditionalDetailsPageState extends State<AdditionalDetailsPage>
           Container(
             height: 2,
             width: double.infinity,
-            color: Colors.white.withOpacity(0.05),
+            color: Colors.white.withValues(alpha: 0.05),
             child: FractionallySizedBox(
               alignment: Alignment.centerLeft,
               widthFactor: 1.0, // 100% complete
@@ -120,7 +119,7 @@ class _AdditionalDetailsPageState extends State<AdditionalDetailsPage>
                   gradient: AppColors.goldGradient,
                   boxShadow: [
                     BoxShadow(
-                      color: AppColors.goldMedium.withOpacity(0.8),
+                      color: AppColors.goldMedium.withValues(alpha: 0.8),
                       blurRadius: 6,
                       spreadRadius: 1,
                     ),
@@ -180,7 +179,7 @@ class _AdditionalDetailsPageState extends State<AdditionalDetailsPage>
                       Text(
                         "Minimum 50 characters",
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.4),
+                          color: Colors.white.withValues(alpha: 0.4),
                           fontSize: 11,
                           fontStyle: FontStyle.italic,
                         ),
@@ -221,7 +220,7 @@ class _AdditionalDetailsPageState extends State<AdditionalDetailsPage>
                             Text(
                               "Need help? Call ",
                               style: TextStyle(
-                                color: Colors.white.withOpacity(0.5),
+                                color: Colors.white.withValues(alpha: 0.5),
                                 fontSize: 12,
                               ),
                             ),
@@ -269,7 +268,7 @@ class _SectionTitle extends StatelessWidget {
       child: Text(
         title,
         style: TextStyle(
-          color: Colors.white.withOpacity(0.9),
+          color: Colors.white.withValues(alpha: 0.9),
           fontSize: 14,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.5,
@@ -302,17 +301,17 @@ class _AnimatedPill extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
           gradient: isSelected ? AppColors.goldGradient : null,
-          color: isSelected ? null : Colors.white.withOpacity(0.03),
+          color: isSelected ? null : Colors.white.withValues(alpha: 0.03),
           border: Border.all(
             color: isSelected
                 ? Colors.transparent
-                : Colors.white.withOpacity(0.15),
+                : Colors.white.withValues(alpha: 0.15),
             width: 1,
           ),
           boxShadow: isSelected
               ? [
                   BoxShadow(
-                    color: AppColors.goldDark.withOpacity(0.3),
+                    color: AppColors.goldDark.withValues(alpha: 0.3),
                     blurRadius: 6,
                     offset: const Offset(0, 3),
                   ),
@@ -323,7 +322,7 @@ class _AnimatedPill extends StatelessWidget {
           label,
           textAlign: TextAlign.center,
           style: TextStyle(
-            color: isSelected ? Colors.black : Colors.white.withOpacity(0.8),
+            color: isSelected ? Colors.black : Colors.white.withValues(alpha: 0.8),
             fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
             fontSize: 13,
             letterSpacing: 0.3,
@@ -368,18 +367,18 @@ class _PremiumTextAreaState extends State<_PremiumTextArea> {
       duration: const Duration(milliseconds: 300),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.03),
+        color: Colors.white.withValues(alpha: 0.03),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: _isFocused
               ? AppColors.goldMedium
-              : Colors.white.withOpacity(0.15),
+              : Colors.white.withValues(alpha: 0.15),
           width: _isFocused ? 1.5 : 1.0,
         ),
         boxShadow: _isFocused
             ? [
                 BoxShadow(
-                  color: AppColors.goldMedium.withOpacity(0.1),
+                  color: AppColors.goldMedium.withValues(alpha: 0.1),
                   blurRadius: 10,
                   spreadRadius: 1,
                 ),
@@ -399,7 +398,7 @@ class _PremiumTextAreaState extends State<_PremiumTextArea> {
           contentPadding: EdgeInsets.zero,
           hintText: widget.hint,
           hintStyle: TextStyle(
-            color: Colors.white.withOpacity(0.3),
+            color: Colors.white.withValues(alpha: 0.3),
             fontSize: 14,
           ),
         ),

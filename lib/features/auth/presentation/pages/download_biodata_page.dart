@@ -12,7 +12,6 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:http/http.dart' as http;
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
-import '../../../../shared/widgets/gold_button.dart';
 
 class DownloadBiodataPage extends StatefulWidget {
   const DownloadBiodataPage({super.key});
@@ -21,7 +20,8 @@ class DownloadBiodataPage extends StatefulWidget {
   State<DownloadBiodataPage> createState() => _DownloadBiodataPageState();
 }
 
-class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTickerProviderStateMixin {
+class _DownloadBiodataPageState extends State<DownloadBiodataPage>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _entryController;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
@@ -35,7 +35,7 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     {
       "name": "Emerald Traditional",
       "colors": [const Color(0xFF2E7D32), const Color(0xFF4CAF50)],
-      "pattern": Icons.ac_unit, 
+      "pattern": Icons.ac_unit,
     },
     {
       "name": "Royal Sapphire",
@@ -64,9 +64,23 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     super.initState();
     _pageController = PageController(viewportFraction: 0.85);
 
-    _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
-    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.1, 1.0, curve: Curves.easeOut)));
-    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic)));
+    _entryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entryController,
+        curve: const Interval(0.1, 1.0, curve: Curves.easeOut),
+      ),
+    );
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: _entryController,
+            curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic),
+          ),
+        );
 
     Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) _entryController.forward();
@@ -80,77 +94,26 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     super.dispose();
   }
 
-  Future<Uint8List?> _capturePreviewPng() async {
-    final context = _previewCaptureKey.currentContext;
-    if (context == null) return null;
-
-    final boundary = context.findRenderObject() as RenderRepaintBoundary?;
-    if (boundary == null) return null;
-
-    final image = await boundary.toImage(pixelRatio: 3);
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    return byteData?.buffer.asUint8List();
-  }
-
-  Future<File> _writePreviewFile(Uint8List bytes) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.png');
-    await file.writeAsBytes(bytes, flush: true);
-    return file;
-  }
-
-  Future<File> _generatePdf(Uint8List imageBytes) async {
-    final pdf = pw.Document();
-    final image = pw.MemoryImage(imageBytes);
-
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        build: (pw.Context context) {
-          return pw.Center(
-            child: pw.ConstrainedBox(
-              constraints: const pw.BoxConstraints(maxWidth: 500),
-              child: pw.Image(image, fit: pw.BoxFit.contain),
-            ),
-          );
-        },
-      ),
-    );
-
-    final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.pdf');
-    await file.writeAsBytes(await pdf.save());
-    return file;
-  }
-
-  Future<void> _handleDownload() async {
-    final profile = await UserService.instance.getCurrentUserProfile() ?? {};
-    final file = await _generateNativePdf(_themes[_currentThemeIndex], profile);
-    
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Biodata PDF saved to ${file.path}')),
-    );
-  }
 
   Future<void> _handleShare() async {
     final profile = await UserService.instance.getCurrentUserProfile() ?? {};
     final file = await _generateNativePdf(_themes[_currentThemeIndex], profile);
-    
-    await Share.shareXFiles(
-      [XFile(file.path)],
-      text: 'My Swan Match biodata',
-    );
+
+    await Share.shareXFiles([XFile(file.path)], text: 'My Swan Match biodata');
   }
 
-  Future<File> _generateNativePdf(Map<String, dynamic> theme, Map<String, dynamic> profile) async {
+  Future<File> _generateNativePdf(
+    Map<String, dynamic> theme,
+    Map<String, dynamic> profile,
+  ) async {
     final pdf = pw.Document();
-    
+
     final List<Color> themeColors = theme['colors'];
-    final pdfColors = themeColors.map((c) => PdfColor.fromInt(c.value)).toList();
+    final pdfColors = themeColors
+        .map((c) => PdfColor.fromInt(c.value))
+        .toList();
     final bool isObsidian = theme['name'] == 'Obsidian & Gold';
-    
+
     final bgColor = isObsidian ? PdfColor.fromInt(0xFF1E1E1E) : PdfColors.white;
     final textColor = isObsidian ? PdfColors.white : PdfColors.black;
     final labelColor = isObsidian ? PdfColors.grey400 : PdfColors.grey700;
@@ -161,13 +124,15 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
       if (val == null || val.toString().trim().isEmpty) return fallback;
       return val.toString();
     }
-    
+
     // Fetch Profile Image
     pw.ImageProvider? profileImage;
     final photoUrl = profile['photoUrl']?.toString() ?? '';
     if (photoUrl.isNotEmpty) {
       try {
-        final response = await http.get(Uri.parse(photoUrl)).timeout(const Duration(seconds: 5));
+        final response = await http
+            .get(Uri.parse(photoUrl))
+            .timeout(const Duration(seconds: 5));
         if (response.statusCode == 200) {
           profileImage = pw.MemoryImage(response.bodyBytes);
         }
@@ -180,8 +145,11 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     String dobText = '-';
     final dobRaw = profile['dateOfBirth'];
     DateTime? dob;
-    if (dobRaw is Timestamp) dob = dobRaw.toDate();
-    else if (dobRaw is DateTime) dob = dobRaw;
+    if (dobRaw is Timestamp) {
+      dob = dobRaw.toDate();
+    } else if (dobRaw is DateTime) {
+      dob = dobRaw;
+    }
     if (dob != null) {
       final age = ((DateTime.now().difference(dob).inDays) / 365.25).floor();
       dobText = '${DateFormat('d MMM yyyy').format(dob)} ($age Yrs)';
@@ -218,9 +186,15 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                               width: 80,
                               height: 80,
                               decoration: pw.BoxDecoration(
-                                border: pw.Border.all(color: PdfColors.white, width: 2),
+                                border: pw.Border.all(
+                                  color: PdfColors.white,
+                                  width: 2,
+                                ),
                                 shape: pw.BoxShape.circle,
-                                image: pw.DecorationImage(image: profileImage, fit: pw.BoxFit.cover),
+                                image: pw.DecorationImage(
+                                  image: profileImage,
+                                  fit: pw.BoxFit.cover,
+                                ),
                               ),
                             )
                           else
@@ -234,7 +208,11 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                               child: pw.Center(
                                 child: pw.Text(
                                   "P",
-                                  style: pw.TextStyle(color: PdfColors.grey700, fontSize: 32, fontWeight: pw.FontWeight.bold),
+                                  style: pw.TextStyle(
+                                    color: PdfColors.grey700,
+                                    fontSize: 32,
+                                    fontWeight: pw.FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ),
@@ -252,40 +230,111 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                       ),
                     ),
                   ),
-                  
+
                   pw.Expanded(
                     child: pw.Padding(
-                      padding: const pw.EdgeInsets.symmetric(horizontal: 50, vertical: 40),
+                      padding: const pw.EdgeInsets.symmetric(
+                        horizontal: 50,
+                        vertical: 40,
+                      ),
                       child: pw.Column(
                         crossAxisAlignment: pw.CrossAxisAlignment.start,
                         children: [
-                          _buildPdfRow("Name", read('name'), labelColor, textColor),
-                          _buildPdfRow("Height", read('height'), labelColor, textColor),
-                          _buildPdfRow("Date of Birth", dobText, labelColor, textColor),
-                          _buildPdfRow("Marital Status", read('maritalStatus'), labelColor, textColor),
-                          _buildPdfRow("Religion", read('religion'), labelColor, textColor),
-                          _buildPdfRow("Caste", read('caste'), labelColor, textColor),
-                          _buildPdfRow("Star", read('star'), labelColor, textColor),
-                          _buildPdfRow("Location", '${read('city')}, ${read('state')}', labelColor, textColor),
-                          _buildPdfRow("Education", read('educationDegree'), labelColor, textColor),
-                          _buildPdfRow("Occupation", read('occupation'), labelColor, textColor),
-                          _buildPdfRow("Gothram", read('gothram'), labelColor, textColor),
-                          _buildPdfRow("Family Details", read('familyInfo', fallback: read('familyDetails')), labelColor, textColor),
-                          
+                          _buildPdfRow(
+                            "Name",
+                            read('name'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Height",
+                            read('height'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Date of Birth",
+                            dobText,
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Marital Status",
+                            read('maritalStatus'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Religion",
+                            read('religion'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Caste",
+                            read('caste'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Star",
+                            read('star'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Location",
+                            '${read('city')}, ${read('state')}',
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Education",
+                            read('educationDegree'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Occupation",
+                            read('occupation'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Gothram",
+                            read('gothram'),
+                            labelColor,
+                            textColor,
+                          ),
+                          _buildPdfRow(
+                            "Family Details",
+                            read('familyInfo', fallback: read('familyDetails')),
+                            labelColor,
+                            textColor,
+                          ),
+
                           pw.Spacer(),
                           pw.Divider(color: dividerColor),
                           pw.SizedBox(height: 20),
-                          
+
                           // Footer
                           pw.Center(
                             child: pw.Column(
                               children: [
-                                pw.Text("Powered By", style: pw.TextStyle(color: labelColor, fontSize: 10)),
+                                pw.Text(
+                                  "Powered By",
+                                  style: pw.TextStyle(
+                                    color: labelColor,
+                                    fontSize: 10,
+                                  ),
+                                ),
                                 pw.SizedBox(height: 6),
                                 pw.Text(
                                   "Swan Match",
                                   style: pw.TextStyle(
-                                    color: isObsidian ? PdfColors.white : PdfColors.black,
+                                    color: isObsidian
+                                        ? PdfColors.white
+                                        : PdfColors.black,
                                     fontSize: 18,
                                     fontWeight: pw.FontWeight.bold,
                                   ),
@@ -307,12 +356,19 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
     );
 
     final dir = await getApplicationDocumentsDirectory();
-    final file = File('${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.pdf');
+    final file = File(
+      '${dir.path}/biodata_${DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
     await file.writeAsBytes(await pdf.save());
     return file;
   }
 
-  pw.Widget _buildPdfRow(String label, String value, PdfColor labelColor, PdfColor textColor) {
+  pw.Widget _buildPdfRow(
+    String label,
+    String value,
+    PdfColor labelColor,
+    PdfColor textColor,
+  ) {
     return pw.Padding(
       padding: const pw.EdgeInsets.only(bottom: 16),
       child: pw.Row(
@@ -320,13 +376,20 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
         children: [
           pw.SizedBox(
             width: 140,
-            child: pw.Text(label, style: pw.TextStyle(color: labelColor, fontSize: 14)),
+            child: pw.Text(
+              label,
+              style: pw.TextStyle(color: labelColor, fontSize: 14),
+            ),
           ),
           pw.Text(" :  ", style: pw.TextStyle(color: labelColor, fontSize: 14)),
           pw.Expanded(
             child: pw.Text(
               value,
-              style: pw.TextStyle(color: textColor, fontSize: 14, fontWeight: pw.FontWeight.bold),
+              style: pw.TextStyle(
+                color: textColor,
+                fontSize: 14,
+                fontWeight: pw.FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -342,12 +405,21 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.goldMedium, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: AppColors.goldMedium,
+            size: 20,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
           "Generate Biodata",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(
+            color: Colors.white,
+            fontFamily: 'serif',
+            letterSpacing: 1,
+            fontSize: 18,
+          ),
         ),
         centerTitle: true,
       ),
@@ -365,14 +437,19 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                   const SizedBox(height: 10),
                   Text(
                     "Swipe to select a theme",
-                    style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13, letterSpacing: 0.5),
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.5),
+                      fontSize: 13,
+                      letterSpacing: 0.5,
+                    ),
                   ),
                   const SizedBox(height: 20),
 
                   Expanded(
                     child: PageView.builder(
                       controller: _pageController,
-                      onPageChanged: (index) => setState(() => _currentThemeIndex = index),
+                      onPageChanged: (index) =>
+                          setState(() => _currentThemeIndex = index),
                       itemCount: _themes.length,
                       itemBuilder: (context, index) {
                         return AnimatedBuilder(
@@ -391,7 +468,9 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                             );
                           },
                           child: RepaintBoundary(
-                            key: index == _currentThemeIndex ? _previewCaptureKey : null,
+                            key: index == _currentThemeIndex
+                                ? _previewCaptureKey
+                                : null,
                             child: _BiodataPreviewCard(
                               theme: _themes[index],
                               profile: profile,
@@ -412,7 +491,9 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                         height: 8,
                         width: _currentThemeIndex == index ? 24 : 8,
                         decoration: BoxDecoration(
-                          color: _currentThemeIndex == index ? AppColors.goldMedium : Colors.white.withOpacity(0.2),
+                          color: _currentThemeIndex == index
+                              ? AppColors.goldMedium
+                              : Colors.white.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(4),
                         ),
                       );
@@ -421,16 +502,25 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                   const SizedBox(height: 16),
                   Text(
                     _themes[_currentThemeIndex]["name"],
-                    style: const TextStyle(color: AppColors.goldLight, fontWeight: FontWeight.bold, fontSize: 16, fontFamily: 'serif'),
+                    style: const TextStyle(
+                      color: AppColors.goldLight,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      fontFamily: 'serif',
+                    ),
                   ),
                   const SizedBox(height: 32),
 
                   Container(
                     padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.03),
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-                      border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
+                      color: Colors.white.withValues(alpha: 0.03),
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(30),
+                      ),
+                      border: Border(
+                        top: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
+                      ),
                     ),
                     child: Column(
                       children: [
@@ -440,14 +530,22 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage> with SingleTi
                           height: 55,
                           child: OutlinedButton.icon(
                             style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: AppColors.goldMedium, width: 1.5),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                              side: const BorderSide(
+                                color: AppColors.goldMedium,
+                                width: 1.5,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
                               foregroundColor: AppColors.goldMedium,
                             ),
                             icon: const Icon(Icons.share_outlined),
                             label: const Text(
                               "SHARE BIODATA",
-                              style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1,
+                              ),
                             ),
                             onPressed: _handleShare,
                           ),
@@ -519,11 +617,11 @@ class _BiodataPreviewCard extends StatelessWidget {
     final initials = name == '-'
         ? 'U'
         : name
-            .split(' ')
-            .where((part) => part.isNotEmpty)
-            .take(2)
-            .map((part) => part[0].toUpperCase())
-            .join();
+              .split(' ')
+              .where((part) => part.isNotEmpty)
+              .take(2)
+              .map((part) => part[0].toUpperCase())
+              .join();
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -531,7 +629,11 @@ class _BiodataPreviewCard extends StatelessWidget {
         color: isObsidian ? AppColors.onyx : Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: bgColors.first.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 10)),
+          BoxShadow(
+            color: bgColors.first.withValues(alpha: 0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          ),
         ],
       ),
       child: ClipRRect(
@@ -556,8 +658,15 @@ class _BiodataPreviewCard extends StatelessWidget {
                       opacity: 0.1,
                       child: GridView.builder(
                         physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 6),
-                        itemBuilder: (context, i) => Icon(theme["pattern"], color: Colors.white, size: 20),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 6,
+                            ),
+                        itemBuilder: (context, i) => Icon(
+                          theme["pattern"],
+                          color: Colors.white,
+                          size: 20,
+                        ),
                       ),
                     ),
                   ),
@@ -573,20 +682,75 @@ class _BiodataPreviewCard extends StatelessWidget {
                     child: SingleChildScrollView(
                       child: Column(
                         children: [
-                          _BioRow(label: "Name", value: name, isDark: isObsidian),
-                          _BioRow(label: "Height", value: _read('height'), isDark: isObsidian),
-                          _BioRow(label: "Date of Birth", value: _dobWithAge(), isDark: isObsidian),
-                          _BioRow(label: "Marital Status", value: _read('maritalStatus'), isDark: isObsidian),
-                          _BioRow(label: "Religion", value: _read('religion'), isDark: isObsidian),
-                          _BioRow(label: "Caste", value: _casteText(), isDark: isObsidian),
-                          _BioRow(label: "Star", value: _read('star'), isDark: isObsidian),
-                          _BioRow(label: "Location", value: _location(), isDark: isObsidian),
-                          _BioRow(label: "Education", value: _read('educationDegree'), isDark: isObsidian),
-                          _BioRow(label: "Occupation", value: _read('occupation'), isDark: isObsidian),
-                          _BioRow(label: "Gothram", value: _read('gothram'), isDark: isObsidian),
-                          _BioRow(label: "Family Details", value: _read('familyInfo', fallback: _read('familyDetails')), isDark: isObsidian),
+                          _BioRow(
+                            label: "Name",
+                            value: name,
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Height",
+                            value: _read('height'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Date of Birth",
+                            value: _dobWithAge(),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Marital Status",
+                            value: _read('maritalStatus'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Religion",
+                            value: _read('religion'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Caste",
+                            value: _casteText(),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Star",
+                            value: _read('star'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Location",
+                            value: _location(),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Education",
+                            value: _read('educationDegree'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Occupation",
+                            value: _read('occupation'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Gothram",
+                            value: _read('gothram'),
+                            isDark: isObsidian,
+                          ),
+                          _BioRow(
+                            label: "Family Details",
+                            value: _read(
+                              'familyInfo',
+                              fallback: _read('familyDetails'),
+                            ),
+                            isDark: isObsidian,
+                          ),
                           const SizedBox(height: 8),
-                          Divider(color: isObsidian ? Colors.white.withOpacity(0.1) : Colors.grey.shade300),
+                          Divider(
+                            color: isObsidian
+                                ? Colors.white.withValues(alpha: 0.1)
+                                : Colors.grey.shade300,
+                          ),
                           const SizedBox(height: 8),
                           Row(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -595,22 +759,46 @@ class _BiodataPreviewCard extends StatelessWidget {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.center,
                                   children: [
-                                    Text("Powered By", style: TextStyle(color: isObsidian ? Colors.white54 : Colors.grey.shade600, fontSize: 10)),
+                                    Text(
+                                      "Powered By",
+                                      style: TextStyle(
+                                        color: isObsidian
+                                            ? Colors.white54
+                                            : Colors.grey.shade600,
+                                        fontSize: 10,
+                                      ),
+                                    ),
                                     const SizedBox(height: 4),
                                     Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Container(
                                           padding: const EdgeInsets.all(4),
-                                          decoration: BoxDecoration(color: AppColors.goldMedium, borderRadius: BorderRadius.circular(4)),
-                                          child: const Icon(Icons.favorite, color: Colors.white, size: 12),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.goldMedium,
+                                            borderRadius: BorderRadius.circular(
+                                              4,
+                                            ),
+                                          ),
+                                          child: const Icon(
+                                            Icons.favorite,
+                                            color: Colors.white,
+                                            size: 12,
+                                          ),
                                         ),
                                         const SizedBox(width: 4),
                                         Flexible(
                                           child: Text(
                                             "Swan Match",
                                             overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(color: isObsidian ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 14),
+                                            style: TextStyle(
+                                              color: isObsidian
+                                                  ? Colors.white
+                                                  : Colors.black87,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
                                           ),
                                         ),
                                       ],
@@ -638,8 +826,8 @@ class _BiodataPreviewCard extends StatelessWidget {
                         child: CircleAvatar(
                           radius: 40,
                           backgroundColor: Colors.grey.shade300,
-                          backgroundImage: profile['photoUrl'] != null 
-                              ? NetworkImage(profile['photoUrl'].toString()) 
+                          backgroundImage: profile['photoUrl'] != null
+                              ? NetworkImage(profile['photoUrl'].toString())
                               : null,
                           child: profile['photoUrl'] == null
                               ? Text(
@@ -670,7 +858,11 @@ class _BioRow extends StatelessWidget {
   final String value;
   final bool isDark;
 
-  const _BioRow({required this.label, required this.value, required this.isDark});
+  const _BioRow({
+    required this.label,
+    required this.value,
+    required this.isDark,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -684,12 +876,22 @@ class _BioRow extends StatelessWidget {
         children: [
           Expanded(
             flex: 2,
-            child: Text(label, style: TextStyle(color: labelColor, fontSize: 11)),
+            child: Text(
+              label,
+              style: TextStyle(color: labelColor, fontSize: 11),
+            ),
           ),
           Text(" :  ", style: TextStyle(color: labelColor, fontSize: 11)),
           Expanded(
             flex: 3,
-            child: Text(value, style: TextStyle(color: textColor, fontSize: 11, fontWeight: FontWeight.w600)),
+            child: Text(
+              value,
+              style: TextStyle(
+                color: textColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),

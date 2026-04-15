@@ -9,7 +9,7 @@ import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
 import 'personal_details_page.dart';
 
-enum OtpFlowType { registration, login }
+enum OtpFlowType { registration, login, linking, updatePhone, reauthPhone }
 enum OtpDeliveryChannel { sms, email }
 
 class OtpVerificationPage extends StatefulWidget {
@@ -250,7 +250,7 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
           MaterialPageRoute(builder: (context) => const PersonalDetailsPage()),
           (route) => false,
         );
-      } else {
+      } else if (widget.flowType == OtpFlowType.login) {
         final loginPhone = widget.loginPhoneNumber ?? widget.phoneNumber;
 
         if (loginPhone.isEmpty) {
@@ -277,6 +277,34 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
           MaterialPageRoute(builder: (context) => const MainDashboard()),
           (route) => false,
         );
+      } else if (widget.flowType == OtpFlowType.linking) {
+        final credential = AuthService.instance.createPhoneCredential(otp);
+        await AuthService.instance.linkWithPhoneCredential(credential);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Phone number linked successfully!')),
+        );
+        Navigator.pop(context, true);
+      } else if (widget.flowType == OtpFlowType.updatePhone) {
+        await AuthService.instance.updatePhoneNumberWithOtp(otp);
+        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+          'phoneNumber': widget.phoneNumber,
+        });
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Phone number updated successfully!')),
+        );
+        Navigator.pop(context, true);
+      } else if (widget.flowType == OtpFlowType.reauthPhone) {
+        await AuthService.instance.reauthenticateWithPhoneOtp(otp);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Phone re-authentication successful.')),
+        );
+        Navigator.pop(context, true);
       }
     } catch (error) {
       if (!mounted) return;

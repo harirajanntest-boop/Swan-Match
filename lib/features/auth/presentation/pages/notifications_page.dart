@@ -3,7 +3,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
+import 'main_dashboard.dart';
+import 'match_profile_detail_page.dart';
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({super.key});
@@ -98,13 +101,14 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
       final snapshot = await FirebaseFirestore.instance
           .collection('notifications')
           .where('toUserId', isEqualTo: user.uid)
-          .where('isRead', isNotEqualTo: true)
           .get();
 
-      if (snapshot.docs.isEmpty) return;
+      final unreadDocs = snapshot.docs.where((doc) => doc.data()['isRead'] != true).toList();
+
+      if (unreadDocs.isEmpty) return;
 
       final batch = FirebaseFirestore.instance.batch();
-      for (var doc in snapshot.docs) {
+      for (var doc in unreadDocs) {
         batch.update(doc.reference, {
           'isRead': true,
           'seenAt': FieldValue.serverTimestamp(),
@@ -271,6 +275,7 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
                             'time': _timeAgo(when),
                             'isNew': item['isRead'] != true,
                             'isSystem': (item['isSystem'] ?? false) == true,
+                            'fromUserId': (item['fromUserId'] ?? '').toString(),
                           },
                           index: index,
                         );
@@ -369,20 +374,64 @@ class _NotificationTile extends StatelessWidget {
                       
                       // Action Button
                       if (!isSystem)
-                        GestureDetector(
-                          onTap: () {},
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppColors.goldMedium.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(color: AppColors.goldMedium.withOpacity(0.5)),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            GestureDetector(
+                              onTap: () async {
+                                final fromUserId = (item['fromUserId'] ?? '').toString();
+                                if (fromUserId.isEmpty) return;
+                                try {
+                                  final profile = await UserService.instance.getUserProfile(fromUserId);
+                                  if (profile == null || !context.mounted) return;
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => MatchProfileDetailPage(profile: profile),
+                                    ),
+                                  );
+                                } catch (e) {
+                                  debugPrint('Error loading profile: $e');
+                                }
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: AppColors.goldMedium.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: AppColors.goldMedium.withOpacity(0.5)),
+                                ),
+                                child: const Text(
+                                  "View profile",
+                                  style: TextStyle(color: AppColors.goldMedium, fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             ),
-                            child: const Text(
-                              "View profile",
-                              style: TextStyle(color: AppColors.goldMedium, fontSize: 12, fontWeight: FontWeight.bold),
+                            GestureDetector(
+                              onTap: () {
+                                Navigator.pushAndRemoveUntil(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => const MainDashboard(initialIndex: 2),
+                                  ),
+                                  (route) => false,
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withOpacity(0.05),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.white.withOpacity(0.2)),
+                                ),
+                                child: const Text(
+                                  "View Interest",
+                                  style: TextStyle(color: Colors.white70, fontSize: 11, fontWeight: FontWeight.bold),
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                         )
                       else
                         GestureDetector(

@@ -23,7 +23,7 @@ void showLinearMessage(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
           color: isError
-              ? const Color(0xFFB8860B).withOpacity(0.6)  // muted gold-amber border on error
+              ? const Color(0xFFB8860B).withValues(alpha: 0.6)  // muted gold-amber border on error
               : const Color(0xFFD4AF37),                  // gold border on success
           width: 1.2,
         ),
@@ -35,8 +35,8 @@ void showLinearMessage(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
               color: isError
-                  ? const Color(0xFFB8860B).withOpacity(0.15)
-                  : const Color(0xFFD4AF37).withOpacity(0.15),
+                  ? const Color(0xFFB8860B).withValues(alpha: 0.15)
+                  : const Color(0xFFD4AF37).withValues(alpha: 0.15),
               shape: BoxShape.circle,
             ),
             child: Icon(

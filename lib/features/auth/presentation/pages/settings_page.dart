@@ -8,6 +8,7 @@ import 'onboarding_page.dart';
 import 'help_center_page.dart';
 import 'blocked_profiles_page.dart';
 import 'ignored_profiles_page.dart';
+import 'otp_verification_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -91,9 +92,9 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
                   hintText: 'Enter your name',
-                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.5)),
+                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
                   enabledBorder: UnderlineInputBorder(
-                    borderSide: BorderSide(color: Colors.white.withOpacity(0.3)),
+                    borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
                   ),
                   focusedBorder: const UnderlineInputBorder(
                     borderSide: BorderSide(color: AppColors.goldMedium),
@@ -208,11 +209,13 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                   setDialogState(() => isLoading = true);
                   try {
                     await AuthService.instance.changePassword(current, newPass);
-                    if (!mounted) return;
+                    if (!context.mounted) return;
                     Navigator.pop(dialogCtx);
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated successfully')));
                   } catch (e) {
-                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
+                    }
                   } finally {
                     setDialogState(() => isLoading = false);
                   }
@@ -226,6 +229,192 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
           );
         }
       ),
+    );
+  }
+
+  Future<void> _linkGoogle() async {
+    try {
+      await AuthService.instance.linkWithGoogle();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Google account linked successfully!')));
+      setState(() {}); 
+    } catch (e) {
+      if (!mounted) return;
+      final errorMsg = e.toString();
+      if (errorMsg.contains('Email mismatch')) {
+        // Show a clear dialog for email mismatch
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.onyx,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(color: Colors.redAccent.withOpacity(0.3)),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.redAccent, size: 28),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text('Wrong Google Account', style: TextStyle(color: Colors.white, fontSize: 17)),
+                ),
+              ],
+            ),
+            content: Text(
+              errorMsg.replaceFirst('Exception: ', ''),
+              style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 14, height: 1.5),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK', style: TextStyle(color: AppColors.goldMedium, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AuthService.instance.readableAuthError(e))),
+        );
+      }
+    }
+  }
+
+  Future<void> _linkEmailDialog() async {
+    final emailController = TextEditingController();
+    final passwordController = TextEditingController();
+    bool isLoading = false;
+
+    await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(
+            builder: (dialogCtx, setDialogState) {
+              return AlertDialog(
+                backgroundColor: AppColors.onyx,
+                title: const Text('Link Email & Password', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: emailController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Email',
+                        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+                        focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.goldMedium)),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _PasswordTextField(controller: passwordController, hint: 'Password'),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isLoading ? null : () => Navigator.pop(dialogCtx),
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                  ),
+                  ElevatedButton(
+                    onPressed: isLoading ? null : () async {
+                      final email = emailController.text.trim();
+                      final pass = passwordController.text;
+                      if (email.isEmpty || pass.isEmpty) return;
+
+                      setDialogState(() => isLoading = true);
+                      try {
+                        await AuthService.instance.linkWithEmailAndPassword(email, pass);
+                        if (!context.mounted) return;
+                        Navigator.pop(dialogCtx);
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Email linked successfully!')));
+                        setState(() {});
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
+                        }
+                      } finally {
+                        setDialogState(() => isLoading = false);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
+                    child: isLoading
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Link'),
+                  ),
+                ],
+              );
+            }
+        )
+    );
+  }
+
+  Future<void> _linkPhoneDialog() async {
+    final phoneController = TextEditingController();
+    bool isLoading = false;
+
+    await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(
+            builder: (dialogCtx, setDialogState) {
+              return AlertDialog(
+                backgroundColor: AppColors.onyx,
+                title: const Text('Link Phone Number', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+                content: TextField(
+                  controller: phoneController,
+                  keyboardType: TextInputType.phone,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: 'Enter phone number (+91...)',
+                    hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
+                    focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.goldMedium)),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isLoading ? null : () => Navigator.pop(dialogCtx),
+                    child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                  ),
+                  ElevatedButton(
+                    onPressed: isLoading ? null : () async {
+                      final phone = phoneController.text.trim();
+                      if (phone.isEmpty) return;
+
+                      setDialogState(() => isLoading = true);
+                      try {
+                        await AuthService.instance.sendOtp(phoneNumber: phone);
+                        if (!context.mounted) return;
+                        Navigator.pop(dialogCtx);
+                        final success = await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => OtpVerificationPage(
+                              phoneNumber: phone,
+                              flowType: OtpFlowType.linking,
+                            ),
+                          ),
+                        );
+                        if (success == true && context.mounted) {
+                          setState(() {});
+                        }
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
+                        }
+                      } finally {
+                        setDialogState(() => isLoading = false);
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
+                    child: isLoading
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Text('Send OTP'),
+                  ),
+                ],
+              );
+            }
+        )
     );
   }
 
@@ -303,7 +492,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                               'showPhotosToEveryone': value,
                             });
                           },
-                          isLast: true,
                         ),
                       ],
                     ),
@@ -339,7 +527,29 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                           label: "Ignored Profiles",
                           subtitle: "Profiles you didn't want to see again",
                           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const IgnoredProfilesPage())),
-                          isLast: true,
+                        ),
+                      ],
+                    ),
+
+                    // ─── Account Security (Linking) ───
+                    _SettingsSection(
+                      title: "Account Security",
+                      icon: Icons.security_outlined,
+                      children: [
+                        _buildLinkingRow(
+                          label: "Google Account",
+                          providerId: "google.com",
+                          onLink: _linkGoogle,
+                        ),
+                        _buildLinkingRow(
+                          label: "Email & Password",
+                          providerId: "password",
+                          onLink: _linkEmailDialog,
+                        ),
+                        _buildLinkingRow(
+                          label: "Phone Number",
+                          providerId: "phone",
+                          onLink: _linkPhoneDialog,
                         ),
                       ],
                     ),
@@ -383,7 +593,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                         _SettingsActionRow(
                           label: "About Swan Match",
                           subtitle: "Version 1.0.0",
-                          isLast: true,
                           onTap: () {
                             showAboutDialog(
                               context: context,
@@ -446,7 +655,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                           label: _isDeletingAccount ? "Deleting account..." : "Delete Account",
                           icon: Icons.delete_outline,
                           isDestructive: true,
-                          isLast: true,
                           onTap: _isDeletingAccount
                               ? () {}
                               : () => _confirmAndDeleteAccount(profile),
@@ -459,6 +667,53 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             },
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildLinkingRow({
+    required String label,
+    required String providerId,
+    required VoidCallback onLink,
+  }) {
+    final linkedProviders = AuthService.instance.getLinkedProviderIds();
+    final isLinked = linkedProviders.contains(providerId);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05))),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
+                const SizedBox(height: 4),
+                Text(
+                  isLinked ? "Verified & Linked" : "Not Linked",
+                  style: TextStyle(
+                    color: isLinked ? AppColors.goldLight : Colors.white.withValues(alpha: 0.4),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (!isLinked)
+            TextButton(
+              onPressed: onLink,
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.goldLight,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+              ),
+              child: const Text("Link Now", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            )
+          else
+            const Icon(Icons.check_circle, color: AppColors.goldLight, size: 20),
+        ],
       ),
     );
   }
@@ -500,9 +755,9 @@ class _SettingsSection extends StatelessWidget {
               filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.03),
+                  color: Colors.white.withValues(alpha: 0.03),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                 ),
                 child: Column(children: children),
               ),
@@ -535,8 +790,8 @@ class _PasswordTextFieldState extends State<_PasswordTextField> {
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         hintText: widget.hint,
-        hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
-        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withOpacity(0.1))),
+        hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
+        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
         focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.goldMedium)),
         suffixIcon: IconButton(
           icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, color: Colors.white38, size: 18),
@@ -553,7 +808,6 @@ class _SettingsActionRow extends StatelessWidget {
   final String? subtitle;
   final IconData? icon;
   final bool isDestructive;
-  final bool isLast;
   final VoidCallback onTap;
 
   const _SettingsActionRow({
@@ -561,7 +815,6 @@ class _SettingsActionRow extends StatelessWidget {
     this.subtitle,
     this.icon,
     this.isDestructive = false,
-    this.isLast = false,
     required this.onTap,
   });
 
@@ -574,12 +827,12 @@ class _SettingsActionRow extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         decoration: BoxDecoration(
-          border: isLast ? null : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+          border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05))),
         ),
         child: Row(
           children: [
             if (icon != null) ...[
-              Icon(icon, color: itemColor.withOpacity(0.8), size: 20),
+              Icon(icon, color: itemColor.withValues(alpha: 0.8), size: 20),
               const SizedBox(width: 16),
             ],
             Expanded(
@@ -589,12 +842,12 @@ class _SettingsActionRow extends StatelessWidget {
                   Text(label, style: TextStyle(color: itemColor, fontSize: 14, fontWeight: FontWeight.w500)),
                   if (subtitle != null) ...[
                     const SizedBox(height: 4),
-                    Text(subtitle!, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12)),
+                    Text(subtitle!, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
                   ]
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: Colors.white.withOpacity(0.3), size: 14),
+            Icon(Icons.arrow_forward_ios, color: Colors.white.withValues(alpha: 0.3), size: 14),
           ],
         ),
       ),
@@ -608,14 +861,12 @@ class _SettingsToggleRow extends StatelessWidget {
   final String subtitle;
   final bool value;
   final Function(bool) onChanged;
-  final bool isLast;
 
   const _SettingsToggleRow({
     required this.label,
     required this.subtitle,
     required this.value,
     required this.onChanged,
-    this.isLast = false,
   });
 
   @override
@@ -623,7 +874,7 @@ class _SettingsToggleRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: BoxDecoration(
-        border: isLast ? null : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05))),
       ),
       child: Row(
         children: [
@@ -633,7 +884,7 @@ class _SettingsToggleRow extends StatelessWidget {
               children: [
                 Text(label, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 4),
-                Text(subtitle, style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12)),
+                Text(subtitle, style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
               ],
             ),
           ),
@@ -642,7 +893,7 @@ class _SettingsToggleRow extends StatelessWidget {
             activeColor: AppColors.obsidian,
             activeTrackColor: AppColors.goldMedium,
             inactiveThumbColor: Colors.white54,
-            inactiveTrackColor: Colors.white.withOpacity(0.1),
+            inactiveTrackColor: Colors.white.withValues(alpha: 0.1),
             onChanged: onChanged,
           ),
         ],
@@ -657,14 +908,12 @@ class _SettingsDropdownRow extends StatelessWidget {
   final String value;
   final List<String> options;
   final Function(String?) onChanged;
-  final bool isLast;
 
   const _SettingsDropdownRow({
     required this.label,
     required this.value,
     required this.options,
     required this.onChanged,
-    this.isLast = false,
   });
 
   @override
@@ -672,7 +921,7 @@ class _SettingsDropdownRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       decoration: BoxDecoration(
-        border: isLast ? null : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05))),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -682,9 +931,9 @@ class _SettingsDropdownRow extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.05),
+              color: Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
             ),
             child: DropdownButtonHideUnderline(
               child: DropdownButton<String>(

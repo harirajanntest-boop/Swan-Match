@@ -288,10 +288,11 @@ class _CreateAccountPageState extends State<CreateAccountPage>
                     GoldGradientButton(
                       text: "START REGISTRATION",
                       onPressed: () {
-                        RegistrationDraftService.instance.setValues(<String, dynamic>{
-                          'profileFor': _selectedFor,
-                          'motherTongue': _selectedLanguage,
-                        });
+                        RegistrationDraftService.instance
+                            .setValues(<String, dynamic>{
+                              'profileFor': _selectedFor,
+                              'motherTongue': _selectedLanguage,
+                            });
 
                         Navigator.push(
                           context,
@@ -299,7 +300,7 @@ class _CreateAccountPageState extends State<CreateAccountPage>
                             builder: (context) => const BasicDetailsPage(),
                           ),
                         );
-                         },
+                      },
                     ),
                     const SizedBox(height: 20),
                   ],

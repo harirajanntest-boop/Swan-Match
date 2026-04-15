@@ -1,10 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/storage_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../services/auth_service.dart';
+import 'otp_verification_page.dart';
 import '../../../../shared/widgets/linear_message.dart';
 
 class EditProfilePage extends StatefulWidget {
@@ -175,13 +178,158 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
     if (confirmed != true) return;
 
-    await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-      'phoneNumber': phoneController.text.trim(),
-      'email': emailController.text.trim(),
-    });
+    final currentPhone = (profile['phoneNumber'] ?? '').toString();
+    final currentEmail = (profile['email'] ?? '').toString();
 
-    if (!mounted) return;
-    showLinearMessage(context, 'Contact details updated.');
+    final newPhoneRaw = phoneController.text.trim();
+    final newEmailRaw = emailController.text.trim();
+
+    final emailChanged = newEmailRaw.isNotEmpty && newEmailRaw != currentEmail;
+    final phoneChanged = newPhoneRaw.isNotEmpty && newPhoneRaw != currentPhone;
+
+    try {
+      if (emailChanged) {
+        try {
+          await AuthService.instance.updateEmail(newEmailRaw);
+        } on FirebaseAuthException catch (error) {
+          if (error.code == 'requires-recent-login') {
+            final reauthed = await _reauthenticateForEmailUpdate(profile);
+            if (!reauthed) return;
+            await AuthService.instance.updateEmail(newEmailRaw);
+          } else {
+            rethrow;
+          }
+        }
+
+        final authEmail = FirebaseAuth.instance.currentUser?.email ?? '';
+        if (authEmail.isEmpty || authEmail.toLowerCase() != newEmailRaw.toLowerCase()) {
+          showLinearMessage(
+            context,
+            'Email update pending verification. Please verify the email before it updates in your profile.',
+            isError: true,
+          );
+          return;
+        }
+
+        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+          'email': authEmail,
+        });
+      }
+
+      if (phoneChanged) {
+        final formattedPhone = AuthService.instance.normalizePhoneE164(
+          newPhoneRaw,
+          defaultCountryCode: '+1',
+        );
+
+        await AuthService.instance.sendOtp(phoneNumber: formattedPhone);
+
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => OtpVerificationPage(
+              flowType: OtpFlowType.updatePhone,
+              phoneNumber: formattedPhone,
+              otpDeliveryChannel: OtpDeliveryChannel.sms,
+              destination: formattedPhone,
+            ),
+          ),
+        );
+      }
+
+      if (!mounted) return;
+      if (!emailChanged && !phoneChanged) {
+        showLinearMessage(context, 'No changes to update.');
+      } else if (!phoneChanged) {
+        showLinearMessage(context, 'Contact details updated.');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      showLinearMessage(
+        context,
+        AuthService.instance.readableAuthError(error),
+        isError: true,
+      );
+    }
+  }
+
+  Future<bool> _reauthenticateForEmailUpdate(Map<String, dynamic> profile) async {
+    final linkedIds = AuthService.instance.getLinkedProviderIds();
+
+    if (linkedIds.contains('password')) {
+      final password = await _promptPassword();
+      if (password == null || password.isEmpty) return false;
+      await AuthService.instance.reauthenticateWithPassword(password);
+      return true;
+    }
+
+    if (linkedIds.contains('google.com')) {
+      await AuthService.instance.reauthenticateWithGoogle();
+      return true;
+    }
+
+    if (linkedIds.contains('phone')) {
+      final currentPhone = (profile['phoneNumber'] ?? '').toString();
+      if (currentPhone.isEmpty) {
+        showLinearMessage(context, 'We could not find your phone number. Please contact support.', isError: true);
+        return false;
+      }
+
+      await AuthService.instance.sendOtp(phoneNumber: currentPhone);
+      if (!mounted) return false;
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => OtpVerificationPage(
+            flowType: OtpFlowType.reauthPhone,
+            phoneNumber: currentPhone,
+            otpDeliveryChannel: OtpDeliveryChannel.sms,
+            destination: currentPhone,
+          ),
+        ),
+      );
+
+      return result == true;
+    }
+
+    showLinearMessage(context, 'Please connect at least one login method (Google, Phone, or Email) before making changes.', isError: true);
+    return false;
+  }
+
+  Future<String?> _promptPassword() async {
+    final controller = TextEditingController();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.onyx,
+        title: const Text('Confirm Password', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          obscureText: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            labelText: 'Password',
+            labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Confirm', style: TextStyle(color: AppColors.goldMedium)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return null;
+    return controller.text.trim();
   }
 
   Future<void> _manageHoroscope(Map<String, dynamic> profile) async {
@@ -258,7 +406,7 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
     final uid = (profile['uid'] ?? '').toString();
     if (uid.isEmpty) {
-      showLinearMessage(context, 'Unable to identify account. Please login again.', isError: true);
+      showLinearMessage(context, 'Your session has expired. Please log out and log back in.', isError: true);
       return;
     }
 

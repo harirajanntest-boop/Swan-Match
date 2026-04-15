@@ -1,9 +1,11 @@
 import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
-import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
+import '../../../../services/stripe_service.dart';
+import '../../../../services/user_service.dart';
 
 class SubscriptionPage extends StatefulWidget {
   const SubscriptionPage({super.key});
@@ -416,16 +418,30 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                         GoldGradientButton(
                           text: "PAY NOW",
                           onPressed: () async {
-                            final plan =
-                                '${_selectedTab.toLowerCase()}-${_selectedTier.toLowerCase()}-${_selectedDuration.toLowerCase()}';
-                            await UserService.instance.setSubscriptionPlan(plan);
+                            try {
+                              // Show loading indicator
+                              showDialog(
+                                context: context,
+                                barrierDismissible: false,
+                                builder: (context) => const Center(
+                                  child: CircularProgressIndicator(color: AppColors.goldMedium),
+                                ),
+                              );
 
-                            if (!context.mounted) return;
-                            Navigator.pushAndRemoveUntil(
-                              context,
-                              MaterialPageRoute(builder: (context) => const MainDashboard()),
-                              (route) => false, // Destroys previous history
-                            );
+                              // Start Stripe subscription
+                              await StripeService.instance.startSubscription(
+                                priceId: StripeService.premiumMonthlyPriceId,
+                              );
+
+                              if (!context.mounted) return;
+                              Navigator.pop(context); // Close loading
+                            } catch (e) {
+                              if (!context.mounted) return;
+                              Navigator.pop(context); // Close loading
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                              );
+                            }
                           },
                         ),
                         const SizedBox(height: 20),
@@ -505,7 +521,11 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.workspace_premium, color: Colors.black, size: 40),
+                  child: const Icon(
+                    Icons.workspace_premium,
+                    color: Colors.black,
+                    size: 40,
+                  ),
                 ),
                 const SizedBox(height: 22),
                 const Text(
@@ -549,7 +569,9 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                         AppColors.goldLight.withOpacity(0.1),
                       ],
                     ),
-                    border: Border.all(color: AppColors.goldMedium.withOpacity(0.35)),
+                    border: Border.all(
+                      color: AppColors.goldMedium.withOpacity(0.35),
+                    ),
                   ),
                   child: const Column(
                     children: [
@@ -574,10 +596,7 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                       SizedBox(height: 4),
                       Text(
                         'Cancel anytime',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 13,
-                        ),
+                        style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
                     ],
                   ),
@@ -587,19 +606,38 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                   width: double.infinity,
                   height: 54,
                   child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.pushAndRemoveUntil(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const MainDashboard(initialIndex: 4),
-                        ),
-                        (route) => false,
-                      );
+                    onPressed: () async {
+                      try {
+                        // Show loading indicator
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (context) => const Center(
+                            child: CircularProgressIndicator(color: AppColors.goldMedium),
+                          ),
+                        );
+
+                        // Start Stripe subscription
+                        await StripeService.instance.startSubscription(
+                          priceId: StripeService.premiumMonthlyPriceId,
+                        );
+
+                        if (!context.mounted) return;
+                        Navigator.pop(context); // Close loading
+                      } catch (e) {
+                        if (!context.mounted) return;
+                        Navigator.pop(context); // Close loading
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                        );
+                      }
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.goldMedium,
                       foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       textStyle: const TextStyle(
                         fontWeight: FontWeight.bold,
                         letterSpacing: 0.8,
@@ -611,10 +649,17 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 GestureDetector(
-                  onTap: () {
+                  onTap: () async {
+                    // Mark registration as complete even if user skips payment
+                    await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+                      'registrationCompleted': true,
+                    });
+                    if (!context.mounted) return;
                     Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(builder: (context) => const MainDashboard()),
+                      MaterialPageRoute(
+                        builder: (context) => const MainDashboard(),
+                      ),
                       (route) => false,
                     );
                   },
@@ -658,12 +703,19 @@ class _FeatureCard extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 7),
                 child: Row(
                   children: [
-                    const Icon(Icons.check_circle, color: AppColors.goldMedium, size: 20),
+                    const Icon(
+                      Icons.check_circle,
+                      color: AppColors.goldMedium,
+                      size: 20,
+                    ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         feature,
-                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
                   ],

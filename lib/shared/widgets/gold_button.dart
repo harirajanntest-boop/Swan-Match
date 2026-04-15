@@ -33,7 +33,7 @@ class GoldGradientButton extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             color: (enabled ? AppColors.goldDark : Colors.black)
-                .withOpacity(0.35),
+                .withValues(alpha: 0.35),
             blurRadius: 12,
             offset: const Offset(0, 5),
           ),
