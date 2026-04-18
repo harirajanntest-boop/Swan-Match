@@ -87,7 +87,6 @@ class _AdditionalDetailsPageState extends State<AdditionalDetailsPage>
           "Additional Details (5/5)",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 16,
           ),

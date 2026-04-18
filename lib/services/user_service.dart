@@ -281,30 +281,24 @@ class UserService {
     }
 
     // Comprehensive photo check
-    bool hasPhoto =
-        has('photoUrl') || has('profileImageUrl') || has('imageUrl');
-    if (!hasPhoto) {
-      final photos = profile['photos'];
-      if (photos is List && photos.isNotEmpty) hasPhoto = true;
-    }
+    bool hasPhoto = false;
+    final photos = profile['photos'];
+    if (photos is List && photos.isNotEmpty) hasPhoto = true;
 
     final checks = [
-      has('name'),
+      has('firstName') || has('name'),
       has('gender'),
       has('dateOfBirth') || has('age'),
-      has('religion'),
-      has('caste'),
-      has('motherTongue'),
-      has('height'),
-      has('educationDegree') || has('education'),
-      has('occupation'),
-      has('annualIncome') || has('income'),
-      has('city') || has('state') || has('country'),
-      hasPhoto,
-      has('aboutMe'),
-      has('partnerPreference') || has('partnerPreferences'),
+      has('partnerPreference'),
+      has('city') && has('country'),
+      has('highestQualification') || has('educationDegree') || has('education'),
+      has('profession') || has('occupation'),
+      has('lookingFor'),
+      has('drinking') || has('smoking') || has('workout') || has('pets'),
+      has('communicationStyle') || has('loveLanguage') || has('educationLevel') || has('zodiac'),
       has('interests'),
-      has('lifestyle'),
+      hasPhoto,
+      has('bio') || has('aboutMe'),
     ];
 
     final completed = checks.where((c) => c).length;

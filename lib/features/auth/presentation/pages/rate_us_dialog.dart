@@ -59,7 +59,7 @@ class _RateUsDialogState extends State<RateUsDialog> {
                 const Text(
                   "How is your experience while using our app?",
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif', height: 1.3),
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, height: 1.3),
                 ),
                 const SizedBox(height: 12),
                 Text(

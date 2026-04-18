@@ -53,7 +53,7 @@ class _InterestsViewState extends State<InterestsView> with SingleTickerProvider
                 children: [
                   const Text(
                     "Interests",
-                    style: TextStyle(color: Colors.white, fontSize: 28, fontFamily: 'serif', fontWeight: FontWeight.w600, letterSpacing: 1),
+                    style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600, letterSpacing: 1),
                   ),
                   Container(
                     decoration: BoxDecoration(
@@ -423,7 +423,7 @@ class _PremiumEmptyState extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, ),
           ),
           
           const SizedBox(height: 12),

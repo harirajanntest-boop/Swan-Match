@@ -1,6 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:country_state_city/country_state_city.dart' as csc;
+import 'package:country_picker/country_picker.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -21,25 +21,10 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
   late final Animation<Offset> _slideAnim;
 
   // ─── Form State ────────────────────────────────────────────────────────────
-  String? _selectedCountry;
-  String? _selectedCountryCode;
-  String? _selectedState;
-  String? _selectedStateCode;
-  String? _selectedCity;
+  String _selectedCountry = '';
+  String _selectedState = '';
+  String _selectedCity = '';
 
-  List<csc.Country> _countries = const <csc.Country>[];
-  List<csc.State> _states = const <csc.State>[];
-  List<csc.City> _cities = const <csc.City>[];
-  bool _isLoadingCountries = true;
-  bool _isLoadingStates = false;
-  bool _isLoadingCities = false;
-
-  T? _firstWhereOrNull<T>(Iterable<T> list, bool Function(T item) test) {
-    for (final item in list) {
-      if (test(item)) return item;
-    }
-    return null;
-  }
 
   @override
   void initState() {
@@ -64,131 +49,29 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
           ),
         );
 
-    _loadCountryStateCityData();
+    _loadSavedLocationData();
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
     });
   }
 
-  Future<void> _loadCountryStateCityData() async {
+  Future<void> _loadSavedLocationData() async {
     try {
       final profile = await UserService.instance.getCurrentUserProfile();
-      final countries = await csc.getAllCountries();
-
       if (!mounted) return;
-
-      final savedCountry = (profile?['country'] ?? '').toString().trim();
-      if (countries.isEmpty) {
-        if (mounted) {
-          setState(() => _isLoadingCountries = false);
-        }
-        return;
-      }
-
-      final defaultCountry = countries.firstWhere(
-        (country) => country.name.toLowerCase() == (savedCountry.isEmpty ? 'india' : savedCountry.toLowerCase()),
-        orElse: () => countries.first,
-      );
-
-      final defaultCountryCode = defaultCountry.isoCode.trim();
 
       setState(() {
-        _countries = countries;
-        _selectedCountry = defaultCountry.name;
-        _selectedCountryCode = defaultCountryCode;
-        _isLoadingCountries = false;
+        _selectedCountry = (profile?['country'] ?? '').toString().trim();
+        _selectedState = (profile?['state'] ?? '').toString().trim();
+        _selectedCity = (profile?['city'] ?? '').toString().trim();
       });
-
-      if (defaultCountryCode.isNotEmpty) {
-        await _loadStatesForCountry(
-          countryCode: defaultCountryCode,
-          preferredState: (profile?['state'] ?? '').toString().trim(),
-          preferredCity: (profile?['city'] ?? '').toString().trim(),
-        );
-      }
     } catch (_) {
       if (!mounted) return;
-      setState(() => _isLoadingCountries = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to load country/state/city list.')),
-      );
     }
   }
 
-  Future<void> _loadStatesForCountry({
-    required String countryCode,
-    String preferredState = '',
-    String preferredCity = '',
-  }) async {
-    setState(() {
-      _isLoadingStates = true;
-      _states = const <csc.State>[];
-      _cities = const <csc.City>[];
-      _selectedState = null;
-      _selectedStateCode = null;
-      _selectedCity = null;
-    });
 
-    final states = await csc.getStatesOfCountry(countryCode);
-    if (!mounted) return;
-
-    csc.State? selectedState;
-    if (preferredState.isNotEmpty) {
-      for (final state in states) {
-        if (state.name.toLowerCase() == preferredState.toLowerCase()) {
-          selectedState = state;
-          break;
-        }
-      }
-    }
-
-    setState(() {
-      _states = states;
-      _selectedState = selectedState?.name;
-      _selectedStateCode = selectedState?.isoCode;
-      _isLoadingStates = false;
-    });
-
-    if (selectedState != null) {
-      await _loadCitiesForState(
-        countryCode: countryCode,
-        stateCode: selectedState.isoCode,
-        preferredCity: preferredCity,
-      );
-    }
-  }
-
-  Future<void> _loadCitiesForState({
-    required String countryCode,
-    required String stateCode,
-    String preferredCity = '',
-  }) async {
-    setState(() {
-      _isLoadingCities = true;
-      _cities = const <csc.City>[];
-      _selectedCity = null;
-    });
-
-    final cities = await csc.getStateCities(countryCode, stateCode);
-    if (!mounted) return;
-
-    csc.City? selectedCity;
-    if (preferredCity.isNotEmpty) {
-      for (final city in cities) {
-        if (city.name.toLowerCase() == preferredCity.toLowerCase()) {
-          selectedCity = city;
-          break;
-        }
-      }
-    }
-
-    setState(() {
-      _cities = cities;
-      _selectedCity = selectedCity?.name;
-      _isLoadingCities = false;
-    });
-  }
 
   @override
   void dispose() {
@@ -215,7 +98,6 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
           "Location Details (3/5)",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 16,
           ),
@@ -269,84 +151,101 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // ─── Country ───
-                      const _SectionTitle(title: "Your residing country"),
-                      _PremiumDropdown(
-                        hint: "Select Country",
-                        value: _selectedCountry,
-                        items: _countries
-                            .map((country) => country.name.trim())
-                          .where((name) => name.isNotEmpty)
-                          .toList(),
-                        enabled: !_isLoadingCountries,
-                        onChanged: (v) async {
-                              final selected = _countries
-                                  .where((country) => country.name.trim() == v)
-                                  .toList();
-                                final picked = _firstWhereOrNull(selected, (_) => true);
-                                final isoCode = picked?.isoCode.trim() ?? '';
-                                if (picked == null || isoCode.isEmpty) return;
-
-                          setState(() {
-                            _selectedCountry = picked.name;
-                            _selectedCountryCode = isoCode;
-                            _selectedState = null;
-                            _selectedStateCode = null;
-                            _selectedCity = null;
-                          });
-
-                          await _loadStatesForCountry(countryCode: isoCode);
-                        },
-                      ),
-                      const SizedBox(height: 24),
-
-                      // ─── State ───
-                      const _SectionTitle(title: "Your residing state"),
-                      _PremiumDropdown(
-                        hint: _selectedCountry == null
-                            ? "Select Country first"
-                            : "Select State",
-                        value: _selectedState,
-                        items: _states
-                            .map((state) => state.name.trim())
-                          .where((name) => name.isNotEmpty)
-                          .toList(),
-                        enabled: !_isLoadingStates && _selectedCountryCode != null,
-                        onChanged: (v) async {
-                              final selected = _states
-                                  .where((state) => state.name.trim() == v)
-                                  .toList();
-                                final picked = _firstWhereOrNull(selected, (_) => true);
-                                final stateCode = picked?.isoCode.trim() ?? '';
-                                if (picked == null || _selectedCountryCode == null || stateCode.isEmpty) return;
-
-                          setState(() {
-                            _selectedState = picked.name;
-                            _selectedStateCode = stateCode;
-                            _selectedCity = null;
-                          });
-
-                          await _loadCitiesForState(
-                            countryCode: _selectedCountryCode!,
-                            stateCode: stateCode,
+                      // ─── Location Picker ───
+                      // Country picker button
+                      GestureDetector(
+                        onTap: () {
+                          showCountryPicker(
+                            context: context,
+                            showPhoneCode: false,
+                            onSelect: (Country country) {
+                              setState(() {
+                                _selectedCountry = country.name;
+                                _selectedState = '';
+                                _selectedCity = '';
+                              });
+                            },
+                            countryListTheme: CountryListThemeData(
+                              backgroundColor: const Color(0xFF1A1A1A),
+                              textStyle: const TextStyle(color: Colors.white, fontSize: 14),
+                              searchTextStyle: const TextStyle(color: Colors.white),
+                              inputDecoration: InputDecoration(
+                                hintText: 'Search country...',
+                                hintStyle: const TextStyle(color: Colors.white38),
+                                prefixIcon: const Icon(Icons.search, color: Color(0xFFD4A017)),
+                                enabledBorder: OutlineInputBorder(
+                                  borderSide: const BorderSide(color: Color(0xFFD4A017)),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderSide: const BorderSide(color: Color(0xFFD4A017), width: 2),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                              ),
+                            ),
                           );
                         },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          decoration: BoxDecoration(
+                            border: Border(bottom: const BorderSide(color: Color(0xFFD4A017))),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                _selectedCountry.isEmpty ? 'Select Country' : _selectedCountry,
+                                style: TextStyle(
+                                  color: _selectedCountry.isEmpty ? Colors.white38 : Colors.white,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const Icon(Icons.arrow_drop_down, color: Color(0xFFD4A017)),
+                            ],
+                          ),
+                        ),
                       ),
-                      const SizedBox(height: 24),
-
-                      // ─── City ───
-                      const _SectionTitle(title: "Your residing city"),
-                      _PremiumDropdown(
-                        hint: _selectedState == null
-                            ? "Select State first"
-                            : "Select City",
-                        value: _selectedCity,
-                        items: _cities
-                            .map((city) => city.name.trim())
-                          .where((name) => name.isNotEmpty)
-                          .toList(),
-                        enabled: !_isLoadingCities && _selectedStateCode != null,
+                      const SizedBox(height: 20),
+                      // State TextField (manual input after country selected)
+                      TextField(
+                        enabled: _selectedCountry.isNotEmpty,
+                        onChanged: (v) => setState(() => _selectedState = v),
+                        style: const TextStyle(color: Colors.white),
+                        cursorColor: const Color(0xFFD4A017),
+                        decoration: InputDecoration(
+                          labelText: 'State / Province',
+                          labelStyle: const TextStyle(color: Colors.white54),
+                          enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFFD4A017)),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
+                          ),
+                          disabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // City TextField
+                      TextField(
+                        enabled: _selectedState.isNotEmpty,
                         onChanged: (v) => setState(() => _selectedCity = v),
+                        style: const TextStyle(color: Colors.white),
+                        cursorColor: const Color(0xFFD4A017),
+                        decoration: InputDecoration(
+                          labelText: 'City / Town',
+                          labelStyle: const TextStyle(color: Colors.white54),
+                          enabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFFD4A017)),
+                          ),
+                          focusedBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
+                          ),
+                          disabledBorder: const UnderlineInputBorder(
+                            borderSide: BorderSide(color: Colors.white12),
+                          ),
+                        ),
                       ),
                       const SizedBox(height: 48),
 
@@ -356,9 +255,9 @@ class _LocationDetailsPageState extends State<LocationDetailsPage>
                         onPressed: () async {
                           try {
                             await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                              'country': _selectedCountry ?? '',
-                              'state': _selectedState ?? '',
-                              'city': _selectedCity ?? '',
+                              'country': _selectedCountry,
+                              'state': _selectedState,
+                              'city': _selectedCity,
                             });
 
                             if (!context.mounted) return;

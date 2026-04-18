@@ -163,7 +163,6 @@ class _InterestsPageState extends State<InterestsPage>
             "Select your interests",
             style: TextStyle(
               color: Colors.white,
-              fontFamily: 'serif',
               letterSpacing: 1,
               fontSize: 18,
             ),

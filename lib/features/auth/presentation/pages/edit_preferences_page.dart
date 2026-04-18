@@ -260,7 +260,7 @@ class _EditPreferencesPageState extends State<EditPreferencesPage> with SingleTi
                     ),
                     const SizedBox(height: 24),
                     
-                    Text("Edit $title", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, fontFamily: 'serif')),
+                    Text("Edit $title", style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold, )),
                     const SizedBox(height: 8),
                     Text("Please specify the range to find your preferred matches.", style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13)),
                     const SizedBox(height: 32),
@@ -369,7 +369,7 @@ class _EditPreferencesPageState extends State<EditPreferencesPage> with SingleTi
         ),
         title: const Text(
           "Partner Preferences",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -673,7 +673,7 @@ class _PreferenceCard extends StatelessWidget {
             padding: const EdgeInsets.only(left: 4, bottom: 12),
             child: Text(
               title,
-              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'serif', letterSpacing: 0.5),
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5),
             ),
           ),
           ClipRRect(

@@ -17,7 +17,7 @@ class UpgradeScreen extends StatelessWidget {
         ),
         title: const Text(
           'Upgrade',
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', fontSize: 18),
+          style: TextStyle(color: Colors.white, , fontSize: 18),
         ),
         centerTitle: true,
       ),

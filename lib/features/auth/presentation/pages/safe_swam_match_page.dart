@@ -19,7 +19,7 @@ class SafeSwamMatchPage extends StatelessWidget {
         ),
         title: const Text(
           "Safe Swan Match",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -30,7 +30,7 @@ class SafeSwamMatchPage extends StatelessWidget {
           children: [
             const Text(
               "Why Safe Swan Match?",
-              style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+              style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, ),
             ),
             const SizedBox(height: 12),
             Text(

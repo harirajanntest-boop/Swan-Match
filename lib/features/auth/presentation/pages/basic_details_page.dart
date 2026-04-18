@@ -179,7 +179,6 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
           "Basic Details",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
           ),
         ),
@@ -228,7 +227,6 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
                             style: TextStyle(
                               color: Colors.white.withOpacity(0.9),
                               fontSize: 24,
-                              fontFamily: 'serif',
                               letterSpacing: 1.2,
                             ),
                           ),
@@ -355,7 +353,6 @@ class _BasicDetailsPageState extends State<BasicDetailsPage>
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 18,
-                  fontFamily: 'serif',
                 ),
               ),
               const SizedBox(height: 15),
@@ -436,7 +433,6 @@ class _PremiumPhoneFieldState extends State<_PremiumPhoneField> {
                 : Colors.white.withOpacity(0.5),
             fontSize: _isFocused ? 12 : 14,
             letterSpacing: 1,
-            fontFamily: 'serif',
           ),
           child: const Text("Phone Number"),
         ),
@@ -604,7 +600,6 @@ class _PremiumInputFieldState extends State<_PremiumInputField> {
                 : Colors.white.withOpacity(0.5),
             fontSize: _isFocused ? 12 : 14,
             letterSpacing: 1,
-            fontFamily: 'serif',
           ),
           child: Text(widget.label),
         ),

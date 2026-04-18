@@ -4,11 +4,15 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
-import 'onboarding_page.dart';
+import 'auth_gate.dart';
 import 'help_center_page.dart';
 import 'blocked_profiles_page.dart';
 import 'ignored_profiles_page.dart';
 import 'otp_verification_page.dart';
+import 'success_stories_page.dart';
+import 'privacy_policy_page.dart';
+import 'safe_swam_match_page.dart';
+import 'rate_us_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -139,7 +143,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         const SnackBar(content: Text('Your account has been permanently deleted.')),
       );
       Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const OnboardingPage()),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
         (route) => false,
       );
     } on FirebaseAuthException catch (error) {
@@ -173,7 +177,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         builder: (dialogCtx, setDialogState) {
           return AlertDialog(
             backgroundColor: AppColors.onyx,
-            title: const Text('Change Password', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+            title: const Text('Change Password', style: TextStyle(color: Colors.white, )),
             content: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -292,7 +296,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             builder: (dialogCtx, setDialogState) {
               return AlertDialog(
                 backgroundColor: AppColors.onyx,
-                title: const Text('Link Email & Password', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+                title: const Text('Link Email & Password', style: TextStyle(color: Colors.white, )),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -359,7 +363,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             builder: (dialogCtx, setDialogState) {
               return AlertDialog(
                 backgroundColor: AppColors.onyx,
-                title: const Text('Link Phone Number', style: TextStyle(color: Colors.white, fontFamily: 'serif')),
+                title: const Text('Link Phone Number', style: TextStyle(color: Colors.white, )),
                 content: TextField(
                   controller: phoneController,
                   keyboardType: TextInputType.phone,
@@ -431,7 +435,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         ),
         title: const Text(
           "Settings",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -586,9 +590,34 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                       icon: Icons.help_outline,
                       children: [
                         _SettingsActionRow(
-                          label: "Help Us",
+                          label: "Help Center",
                           subtitle: "Visit our help desk & contact support",
                           onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HelpCenterPage())),
+                        ),
+                        _SettingsActionRow(
+                          label: "Rate Us",
+                          subtitle: "Share your experience with us",
+                          onTap: () {
+                            showDialog(
+                              context: context,
+                              builder: (context) => const RateUsDialog(),
+                            );
+                          },
+                        ),
+                        _SettingsActionRow(
+                          label: "Success Stories",
+                          subtitle: "Read inspiring stories from our users",
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SuccessStoriesPage())),
+                        ),
+                        _SettingsActionRow(
+                          label: "Privacy Policy",
+                          subtitle: "Learn about our privacy practices",
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PrivacyPolicyPage())),
+                        ),
+                        _SettingsActionRow(
+                          label: "Safe Swan Match",
+                          subtitle: "Safety guidelines and tips",
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SafeSwamMatchPage())),
                         ),
                         _SettingsActionRow(
                           label: "About Swan Match",
@@ -630,9 +659,9 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                                   try {
                                     await AuthService.instance.signOut();
                                     if (!context.mounted) return;
-                                    Navigator.pushNamedAndRemoveUntil(
+                                    Navigator.pushAndRemoveUntil(
                                       context,
-                                      '/login',
+                                      MaterialPageRoute(builder: (_) => const AuthGate()),
                                       (route) => false,
                                     );
                                   } catch (error) {
@@ -744,7 +773,7 @@ class _SettingsSection extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(
                   title,
-                  style: const TextStyle(color: AppColors.goldLight, fontSize: 15, fontWeight: FontWeight.bold, fontFamily: 'serif', letterSpacing: 0.5),
+                  style: const TextStyle(color: AppColors.goldLight, fontSize: 15, fontWeight: FontWeight.bold, letterSpacing: 0.5),
                 ),
               ],
             ),

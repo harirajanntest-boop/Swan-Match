@@ -80,7 +80,6 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
           "Trust & Safety",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 18,
           ),
@@ -185,7 +184,6 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
                           color: Colors.white,
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
-                          fontFamily: 'serif',
                         ),
                       ),
                       const SizedBox(height: 12),

@@ -397,7 +397,6 @@ class _GuideSlideWidget extends StatelessWidget {
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 24,
-                    fontFamily: 'serif',
                     fontWeight: FontWeight.w700,
                     letterSpacing: 1,
                     height: 1.3,

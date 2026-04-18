@@ -26,7 +26,7 @@ class HelpCenterPage extends StatelessWidget {
         ),
         title: const Text(
           "Help & Support",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 20),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 20),
         ),
         centerTitle: true,
       ),
@@ -58,7 +58,7 @@ class HelpCenterPage extends StatelessWidget {
             // ─── Contact Section ───
             const Text(
               "Contact Us",
-              style: TextStyle(color: AppColors.goldLight, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+              style: TextStyle(color: AppColors.goldLight, fontSize: 18, fontWeight: FontWeight.bold, ),
             ),
             const SizedBox(height: 16),
             _buildContactCard(
@@ -87,7 +87,7 @@ class HelpCenterPage extends StatelessWidget {
             // ─── FAQ Section ───
             const Text(
               "Frequently Asked Questions",
-              style: TextStyle(color: AppColors.goldLight, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+              style: TextStyle(color: AppColors.goldLight, fontSize: 18, fontWeight: FontWeight.bold, ),
             ),
             const SizedBox(height: 16),
             _buildFaqItem("How to delete my account?", "Go to Settings > Account > Delete Account to permanently remove your profile."),

@@ -172,7 +172,6 @@ class _ProfessionalDetailsPageState extends State<ProfessionalDetailsPage>
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 16,
-                        fontFamily: 'serif',
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -291,7 +290,6 @@ class _ProfessionalDetailsPageState extends State<ProfessionalDetailsPage>
           "Professional Details (4/5)",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 16,
           ),

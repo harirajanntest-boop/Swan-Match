@@ -337,7 +337,6 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
           "Verification",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
           ),
         ),
@@ -452,7 +451,6 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 16,
-                                    fontFamily: 'serif',
                                     letterSpacing: 1,
                                     height: 1.5,
                                   ),

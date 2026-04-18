@@ -28,10 +28,13 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
   final Map<String, IconData> _sectionIcons = {
     "Basic Details": Icons.person_outline,
-    "Religious Information": Icons.menu_book_outlined,
-    "Professional Information": Icons.work_outline,
     "Location": Icons.location_on_outlined,
-    "Family Details": Icons.family_restroom_outlined,
+    "Education & Profession": Icons.work_outline,
+    "Lifestyle": Icons.fitness_center_outlined,
+    "Values & Identity": Icons.psychology_outlined,
+    "Interests": Icons.favorite_outline,
+    "Photos": Icons.photo_library_outlined,
+    "Bio": Icons.edit_note_outlined,
   };
 
   @override
@@ -65,7 +68,7 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         ),
         title: const Text(
           "Edit Profile",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -89,7 +92,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                         children: [
                           _buildProgressHeader(profile),
                           _buildQuickActions(profile),
-                          _buildBioSection(aboutMe),
                           const SizedBox(height: 20),
                           ...profileData.keys.map((sectionName) {
                             return _PremiumAccordion(
@@ -425,8 +427,17 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         file: file.path.isEmpty ? throw Exception('Invalid selected file') : File(file.path),
       );
 
+      // Get existing photos array
+      final existingPhotos = profile['photos'] is List 
+          ? List<String>.from(profile['photos'] as List)
+          : <String>[];
+      
+      // Add new photo at the beginning of the array
+      existingPhotos.insert(0, photoUrl);
+
       await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-        'photoUrl': photoUrl,
+        'photos': existingPhotos,
+        'profilePicture': photoUrl,
       });
 
       if (!mounted) return;
@@ -484,40 +495,50 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       switch (label) {
         case 'Gender':
           return const ['Male', 'Female', 'Other'];
-        case 'Marital Status':
-          return const ['Never married', 'Divorced', 'Widowed', 'Awaiting divorce'];
-        case 'Physical Status':
-          return const ['Normal', 'Physically Challenged'];
-        case 'Body Type':
-          return const ['Slim', 'Average', 'Athletic', 'Heavy'];
-        case 'Profile Created by':
-          return const ['Self', 'Parents', 'Sibling', 'Relative', 'Friend'];
-        case 'Eating Habits':
-          return const ['Vegetarian', 'Non Vegetarian', 'Eggetarian', 'Vegan'];
-        case 'Drinking Habits':
-          return const ['Never', 'Occasionally', 'Regularly'];
-        case 'Smoking Habits':
-          return const ['Never', 'Occasionally', 'Regularly'];
+        case 'Show Gender':
+          return const ['Yes', 'No'];
+        case 'Partner Preference':
+          return const ['Male', 'Female', 'Both'];
       }
     }
 
-    if (section == 'Religious Information') {
+    if (section == 'Location') {
       switch (label) {
-        case 'Religion':
-          return const ['Hindu', 'Muslim', 'Christian', 'Sikh', 'Jain', 'Buddhist', 'Other'];
-        case 'Having Dosham?':
-          return const ['Yes', 'No', "Don't know"];
+        case 'Distance Preference':
+          return ['10', '25', '50', '100', '150', '200'];
       }
     }
 
-    if (section == 'Family Details') {
+    if (section == 'Education & Profession') {
       switch (label) {
-        case 'Family Values':
-          return const ['Traditional', 'Moderate', 'Liberal'];
-        case 'Family Type':
-          return const ['Joint Family', 'Nuclear Family'];
-        case 'Family Status':
-          return const ['Middle Class', 'Upper Middle Class', 'Rich / Affluent'];
+        case 'Highest Qualification':
+          return const ['High School', 'Bachelor\'s Degree', 'Master\'s Degree', 'PhD', 'Other'];
+        case 'What Are You Looking For?':
+          return const ['Serious Relationship', 'Casual Dating', 'Friendship', 'Marriage'];
+      }
+    }
+
+    if (section == 'Lifestyle') {
+      switch (label) {
+        case 'Drinking':
+          return const ['Never', 'Socially', 'Regularly'];
+        case 'Smoking':
+          return const ['Never', 'Socially', 'Regularly'];
+        case 'Workout':
+          return const ['Never', '1-2 times/week', '3-4 times/week', '5+ times/week'];
+      }
+    }
+
+    if (section == 'Values & Identity') {
+      switch (label) {
+        case 'Communication Style':
+          return const ['Direct', 'Diplomatic', 'Reserved', 'Expressive'];
+        case 'Love Language':
+          return const ['Words of Affirmation', 'Acts of Service', 'Receiving Gifts', 'Quality Time', 'Physical Touch'];
+        case 'Education Level':
+          return const ['High School', 'Undergraduate', 'Postgraduate', 'Doctorate'];
+        case 'Zodiac':
+          return const ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
       }
     }
 
@@ -625,7 +646,7 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       title: label,
       initial: initial,
       options: _optionsForField(section, label),
-      multiLine: label == 'In My Own Words',
+      multiLine: label == 'About You',
     );
 
     if (updated == null) return;
@@ -654,102 +675,86 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Map<String, Object?> _fieldMap(String section, String label) {
-    if (section == 'Bio' && label == 'In My Own Words') {
-      return {'key': 'aboutMe'};
+    if (section == 'Bio' && label == 'About You') {
+      return {'key': 'bio'};
     }
 
     if (section == 'Basic Details') {
       switch (label) {
-        case 'Name':
-          return {'key': 'name'};
+        case 'First Name':
+          return {'key': 'firstName'};
         case 'Gender':
           return {'key': 'gender'};
-        case 'Age':
-          return {'key': 'age'};
-        case 'Height':
-          return {'key': 'height'};
-        case 'Weight':
-          return {'key': 'weight'};
-        case 'Marital Status':
-          return {'key': 'maritalStatus'};
-        case 'Mother Tongue':
-          return {'key': 'motherTongue'};
-        case 'Physical Status':
-          return {'key': 'physicalStatus'};
-        case 'Body Type':
-          return {'key': 'bodyType'};
-        case 'Profile Created by':
-          return {'key': 'profileFor'};
-        case 'Eating Habits':
-          return {'key': 'eatingHabits', 'nested': 'lifestyle'};
-        case 'Drinking Habits':
-          return {'key': 'drinkingHabits', 'nested': 'lifestyle'};
-        case 'Smoking Habits':
-          return {'key': 'smokingHabits', 'nested': 'lifestyle'};
-      }
-    }
-
-    if (section == 'Religious Information') {
-      switch (label) {
-        case 'Religion':
-          return {'key': 'religion'};
-        case 'Caste':
-          return {'key': 'caste'};
-        case 'Sub caste':
-          return {'key': 'subCaste'};
-        case 'Gothram':
-          return {'key': 'gothram'};
-        case 'Zodiac':
-          return {'key': 'zodiac'};
-        case 'Star':
-          return {'key': 'star'};
-        case 'Rassi':
-          return {'key': 'rassi'};
-        case 'Having Dosham?':
-          return {'key': 'dosham'};
-      }
-    }
-
-    if (section == 'Professional Information') {
-      switch (label) {
-        case 'Education':
-          return {'key': 'educationDegree'};
-        case 'College / Institution':
-          return {'key': 'collegeName'};
-        case 'Occupation':
-          return {'key': 'occupation'};
-        case 'Employed In':
-          return {'key': 'employmentSector'};
-        case 'Annual Income':
-          return {'key': 'annualIncome'};
+        case 'Show Gender':
+          return {'key': 'showGender'};
+        case 'Partner Preference':
+          return {'key': 'partnerPreference'};
       }
     }
 
     if (section == 'Location') {
       switch (label) {
-        case 'Country':
-          return {'key': 'country'};
-        case 'State':
-          return {'key': 'state'};
         case 'City':
           return {'key': 'city'};
-        case 'Citizenship':
-          return {'key': 'citizenship'};
+        case 'State':
+          return {'key': 'state'};
+        case 'Country':
+          return {'key': 'country'};
+        case 'Distance Preference':
+          return {'key': 'distanceKm'};
       }
     }
 
-    if (section == 'Family Details') {
+    if (section == 'Education & Profession') {
       switch (label) {
-        case 'Family Values':
-          return {'key': 'familyValues'};
-        case 'Family Type':
-          return {'key': 'familyType'};
-        case 'Family Status':
-          return {'key': 'familyStatus'};
-        case 'Father Occupation':
-          return {'key': 'fatherOccupation'};
-        case 'Mother Occupation':
-          return {'key': 'motherOccupation'};
+        case 'Highest Qualification':
+          return {'key': 'highestQualification'};
+        case 'University':
+          return {'key': 'university'};
+        case 'Profession':
+          return {'key': 'profession'};
+        case 'What Are You Looking For?':
+          return {'key': 'lookingFor'};
+      }
+    }
+
+    if (section == 'Lifestyle') {
+      switch (label) {
+        case 'Drinking':
+          return {'key': 'drinking'};
+        case 'Smoking':
+          return {'key': 'smoking'};
+        case 'Workout':
+          return {'key': 'workout'};
+        case 'Pets':
+          return {'key': 'pets'};
+      }
+    }
+
+    if (section == 'Values & Identity') {
+      switch (label) {
+        case 'Communication Style':
+          return {'key': 'communicationStyle'};
+        case 'Love Language':
+          return {'key': 'loveLanguage'};
+        case 'Education Level':
+          return {'key': 'educationLevel'};
+        case 'Zodiac':
+          return {'key': 'zodiac'};
+      }
+    }
+
+    if (section == 'Interests') {
+      switch (label) {
+        case 'Your Interests':
+          return {'key': 'interests'};
+      }
+    }
+
+    if (section == 'Photos') {
+      switch (label) {
+        case 'Profile Picture':
+          return {'key': 'profilePicture'};
       }
     }
 
@@ -757,13 +762,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Map<String, Map<String, String>> _buildProfileData(Map<String, dynamic> profile) {
-    final lifestyleRaw = profile['lifestyle'];
-    final lifestyle = lifestyleRaw is Map<String, dynamic>
-        ? lifestyleRaw
-        : lifestyleRaw is Map
-            ? Map<String, dynamic>.from(lifestyleRaw)
-            : <String, dynamic>{};
-
     String value(String key, {String fallback = '+ Add Details'}) {
       final raw = profile[key];
       if (raw == null) return fallback;
@@ -771,59 +769,57 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       return text.isEmpty ? fallback : text;
     }
 
-    String lifestyleValue(String key) {
-      final raw = lifestyle[key];
+    String listValue(String key) {
+      final raw = profile[key];
       if (raw == null) return '+ Add Details';
-      final text = raw.toString().trim();
-      return text.isEmpty ? '+ Add Details' : text;
+      if (raw is List && raw.isNotEmpty) {
+        return raw.join(', ');
+      }
+      return '+ Add Details';
     }
 
     return {
       "Basic Details": {
-        "Name": value('name', fallback: 'Member'),
+        "First Name": value('firstName', fallback: 'Member'),
         "Gender": value('gender'),
+        "Show Gender": value('showGender') == 'true' ? 'Yes' : 'No',
         "Age": _formatAge(profile['dateOfBirth'], fallbackAge: profile['age']),
-        "Height": value('height'),
-        "Weight": value('weight'),
-        "Marital Status": value('maritalStatus'),
-        "Mother Tongue": value('motherTongue'),
-        "Physical Status": value('physicalStatus'),
-        "Body Type": value('bodyType'),
-        "Profile Created by": value('profileFor', fallback: 'Self'),
-        "Eating Habits": lifestyleValue('eatingHabits'),
-        "Drinking Habits": lifestyleValue('drinkingHabits'),
-        "Smoking Habits": lifestyleValue('smokingHabits'),
-      },
-      "Religious Information": {
-        "Religion": value('religion'),
-        "Caste": value('caste'),
-        "Sub caste": value('subCaste'),
-        "Gothram": value('gothram'),
-        "Zodiac": value('zodiac'),
-        "Star": value('star'),
-        "Rassi": value('rassi'),
-        "Having Dosham?": value('dosham', fallback: "Don't know"),
-      },
-      "Professional Information": {
-        "Education": value('educationDegree'),
-        "College / Institution": value('collegeName'),
-        "Occupation": value('occupation'),
-        "Employed In": value('employmentSector'),
-        "Annual Income": value('annualIncome'),
+        "Partner Preference": value('partnerPreference'),
       },
       "Location": {
-        "Country": value('country'),
-        "State": value('state'),
         "City": value('city'),
-        "Citizenship": value('citizenship', fallback: value('country', fallback: '+ Add Details')),
+        "State": value('state'),
+        "Country": value('country'),
+        "Distance Preference": '${value('distanceKm', fallback: '50')} km',
       },
-      "Family Details": {
-        "Family Values": value('familyValues', fallback: 'Not Specified'),
-        "Family Type": value('familyType', fallback: 'Not Specified'),
-        "Family Status": value('familyStatus', fallback: 'Not Specified'),
-        "Father Occupation": value('fatherOccupation'),
-        "Mother Occupation": value('motherOccupation'),
-      }
+      "Education & Profession": {
+        "Highest Qualification": value('highestQualification'),
+        "University": value('university'),
+        "Profession": value('profession'),
+        "What Are You Looking For?": value('lookingFor'),
+      },
+      "Lifestyle": {
+        "Drinking": value('drinking'),
+        "Smoking": value('smoking'),
+        "Workout": value('workout'),
+        "Pets": listValue('pets'),
+      },
+      "Values & Identity": {
+        "Communication Style": value('communicationStyle'),
+        "Love Language": value('loveLanguage'),
+        "Education Level": value('educationLevel'),
+        "Zodiac": value('zodiac'),
+      },
+      "Interests": {
+        "Your Interests": listValue('interests'),
+      },
+      "Photos": {
+        "Profile Picture": value('profilePicture', fallback: 'Not set'),
+        "Total Photos": profile['photos'] is List ? '${(profile['photos'] as List).length}' : '0',
+      },
+      "Bio": {
+        "About You": value('bio', fallback: 'No bio yet'),
+      },
     };
   }
 
@@ -898,6 +894,7 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _QuickActionPill(
             icon: _isUploadingPhoto ? Icons.hourglass_top : Icons.camera_alt_outlined,
@@ -909,11 +906,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
             icon: Icons.contact_phone_outlined,
             label: "Edit Contact",
             onTap: () => _editContact(profile),
-          ),
-          _QuickActionPill(
-            icon: Icons.explore_outlined,
-            label: "Manage Horoscope",
-            onTap: () => _manageHoroscope(profile),
           ),
           if (photoUrl.isNotEmpty)
             Stack(
@@ -950,53 +942,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     );
   }
 
-  Widget _buildBioSection(String aboutMe) {
-    final bio = aboutMe.isEmpty ? 'Add a short introduction about yourself.' : aboutMe;
-
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: () => _editProfileField(
-          profile: <String, dynamic>{'aboutMe': aboutMe},
-          section: 'Bio',
-          label: 'In My Own Words',
-          currentValue: aboutMe,
-        ),
-        child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: AppColors.goldMedium.withOpacity(0.05),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppColors.goldMedium.withOpacity(0.2)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.edit_note, color: AppColors.goldMedium, size: 20),
-                    SizedBox(width: 8),
-                    Text("In My Own Words", style: TextStyle(color: AppColors.goldLight, fontSize: 15, fontWeight: FontWeight.bold, fontFamily: 'serif')),
-                  ],
-                ),
-                Icon(Icons.edit, color: Colors.white.withOpacity(0.3), size: 16),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              bio,
-              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
-            ),
-          ],
-        ),
-        ),
-      ),
-    );
-  }
 }
 
 // ─── Custom Animated Glassmorphic Accordion ───
@@ -1024,9 +969,6 @@ class _PremiumAccordion extends StatelessWidget {
       decoration: BoxDecoration(
         color: isOpen ? Colors.white.withOpacity(0.05) : Colors.white.withOpacity(0.02),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: isOpen ? AppColors.goldMedium.withOpacity(0.4) : Colors.white.withOpacity(0.05),
-        ),
         boxShadow: isOpen ? [BoxShadow(color: AppColors.goldMedium.withOpacity(0.05), blurRadius: 20)] : [],
       ),
       child: Column(
@@ -1048,7 +990,6 @@ class _PremiumAccordion extends StatelessWidget {
                         color: isOpen ? AppColors.goldLight : Colors.white,
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        fontFamily: 'serif',
                       ),
                     ),
                   ),

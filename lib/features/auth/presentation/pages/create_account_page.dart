@@ -79,7 +79,6 @@ class _CreateAccountPageState extends State<CreateAccountPage>
           "Create Profile",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
           ),
         ),
@@ -150,7 +149,6 @@ class _CreateAccountPageState extends State<CreateAccountPage>
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 22,
-                          fontFamily: 'serif',
                           letterSpacing: 1.5,
                         ),
                       ),

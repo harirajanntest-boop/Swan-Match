@@ -100,7 +100,6 @@ class _ReligiousDetailsPageState extends State<ReligiousDetailsPage>
           "Religious Details (2/5)",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 16,
           ),

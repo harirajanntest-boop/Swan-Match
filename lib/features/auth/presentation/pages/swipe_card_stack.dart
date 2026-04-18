@@ -201,38 +201,6 @@ class _SwipeCardStackState extends State<SwipeCardStack>
 
     return Column(
       children: [
-        // ─── Card counter ───
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '${_currentIndex + 1} of ${widget.matches.length}',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.45),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              Row(
-                children: [
-                  Icon(Icons.swipe,
-                      color: AppColors.goldMedium.withOpacity(0.5), size: 16),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Swipe to explore',
-                    style: TextStyle(
-                      color: AppColors.goldMedium.withOpacity(0.5),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-
         // ─── Card stack ───
         Expanded(
           child: Padding(
@@ -257,14 +225,24 @@ class _SwipeCardStackState extends State<SwipeCardStack>
 
         // ─── Action buttons ───
         Padding(
-          padding: const EdgeInsets.fromLTRB(32, 12, 32, 20),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _buildActionBtn(
+                icon: Icons.refresh,
+                color: Colors.yellow.shade600,
+                bgColor: Colors.grey.shade800,
+                size: 48,
+                onTap: () {
+                  // Rewind functionality
+                },
+              ),
+              _buildActionBtn(
                 icon: Icons.close,
-                color: Colors.redAccent.shade200,
-                size: 54,
+                color: Colors.white,
+                bgColor: Colors.grey.shade800,
+                size: 56,
                 onTap: () {
                   if (_isAnimating || _currentIndex >= widget.matches.length) {
                     return;
@@ -274,22 +252,32 @@ class _SwipeCardStackState extends State<SwipeCardStack>
                 },
               ),
               _buildActionBtn(
-                icon: Icons.auto_awesome,
-                color: AppColors.goldMedium,
-                size: 64,
-                isMain: true,
+                icon: Icons.star,
+                color: Colors.blue.shade400,
+                bgColor: Colors.grey.shade800,
+                size: 56,
                 onTap: _tapSendInterest,
               ),
               _buildActionBtn(
-                icon: Icons.bookmark_add_outlined,
-                color: Colors.greenAccent.shade200,
-                size: 54,
+                icon: Icons.favorite,
+                color: Colors.green.shade400,
+                bgColor: Colors.grey.shade800,
+                size: 56,
                 onTap: () {
                   if (_isAnimating || _currentIndex >= widget.matches.length) {
                     return;
                   }
                   _swipeRight = true;
                   _animateOut();
+                },
+              ),
+              _buildActionBtn(
+                icon: Icons.flash_on,
+                color: Colors.purple.shade400,
+                bgColor: Colors.grey.shade800,
+                size: 48,
+                onTap: () {
+                  // Boost functionality
                 },
               ),
             ],
@@ -422,6 +410,7 @@ class _SwipeCardStackState extends State<SwipeCardStack>
   Widget _buildActionBtn({
     required IconData icon,
     required Color color,
+    required Color bgColor,
     required double size,
     bool isMain = false,
     required VoidCallback onTap,
@@ -433,12 +422,10 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: isMain
-              ? AppColors.goldGradient
-              : null,
-          color: isMain ? null : Colors.white.withOpacity(0.06),
+          gradient: isMain ? AppColors.goldGradient : null,
+          color: isMain ? null : bgColor,
           border: Border.all(
-            color: isMain ? Colors.transparent : color.withOpacity(0.4),
+            color: isMain ? Colors.transparent : color.withOpacity(0.3),
             width: 2,
           ),
           boxShadow: isMain
@@ -453,7 +440,7 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         ),
         child: Icon(
           icon,
-          color: isMain ? Colors.black : color,
+          color: color,
           size: size * 0.42,
         ),
       ),
@@ -511,34 +498,33 @@ class _SwipeMatchCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = _readValue(['name'], fallback: 'Member');
+    final name = _readValue(['name', 'firstName'], fallback: 'Member');
     final age = _ageText();
-    final caste = _readValue(['caste']);
-    final education = _readValue(['educationDegree']);
-    final occupation = _readValue(['occupation']);
-    final city = _readValue(['city']);
-    final height = _readValue(['height']);
-    final star = _readValue(['star']);
-    final photoUrl = _readValue(['photoUrl', 'profileImageUrl', 'imageUrl']);
-    final isOnline =
-        match['isOnline'] == true || match['online'] == true;
+    // Use photos array only
+    String photoUrl = '';
+    if (match['photos'] is List && (match['photos'] as List).isNotEmpty) {
+      photoUrl = (match['photos'] as List).first.toString();
+    }
+    final interests = match['interests'] is List
+        ? List<String>.from(match['interests'] as List)
+        : <String>[];
 
     return GestureDetector(
       onTap: isInteractive ? onTap : null,
       child: Container(
         width: double.infinity,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.5),
-              blurRadius: 20,
-              offset: const Offset(0, 10),
+              color: Colors.black.withOpacity(0.3),
+              blurRadius: 15,
+              offset: const Offset(0, 5),
             ),
           ],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: BorderRadius.circular(12),
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -581,163 +567,77 @@ class _SwipeMatchCard extends StatelessWidget {
                       colors: [
                         Colors.transparent,
                         Colors.transparent,
-                        Colors.black.withOpacity(0.3),
-                        Colors.black.withOpacity(0.85),
-                        Colors.black.withOpacity(0.95),
+                        Colors.black.withOpacity(0.2),
+                        Colors.black.withOpacity(0.7),
+                        Colors.black.withOpacity(0.9),
                       ],
-                      stops: const [0.0, 0.35, 0.55, 0.75, 1.0],
+                      stops: const [0.0, 0.4, 0.6, 0.8, 1.0],
                     ),
-                  ),
-                ),
-              ),
-
-              // ─── Top badges ───
-              Positioned(
-                top: 16,
-                left: 16,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade900.withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: Colors.blue.shade300.withOpacity(0.5)),
-                  ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.verified, color: Colors.white, size: 14),
-                      SizedBox(width: 4),
-                      Text("Verified",
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                ),
-              ),
-
-              // ─── Online indicator ───
-              Positioned(
-                top: 16,
-                right: 16,
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: isOnline
-                        ? Colors.green.shade900.withOpacity(0.8)
-                        : Colors.grey.shade900.withOpacity(0.8),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(
-                          color: isOnline ? Colors.greenAccent : Colors.grey,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        isOnline ? 'Online' : 'Offline',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w500),
-                      ),
-                    ],
                   ),
                 ),
               ),
 
               // ─── Bottom info ───
               Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: ClipRRect(
-                  borderRadius: const BorderRadius.only(
-                    bottomLeft: Radius.circular(28),
-                    bottomRight: Radius.circular(28),
-                  ),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                    child: Container(
-                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.3),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  age.isNotEmpty ? '$name, $age' : name,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 26,
-                                    fontWeight: FontWeight.bold,
-                                    fontFamily: 'serif',
-                                    letterSpacing: 0.5,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              if (isSaved)
-                                const Icon(Icons.bookmark,
-                                    color: AppColors.goldMedium, size: 22),
-                            ],
+                bottom: 20,
+                left: 20,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                        fontFamily: 'serif',
+                        letterSpacing: 0.5,
+                        shadows: [
+                          Shadow(
+                            color: Colors.black,
+                            offset: Offset(0, 2),
+                            blurRadius: 4,
                           ),
-                          const SizedBox(height: 8),
-                          // Attribute chips
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 6,
-                            children: [
-                              if (occupation.isNotEmpty)
-                                _chipWidget(Icons.work_outline, occupation),
-                              if (city.isNotEmpty)
-                                _chipWidget(Icons.location_on_outlined, city),
-                              if (education.isNotEmpty)
-                                _chipWidget(
-                                    Icons.school_outlined, education),
-                              if (height.isNotEmpty)
-                                _chipWidget(
-                                    Icons.height, height),
-                              if (caste.isNotEmpty)
-                                _chipWidget(Icons.groups_outlined, caste),
-                              if (star.isNotEmpty)
-                                _chipWidget(Icons.star_border, star),
-                            ],
-                          ),
-                          if (isInteractive) ...[
-                            const SizedBox(height: 14),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    'Tap to view full profile →',
-                                    style: TextStyle(
-                                      color:
-                                          AppColors.goldLight.withOpacity(0.7),
-                                      fontSize: 12,
-                                      fontStyle: FontStyle.italic,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
                         ],
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Text(
+                          age.isNotEmpty ? '$age' : '',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.w400,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black,
+                                offset: Offset(0, 2),
+                                blurRadius: 4,
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (age.isNotEmpty) const SizedBox(width: 8),
+                        const Text(
+                          '2 miles away',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 18,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black,
+                                offset: Offset(0, 2),
+                                blurRadius: 4,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ],

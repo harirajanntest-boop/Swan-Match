@@ -3,15 +3,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/onboarding_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/create_account_page.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/login_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
 import 'package:swam_match_app/services/notification_service.dart' as v1;
 import 'package:swam_match_app/features/auth/presentation/pages/payment_status_page.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
+import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -71,7 +71,7 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
           title: 'Swan Match',
           theme: ThemeData(
             brightness: Brightness.dark,
-            fontFamily: 'serif',
+            fontFamily: GoogleFonts.poppins().fontFamily,
             // Sets the main background to deep black
             scaffoldBackgroundColor: AppColors.ivory,
             primaryColor: AppColors.goldMedium,
@@ -111,7 +111,7 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
               ? const {}
               : {
                   '/create-account': (context) => const CreateAccountPage(),
-                  '/login': (context) => const LoginPage(),
+                  '/profile': (context) => const ProfileScreen(),
                   '/payment-success': (context) => const PaymentStatusPage(isSuccess: true),
                   '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
                 },

@@ -139,7 +139,7 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
         ),
         title: const Text(
           "Notifications",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
         actions: [

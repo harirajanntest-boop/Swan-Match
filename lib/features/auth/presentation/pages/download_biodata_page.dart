@@ -416,7 +416,6 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage>
           "Generate Biodata",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 18,
           ),
@@ -506,7 +505,6 @@ class _DownloadBiodataPageState extends State<DownloadBiodataPage>
                       color: AppColors.goldLight,
                       fontWeight: FontWeight.bold,
                       fontSize: 16,
-                      fontFamily: 'serif',
                     ),
                   ),
                   const SizedBox(height: 32),

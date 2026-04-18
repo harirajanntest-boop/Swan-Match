@@ -19,7 +19,7 @@ class SuccessStoriesPage extends StatelessWidget {
         ),
         title: const Text(
           "Success Stories",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -34,7 +34,7 @@ class SuccessStoriesPage extends StatelessWidget {
               padding: EdgeInsets.fromLTRB(20, 32, 20, 16),
               child: Text(
                 "Success stories for the day",
-                style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+                style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, ),
               ),
             ),
 
@@ -145,7 +145,7 @@ class SuccessStoriesPage extends StatelessWidget {
                 const SizedBox(height: 12),
                 const Text(
                   "Lakhs of Happy Marriages",
-                  style: TextStyle(color: AppColors.goldLight, fontSize: 22, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+                  style: TextStyle(color: AppColors.goldLight, fontSize: 22, fontWeight: FontWeight.bold, ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 8),
@@ -239,7 +239,7 @@ class _SuccessStoryCard extends StatelessWidget {
                     right: 16,
                     child: Text(
                       story["names"]!,
-                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'serif', letterSpacing: 0.5),
+                      style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5),
                     ),
                   ),
                 ],

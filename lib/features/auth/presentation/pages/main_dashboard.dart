@@ -6,7 +6,7 @@ import '../../../../services/interest_service.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
-import 'home_page.dart'; // ─── IMPORT THE NEW FILE HERE ───
+import 'swipe_page.dart';
 import 'interests_view.dart';
 import 'match_profile_detail_page.dart';
 import 'messages_view.dart';
@@ -18,6 +18,7 @@ import '../../../../services/auth_service.dart';
 import 'settings_page.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'feature_guide_page.dart';
+import 'profile_screen.dart';
 
 class MainDashboard extends StatefulWidget {
   final int initialIndex;
@@ -123,7 +124,7 @@ class _MainDashboardState extends State<MainDashboard> {
               Text(
                 'Mandatory Account Linking',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white, fontFamily: 'serif', fontSize: 20),
+                style: TextStyle(color: Colors.white, fontSize: 20),
               ),
             ],
           ),
@@ -180,7 +181,7 @@ class _MainDashboardState extends State<MainDashboard> {
     Widget currentPage;
     switch (_currentIndex) {
       case 0:
-        currentPage = HomePage(
+        currentPage = SwipePage(
           onOpenMatches: ({Map<String, dynamic>? profile}) => _openMatchesTab(profile: profile),
           onOpenUpgrade: _openUpgradeTab,
         );
@@ -201,7 +202,7 @@ class _MainDashboardState extends State<MainDashboard> {
         currentPage = const MessagesView();
         break;
       default:
-        currentPage = const _UpgradePlansPage();
+        currentPage = const ProfileScreen();
     }
 
     return Scaffold(
@@ -229,7 +230,7 @@ class _MainDashboardState extends State<MainDashboard> {
             BottomNavigationBarItem(icon: Icon(Icons.style_outlined), activeIcon: Icon(Icons.style), label: "Matches"),
             BottomNavigationBarItem(icon: Icon(Icons.favorite_border), activeIcon: Icon(Icons.favorite), label: "Interests"),
             BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), activeIcon: Icon(Icons.chat_bubble), label: "Messages"),
-            BottomNavigationBarItem(icon: Icon(Icons.workspace_premium_outlined), activeIcon: Icon(Icons.workspace_premium), label: "Upgrade"),
+            BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: "Profile"),
           ],
         ),
       ),
@@ -336,7 +337,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text("Discover", style: TextStyle(color: Colors.white, fontSize: 28, fontFamily: 'serif', fontWeight: FontWeight.w600, letterSpacing: 1)),
+                  const Text("Discover", style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600, letterSpacing: 1)),
                   Container(
                     decoration: BoxDecoration(color: AppColors.onyx, borderRadius: BorderRadius.circular(30), border: Border.all(color: AppColors.goldMedium.withOpacity(0.3))),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [_buildTierToggle("Regular"), _buildTierToggle("PRIME")]),
@@ -1203,7 +1204,6 @@ class _EditorialMatchCard extends StatelessWidget {
                                   color: AppColors.goldLight,
                                   fontSize: 22,
                                   fontWeight: FontWeight.w600,
-                                  fontFamily: 'serif',
                                   letterSpacing: 0.5,
                                 ),
                                 overflow: TextOverflow.ellipsis,
@@ -1455,7 +1455,6 @@ class _UpgradePlansPageState extends State<_UpgradePlansPage> {
                     color: Colors.white,
                     fontSize: 28,
                     fontWeight: FontWeight.bold,
-                    fontFamily: 'serif',
                   ),
                   textAlign: TextAlign.center,
                 ),
@@ -1546,7 +1545,6 @@ class _UpgradePlansPageState extends State<_UpgradePlansPage> {
                           color: AppColors.goldLight,
                           fontSize: 42,
                           fontWeight: FontWeight.bold,
-                          fontFamily: 'serif',
                         ),
                       ),
                       const Text(

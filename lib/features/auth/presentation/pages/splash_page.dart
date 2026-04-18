@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'onboarding_page.dart';
+import 'auth_gate.dart';
 import 'main_dashboard.dart';
 
 class SplashPage extends StatefulWidget {
@@ -50,7 +50,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     } else {
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const OnboardingPage()),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
       );
     }
   }
@@ -117,7 +117,6 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
                     fontSize: 24,
                     letterSpacing: 4,
                     fontWeight: FontWeight.w200,
-                    fontFamily: 'serif',
                   ),
                 ),
                 const SizedBox(height: 8),

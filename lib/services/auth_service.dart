@@ -285,48 +285,18 @@ class AuthService {
           profile = null;
         }
 
-        // Also check by email (might be registered under a different UID)
-        if (profile == null && googleEmail.isNotEmpty) {
-          try {
-            final emailProfile = await UserService.instance
-                .getUserProfileByEmail(googleEmail);
-            if (emailProfile != null) {
-              final existingUid = (emailProfile['uid'] ?? '').toString();
-              if (existingUid.isNotEmpty && existingUid != user.uid) {
-                // Account exists under a different UID → needs linking
-                await _auth.signOut();
-                pendingGoogleCredential = googleCredential;
-                pendingGoogleEmail = user.email;
-                throw GoogleNeedsLinkingException(email: googleEmail);
-              }
-              // Profile found by email with same UID → allow sign-in
-              return result;
-            }
-          } catch (e) {
-            if (e is GoogleNeedsLinkingException) rethrow;
-            // Firestore query failed — treat as no profile
-          }
-        }
+        // Skip email lookup to avoid permission issues
+        // Let the auth gate handle user existence checking
+        // This prevents PERMISSION_DENIED errors from email queries
 
         if (profile != null) {
           // Existing user with profile → allow sign-in
           return result;
         }
 
-        // ── No profile found → this user doesn't have an account ──
-        // Clean up: delete the Firebase Auth user if it was just created,
-        // otherwise just sign out.
-        if (result.additionalUserInfo?.isNewUser == true) {
-          try {
-            await user.delete();
-          } catch (_) {
-            await _auth.signOut();
-          }
-        } else {
-          await _auth.signOut();
-        }
-        await _googleSignIn.signOut();
-        throw GoogleNoAccountException(email: googleEmail);
+        // ── No profile found → new user, allow sign-in and let auth gate handle it ──
+        // Don't throw exception - let auth gate handle user creation and flow
+        return result;
       }
 
       return result;

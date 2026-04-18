@@ -29,26 +29,29 @@ class MatchService {
         userDoc,
       ) async {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
-        final myPrefs = Map<String, dynamic>.from(
-          myProfile['partnerPreference'] ??
-              myProfile['partnerPreferences'] ??
-              <String, dynamic>{},
-        );
-        final rawGender = (myProfile['gender'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        final genderValues = rawGender == 'male'
-            ? ['Female', 'female']
-            : (rawGender == 'female' ? ['Male', 'male'] : []);
+        final partnerPreference = (myProfile['partnerPreference'] ?? '').toString().trim().toLowerCase();
 
-        if (genderValues.isEmpty) return <Map<String, dynamic>>[];
+        // Determine which genders to show based on partnerPreference
+        List<String> genderValues = [];
+        if (partnerPreference == 'female' || partnerPreference == 'women') {
+          genderValues = ['Female', 'female'];
+        } else if (partnerPreference == 'male' || partnerPreference == 'men') {
+          genderValues = ['Male', 'male'];
+        } else if (partnerPreference == 'both') {
+          genderValues = ['Male', 'male', 'Female', 'female'];
+        }
 
-        final snapshot = await _firestore
+        // Build query with gender filter if partnerPreference is set
+        Query<Map<String, dynamic>> query = _firestore
             .collection('users')
-            .where('registrationCompleted', isEqualTo: true)
-            .where('gender', whereIn: genderValues)
-            .get();
+            .where('registrationCompleted', isEqualTo: true);
+
+        if (genderValues.isNotEmpty) {
+          query = query.where('gender', whereIn: genderValues);
+        }
+
+        // Get all registered users
+        final snapshot = await query.get();
 
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
         final ignoredMap = Map<String, dynamic>.from(
@@ -71,9 +74,6 @@ class MatchService {
               return true;
             })
             .where(_isVisibleToEveryone)
-            .where(
-              (profile) => _calculateMatchScore(profile, myPrefs) >= 0.5,
-            ) // 50% match
             .take(limit)
             .toList();
       });
@@ -90,20 +90,11 @@ class MatchService {
         userDoc,
       ) async {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
-        final rawGender = (myProfile['gender'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        final genderValues = rawGender == 'male'
-            ? ['Female', 'female']
-            : (rawGender == 'female' ? ['Male', 'male'] : []);
 
-        if (genderValues.isEmpty) return <Map<String, dynamic>>[];
-
+        // Get all registered users
         final snapshot = await _firestore
             .collection('users')
             .where('registrationCompleted', isEqualTo: true)
-            .where('gender', whereIn: genderValues)
             .get();
 
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
@@ -149,20 +140,11 @@ class MatchService {
               myProfile['partnerPreferences'] ??
               <String, dynamic>{},
         );
-        final rawGender = (myProfile['gender'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        final genderValues = rawGender == 'male'
-            ? ['Female', 'female']
-            : (rawGender == 'female' ? ['Male', 'male'] : []);
 
-        if (genderValues.isEmpty) return <Map<String, dynamic>>[];
-
+        // Get all registered users
         final snapshot = await _firestore
             .collection('users')
             .where('registrationCompleted', isEqualTo: true)
-            .where('gender', whereIn: genderValues)
             .get();
 
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);

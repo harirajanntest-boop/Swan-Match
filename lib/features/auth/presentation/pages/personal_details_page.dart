@@ -170,7 +170,6 @@ class _PersonalDetailsPageState extends State<PersonalDetailsPage>
           "Personal Details (1/5)",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 16,
           ),

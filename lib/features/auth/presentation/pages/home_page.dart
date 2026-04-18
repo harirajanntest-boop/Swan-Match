@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
-import 'premium_side_menu.dart'; // ─── IMPORT THE MENU HERE ───
 import 'notifications_page.dart';
 import 'edit_profile_page.dart';
 
@@ -73,7 +72,6 @@ class _HomePageState extends State<HomePage>
     // ─── ADDED SCAFFOLD SO DRAWER ONLY BELONGS TO HOME TAB ───
     return Scaffold(
       backgroundColor: AppColors.obsidian, // Matches the parent dashboard
-      drawer: const PremiumSideMenu(), // ─── DRAWER LIVES HERE NOW ───
       body: StreamBuilder<Map<String, dynamic>?>(
         stream: _userProfileStream,
         builder: (context, snapshot) {
@@ -220,7 +218,6 @@ class _HomePageState extends State<HomePage>
                           color: Colors.white,
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          fontFamily: 'serif',
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -411,7 +408,6 @@ class _HomePageState extends State<HomePage>
                         color: Colors.white,
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
-                        fontFamily: 'serif',
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -523,7 +519,6 @@ class _HomePageState extends State<HomePage>
                     color: Colors.black,
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    fontFamily: 'serif',
                   ),
                 ),
                 const SizedBox(height: 8),

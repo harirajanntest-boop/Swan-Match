@@ -82,7 +82,6 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
           "Lifestyle Habits",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 18,
           ),
@@ -136,7 +135,6 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 22,
-                          fontFamily: 'serif',
                           fontWeight: FontWeight.bold,
                           letterSpacing: 0.5,
                         ),
@@ -186,7 +184,6 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 18,
-                          fontFamily: 'serif',
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -222,7 +219,6 @@ class _LifestyleDetailsPageState extends State<LifestyleDetailsPage>
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 18,
-                          fontFamily: 'serif',
                           fontWeight: FontWeight.bold,
                         ),
                       ),

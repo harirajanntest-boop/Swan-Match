@@ -18,7 +18,7 @@ class PrivacyPolicyPage extends StatelessWidget {
         ),
         title: const Text(
           "Privacy Policy",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', letterSpacing: 1, fontSize: 18),
+          style: TextStyle(color: Colors.white, letterSpacing: 1, fontSize: 18),
         ),
         centerTitle: true,
       ),
@@ -40,7 +40,7 @@ class PrivacyPolicyPage extends StatelessWidget {
                 children: [
                   const Text(
                     "Privacy Policy of Swan Match",
-                    style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+                    style: TextStyle(color: AppColors.goldMedium, fontSize: 18, fontWeight: FontWeight.bold, ),
                   ),
                   const SizedBox(height: 16),
                   Text(

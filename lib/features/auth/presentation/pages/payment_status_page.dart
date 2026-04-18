@@ -36,7 +36,6 @@ class PaymentStatusPage extends StatelessWidget {
                 color: Colors.white,
                 fontSize: 28,
                 fontWeight: FontWeight.bold,
-                fontFamily: 'serif',
               ),
             ),
             const SizedBox(height: 16),

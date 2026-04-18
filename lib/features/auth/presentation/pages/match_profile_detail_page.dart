@@ -61,7 +61,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
         ),
         title: const Text(
           'Profile Details',
-          style: TextStyle(color: Colors.white, fontFamily: 'serif'),
+          style: TextStyle(color: Colors.white, ),
         ),
       ),
       body: ListView(
@@ -101,7 +101,6 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
               color: AppColors.goldLight,
               fontSize: 28,
               fontWeight: FontWeight.bold,
-              fontFamily: 'serif',
             ),
           ),
           const SizedBox(height: 10),

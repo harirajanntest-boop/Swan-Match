@@ -21,7 +21,7 @@ class IgnoredProfilesPage extends StatelessWidget {
         ),
         title: const Text(
           "Ignored Profiles",
-          style: TextStyle(color: Colors.white, fontFamily: 'serif', fontSize: 18),
+          style: TextStyle(color: Colors.white, fontSize: 18),
         ),
         centerTitle: true,
       ),

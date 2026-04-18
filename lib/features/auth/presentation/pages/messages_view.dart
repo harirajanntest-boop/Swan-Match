@@ -55,7 +55,6 @@ class _MessagesViewState extends State<MessagesView> {
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 28,
-                  fontFamily: 'serif',
                   fontWeight: FontWeight.w600,
                   letterSpacing: 1,
                 ),
@@ -486,7 +485,7 @@ class _MessageEmptyState extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, fontFamily: 'serif'),
+            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, ),
           ),
           
           const SizedBox(height: 12),

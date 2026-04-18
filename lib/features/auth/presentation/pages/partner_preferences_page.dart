@@ -1,6 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:country_state_city/country_state_city.dart' as csc;
+import 'package:country_picker/country_picker.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -19,23 +19,10 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
 
-  List<csc.Country> _countries = const <csc.Country>[];
-  List<csc.State> _states = const <csc.State>[];
-  List<csc.City> _cities = const <csc.City>[];
+  String _selectedCountry = '';
+  String _selectedState = '';
+  String _selectedCity = '';
 
-  String? _selectedCountry;
-  String? _selectedCountryCode;
-  String? _selectedState;
-  String? _selectedStateCode;
-  String? _selectedCity;
-  bool _locationInitialized = false;
-
-  T? _firstWhereOrNull<T>(Iterable<T> source, bool Function(T item) test) {
-    for (final item in source) {
-      if (test(item)) return item;
-    }
-    return null;
-  }
 
   List<String> _optionsForPreference(String key) {
     switch (key) {
@@ -288,295 +275,18 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
       normalized['locationDetails'] as Map,
     );
 
-    final countries = await csc.getAllCountries();
-    if (!mounted) return;
-
-    String? countryName = (location['country'] ?? '').toString().trim();
-    String? stateName = (location['state'] ?? '').toString().trim();
-    String? cityName = (location['city'] ?? '').toString().trim();
-
-    final selectedCountryObj = countryName.isEmpty
-        ? null
-        : _firstWhereOrNull(
-            countries,
-            (country) => country.name.toLowerCase() == (countryName ?? '').toLowerCase(),
-          );
-
-    List<csc.State> states = const <csc.State>[];
-    csc.State? selectedStateObj;
-    List<csc.City> cities = const <csc.City>[];
-
-    if (selectedCountryObj != null) {
-      states = await csc.getStatesOfCountry(selectedCountryObj.isoCode);
-      selectedStateObj = stateName.isEmpty
-          ? null
-          : _firstWhereOrNull(
-              states,
-              (state) => state.name.toLowerCase() == (stateName ?? '').toLowerCase(),
-            );
-
-      if (selectedStateObj != null) {
-        cities = await csc.getStateCities(
-          selectedCountryObj.isoCode,
-          selectedStateObj.isoCode,
-        );
-
-        final selectedCityObj = cityName.isEmpty
-            ? null
-            : _firstWhereOrNull(
-                cities,
-                (city) => city.name.toLowerCase() == (cityName ?? '').toLowerCase(),
-              );
-
-        cityName = selectedCityObj?.name;
-      } else {
-        cityName = null;
-      }
-    } else {
-      countryName = null;
-      stateName = null;
-      cityName = null;
-    }
-
     if (!mounted) return;
     setState(() {
-      _countries = countries;
-      _states = states;
-      _cities = cities;
-      _selectedCountry = countryName;
-      _selectedCountryCode = selectedCountryObj?.isoCode;
-      _selectedState = selectedStateObj?.name;
-      _selectedStateCode = selectedStateObj?.isoCode;
-      _selectedCity = cityName;
-      _locationInitialized = true;
+      _selectedCountry = (location['country'] ?? '').toString().trim();
+      _selectedState = (location['state'] ?? '').toString().trim();
+      _selectedCity = (location['city'] ?? '').toString().trim();
     });
   }
 
-  Future<String?> _showLocationPicker({
-    required String title,
-    required List<String> options,
-    required String? selected,
-  }) async {
-    final searchController = TextEditingController();
-    return showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AppColors.onyx,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-      ),
-      builder: (sheetContext) {
-        String query = '';
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            final filtered = options
-                .where(
-                  (item) => item.toLowerCase().contains(query.toLowerCase()),
-                )
-                .toList();
 
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                top: 16,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: searchController,
-                    style: const TextStyle(color: Colors.white),
-                    onChanged: (value) => setModalState(() => query = value),
-                    decoration: InputDecoration(
-                      hintText: 'Search $title',
-                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
-                      prefixIcon: const Icon(Icons.search, color: AppColors.goldMedium),
-                      filled: true,
-                      fillColor: Colors.black.withOpacity(0.25),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: AppColors.goldMedium),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Flexible(
-                    child: filtered.isEmpty
-                        ? Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 24),
-                            child: Text(
-                              'No results found',
-                              style: TextStyle(color: Colors.white.withOpacity(0.6)),
-                            ),
-                          )
-                        : ListView.separated(
-                            shrinkWrap: true,
-                            itemCount: filtered.length,
-                            separatorBuilder: (_, __) => Divider(color: Colors.white.withOpacity(0.08), height: 1),
-                            itemBuilder: (context, index) {
-                              final item = filtered[index];
-                              final isSelected = selected == item;
-                              return ListTile(
-                                title: Text(
-                                  item,
-                                  style: TextStyle(
-                                    color: isSelected ? AppColors.goldMedium : Colors.white,
-                                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
-                                  ),
-                                ),
-                                onTap: () => Navigator.pop(sheetContext, item),
-                              );
-                            },
-                          ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
 
-  Future<void> _persistLocationSelection(Map<String, dynamic> currentPrefs) async {
-    final nextPrefs = Map<String, dynamic>.from(currentPrefs);
-    final nextLocation = Map<String, dynamic>.from(
-      nextPrefs['locationDetails'] as Map<String, dynamic>,
-    );
 
-    nextLocation['country'] = _selectedCountry ?? '';
-    nextLocation['state'] = _selectedState ?? '';
-    nextLocation['city'] = _selectedCity ?? '';
-    nextPrefs['locationDetails'] = nextLocation;
 
-    await UserService.instance.updatePartnerPreferences(nextPrefs);
-  }
-
-  Future<void> _onSelectCountry(Map<String, dynamic> currentPrefs) async {
-    final countryNames = _countries.map((country) => country.name).toList();
-    final picked = await _showLocationPicker(
-      title: 'Country',
-      options: countryNames,
-      selected: _selectedCountry,
-    );
-    if (picked == null) return;
-
-    final selectedCountry = _firstWhereOrNull(
-      _countries,
-      (country) => country.name == picked,
-    );
-    if (selectedCountry == null) return;
-
-    final states = await csc.getStatesOfCountry(selectedCountry.isoCode);
-    if (!mounted) return;
-
-    setState(() {
-      _selectedCountry = selectedCountry.name;
-      _selectedCountryCode = selectedCountry.isoCode;
-      _states = states;
-      _selectedState = null;
-      _selectedStateCode = null;
-      _cities = const <csc.City>[];
-      _selectedCity = null;
-    });
-
-    await _persistLocationSelection(currentPrefs);
-  }
-
-  Future<void> _onSelectState(Map<String, dynamic> currentPrefs) async {
-    if (_selectedCountryCode == null || _selectedCountryCode!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a country first.')),
-      );
-      return;
-    }
-
-    if (_states.isEmpty) {
-      _states = await csc.getStatesOfCountry(_selectedCountryCode!);
-    }
-
-    final stateNames = _states.map((state) => state.name).toList();
-    final picked = await _showLocationPicker(
-      title: 'State',
-      options: stateNames,
-      selected: _selectedState,
-    );
-    if (picked == null) return;
-
-    final selectedState = _firstWhereOrNull(
-      _states,
-      (state) => state.name == picked,
-    );
-    if (selectedState == null) return;
-
-    final cities = await csc.getStateCities(
-      _selectedCountryCode!,
-      selectedState.isoCode,
-    );
-    if (!mounted) return;
-
-    setState(() {
-      _selectedState = selectedState.name;
-      _selectedStateCode = selectedState.isoCode;
-      _cities = cities;
-      _selectedCity = null;
-    });
-
-    await _persistLocationSelection(currentPrefs);
-  }
-
-  Future<void> _onSelectCity(Map<String, dynamic> currentPrefs) async {
-    if (_selectedStateCode == null || _selectedStateCode!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a state first.')),
-      );
-      return;
-    }
-
-    if (_selectedCountryCode == null || _selectedCountryCode!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a country first.')),
-      );
-      return;
-    }
-
-    if (_cities.isEmpty) {
-      _cities = await csc.getStateCities(_selectedCountryCode!, _selectedStateCode!);
-    }
-
-    final cityNames = _cities.map((city) => city.name).toList();
-    final picked = await _showLocationPicker(
-      title: 'City',
-      options: cityNames,
-      selected: _selectedCity,
-    );
-    if (picked == null) return;
-
-    setState(() {
-      _selectedCity = picked;
-    });
-
-    await _persistLocationSelection(currentPrefs);
-  }
 
   @override
   void initState() {
@@ -633,7 +343,6 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
           "Partner Preferences",
           style: TextStyle(
             color: Colors.white,
-            fontFamily: 'serif',
             letterSpacing: 1,
             fontSize: 18,
           ),
@@ -667,25 +376,10 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
               final professional = Map<String, dynamic>.from(currentPrefs['professionalDetails'] as Map);
               final location = Map<String, dynamic>.from(currentPrefs['locationDetails'] as Map);
 
-                if (!_locationInitialized) {
-                final locationCountry = (location['country'] ?? '').toString().trim();
-                final locationState = (location['state'] ?? '').toString().trim();
-                final locationCity = (location['city'] ?? '').toString().trim();
 
-                if (locationCountry.isNotEmpty) _selectedCountry = locationCountry;
-                if (locationState.isNotEmpty) _selectedState = locationState;
-                if (locationCity.isNotEmpty) _selectedCity = locationCity;
-                }
-
-                final locationCountryValue = (_selectedCountry ?? '').trim().isEmpty
-                  ? display(location['country'])
-                  : _selectedCountry!;
-                final locationStateValue = (_selectedState ?? '').trim().isEmpty
-                  ? display(location['state'])
-                  : _selectedState!;
-                final locationCityValue = (_selectedCity ?? '').trim().isEmpty
-                  ? display(location['city'])
-                  : _selectedCity!;
+                final locationCountryValue = _selectedCountry ?? display(location['country']);
+                final locationStateValue = _selectedState ?? display(location['state']);
+                final locationCityValue = _selectedCity ?? display(location['city']);
 
               return Column(
                 children: [
@@ -943,28 +637,112 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       ),
                       const SizedBox(height: 24),
 
-                      // 5. Location Details (Extrapolated)
+                      // 5. Location Details
                       _PreferenceCard(
                         title: "Location Details",
                         children: [
-                          _LocationPreferenceRow(
-                            label: "Country",
-                            value: locationCountryValue,
-                            enabled: true,
-                            onTap: () => _onSelectCountry(currentPrefs),
-                          ),
-                          _LocationPreferenceRow(
-                            label: "Residing State",
-                            value: locationStateValue,
-                            enabled: (_selectedCountry ?? locationCountryValue) != 'Not set',
-                            onTap: () => _onSelectState(currentPrefs),
-                          ),
-                          _LocationPreferenceRow(
-                            label: "City",
-                            value: locationCityValue,
-                            isLast: true,
-                            enabled: (_selectedState ?? locationStateValue) != 'Not set',
-                            onTap: () => _onSelectCity(currentPrefs),
+                          Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Country picker button
+                                GestureDetector(
+                                  onTap: () {
+                                    showCountryPicker(
+                                      context: context,
+                                      showPhoneCode: false,
+                                      onSelect: (Country country) {
+                                        setState(() {
+                                          _selectedCountry = country.name;
+                                          _selectedState = '';
+                                          _selectedCity = '';
+                                        });
+                                      },
+                                      countryListTheme: CountryListThemeData(
+                                        backgroundColor: const Color(0xFF1A1A1A),
+                                        textStyle: const TextStyle(color: Colors.white, fontSize: 14),
+                                        searchTextStyle: const TextStyle(color: Colors.white),
+                                        inputDecoration: InputDecoration(
+                                          hintText: 'Search country...',
+                                          hintStyle: const TextStyle(color: Colors.white38),
+                                          prefixIcon: const Icon(Icons.search, color: Color(0xFFD4A017)),
+                                          enabledBorder: OutlineInputBorder(
+                                            borderSide: const BorderSide(color: Color(0xFFD4A017)),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          focusedBorder: OutlineInputBorder(
+                                            borderSide: const BorderSide(color: Color(0xFFD4A017), width: 2),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    decoration: BoxDecoration(
+                                      border: Border(bottom: const BorderSide(color: Color(0xFFD4A017))),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          _selectedCountry.isEmpty ? 'Select Country' : _selectedCountry,
+                                          style: TextStyle(
+                                            color: _selectedCountry.isEmpty ? Colors.white38 : Colors.white,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                        const Icon(Icons.arrow_drop_down, color: Color(0xFFD4A017)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                // State TextField
+                                TextField(
+                                  enabled: _selectedCountry.isNotEmpty,
+                                  onChanged: (v) => setState(() => _selectedState = v),
+                                  style: const TextStyle(color: Colors.white),
+                                  cursorColor: const Color(0xFFD4A017),
+                                  decoration: InputDecoration(
+                                    labelText: 'State / Province',
+                                    labelStyle: const TextStyle(color: Colors.white54),
+                                    enabledBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Color(0xFFD4A017)),
+                                    ),
+                                    focusedBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
+                                    ),
+                                    disabledBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Colors.white12),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                // City TextField
+                                TextField(
+                                  enabled: _selectedState.isNotEmpty,
+                                  onChanged: (v) => setState(() => _selectedCity = v),
+                                  style: const TextStyle(color: Colors.white),
+                                  cursorColor: const Color(0xFFD4A017),
+                                  decoration: InputDecoration(
+                                    labelText: 'City / Town',
+                                    labelStyle: const TextStyle(color: Colors.white54),
+                                    enabledBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Color(0xFFD4A017)),
+                                    ),
+                                    focusedBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
+                                    ),
+                                    disabledBorder: const UnderlineInputBorder(
+                                      borderSide: BorderSide(color: Colors.white12),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
@@ -979,9 +757,9 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                             final nextLocation = Map<String, dynamic>.from(
                               nextPrefs['locationDetails'] as Map<String, dynamic>,
                             );
-                            nextLocation['country'] = _selectedCountry ?? nextLocation['country'] ?? '';
-                            nextLocation['state'] = _selectedState ?? nextLocation['state'] ?? '';
-                            nextLocation['city'] = _selectedCity ?? nextLocation['city'] ?? '';
+                            nextLocation['country'] = _selectedCountry.isEmpty ? nextLocation['country'] ?? '' : _selectedCountry;
+                            nextLocation['state'] = _selectedState.isEmpty ? nextLocation['state'] ?? '' : _selectedState;
+                            nextLocation['city'] = _selectedCity.isEmpty ? nextLocation['city'] ?? '' : _selectedCity;
                             nextPrefs['locationDetails'] = nextLocation;
 
                             await UserService.instance.updatePartnerPreferences(nextPrefs);
@@ -1042,7 +820,6 @@ class _PreferenceCard extends StatelessWidget {
               fontSize: 16,
               fontWeight: FontWeight.bold,
               letterSpacing: 0.5,
-              fontFamily: 'serif',
             ),
           ),
         ),
