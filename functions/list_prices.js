@@ -1,4 +1,4 @@
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'your_stripe_secret_key_here');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 async function listPrices() {
   try {
