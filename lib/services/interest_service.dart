@@ -5,11 +5,14 @@ import '../core/utils/stream_utils.dart';
 import '../services/app_notification_service.dart';
 import '../models/interest_model.dart';
 import 'chat_service.dart';
+import 'trial_service.dart';
 
 enum InterestSendResult {
 	sent,
 	pending,
 	alreadyAccepted,
+	trialLimitReached,  // Free user daily limit hit
+	premiumRequired,    // Feature needs premium
 }
 
 class InterestService {
@@ -30,6 +33,12 @@ class InterestService {
 		final user = _auth.currentUser;
 		if (user == null || toUserId.isEmpty || toUserId == user.uid) {
 			return InterestSendResult.pending;
+		}
+
+		// ── Premium / trial gate ──────────────────────────────────────────────
+		final trialCheck = await TrialService.instance.canSendInterest();
+		if (!trialCheck.allowed) {
+			return InterestSendResult.trialLimitReached;
 		}
 
 		final existingSnapshot = await _interests
@@ -79,6 +88,8 @@ class InterestService {
 
 		await _interests.doc(id).set(model.toMap());
 		await _notifyInterestSent(toUserId: toUserId, interestId: id, senderId: user.uid);
+		// Record trial usage
+		await TrialService.instance.recordInterestSent();
 		return InterestSendResult.sent;
 	}
 
@@ -171,6 +182,20 @@ class InterestService {
 		return watchMySentInterests().map((items) {
 			return items
 					.where((item) => item.status.toLowerCase() == 'pending')
+					.map((item) => item.toUserId)
+					.toSet();
+		});
+	}
+
+	/// Returns the set of userIds to whom the current user sent an interest
+	/// that was accepted (or replied). Used to disable the Connect button.
+	Stream<Set<String>> watchMyAcceptedSentInterestUserIds() {
+		return watchMySentInterests().map((items) {
+			return items
+					.where((item) {
+						final s = item.status.toLowerCase();
+						return s == 'accepted' || s == 'replied';
+					})
 					.map((item) => item.toUserId)
 					.toSet();
 		});

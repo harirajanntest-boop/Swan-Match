@@ -1,11 +1,12 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../models/interest_model.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
-import 'main_dashboard.dart';
+import 'its_a_match_overlay.dart';
 import 'match_profile_detail_page.dart';
+import 'chat_conversation_page.dart';
 
 class InterestsView extends StatefulWidget {
   const InterestsView({super.key});
@@ -14,114 +15,95 @@ class InterestsView extends StatefulWidget {
   State<InterestsView> createState() => _InterestsViewState();
 }
 
-class _InterestsViewState extends State<InterestsView> with SingleTickerProviderStateMixin {
-  String _selectedTier = 'Regular'; 
-  String _selectedFilter = 'All';
-  final interestService = InterestService.instance;
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
+class _InterestsViewState extends State<InterestsView>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
 
-  // ─── STREAMS CACHED IN STATE ───
+  /// People who sent me an interest (I received them) — only pending ones show in "New"
   late final Stream<List<InterestModel>> _receivedInterestsStream;
+
+  /// Interests I sent to others — used by Connections tab to check sent+accepted
   late final Stream<List<InterestModel>> _sentInterestsStream;
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
     _receivedInterestsStream = InterestService.instance.watchInterestsForMe();
     _sentInterestsStream = InterestService.instance.watchMySentInterests();
   }
 
+
   @override
   void dispose() {
-    _searchController.dispose();
+    _tabController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: SafeArea(
+    return Scaffold(
+      backgroundColor: const Color(0xFF0C0C0C),
+      body: SafeArea(
         child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ─── Header & Tier Toggle ───
+            // ─── Header ───
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    "Interests",
-                    style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600, letterSpacing: 1),
-                  ),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: AppColors.onyx,
-                      borderRadius: BorderRadius.circular(30),
-                      border: Border.all(color: AppColors.goldMedium.withOpacity(0.3)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildTierToggle("Regular"),
-                        _buildTierToggle("PRIME"),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // ─── Main Tab Bar (Received / Sent) ───
-            TabBar(
-              dividerColor: Colors.white.withOpacity(0.05),
-              indicatorColor: AppColors.goldMedium,
-              indicatorWeight: 3,
-              labelColor: AppColors.goldMedium,
-              unselectedLabelColor: Colors.white.withOpacity(0.4),
-              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 0.5),
-              tabs: const [
-                Tab(text: "Interests Received"),
-                Tab(text: "Interests Sent"),
-              ],
-            ),
-
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
-              child: TextField(
-                controller: _searchController,
-                onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Search interests by name',
-                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
-                  prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.7)),
-                  suffixIcon: _searchQuery.isEmpty
-                      ? null
-                      : IconButton(
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() => _searchQuery = '');
-                          },
-                          icon: const Icon(Icons.close, color: Colors.white70),
-                        ),
-                  filled: true,
-                  fillColor: Colors.white.withOpacity(0.05),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+              child: const Text(
+                'Matches',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 30,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.2,
                 ),
               ),
             ),
 
-            // ─── Dynamic Content Area ───
+            const SizedBox(height: 16),
+
+            // ─── Tab Bar (New / Connections) ───
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: StreamBuilder<List<InterestModel>>(
+                stream: _receivedInterestsStream,
+                builder: (context, snap) {
+                  // "New" badge = pending received only
+                  final newCount = (snap.data ?? [])
+                      .where((i) => i.status.toLowerCase() == 'pending')
+                      .length;
+                  return _MatchTabBar(
+                    controller: _tabController,
+                    newCount: newCount,
+                  );
+                },
+              ),
+            ),
+
+            const SizedBox(height: 4),
+            const Divider(color: Colors.white10, height: 1),
+
+            // ─── Tab Content ───
             Expanded(
               child: TabBarView(
+                controller: _tabController,
                 children: [
-                  _buildContentArea(isReceived: true),
-                  _buildContentArea(isReceived: false),
+                  // TAB 0 — New: received interests that are still PENDING
+                  _MatchListTab(
+                    stream: _receivedInterestsStream,
+                    isReceived: true,
+                    filterStatus: 'pending',
+                    emptyMessage: 'No new matches yet',
+                    emptySubMessage:
+                        'When someone likes your profile, they\'ll appear here.',
+                  ),
+                  // TAB 1 — Connections: both sent & received where status == accepted
+                  _ConnectionsTab(
+                    receivedStream: _receivedInterestsStream,
+                    sentStream: _sentInterestsStream,
+                  ),
                 ],
               ),
             ),
@@ -130,244 +112,678 @@ class _InterestsViewState extends State<InterestsView> with SingleTickerProvider
       ),
     );
   }
+}
 
-  // ─── Helper: Tier Toggle ───
-  Widget _buildTierToggle(String title) {
-    bool isSelected = _selectedTier == title;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedTier = title),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        decoration: BoxDecoration(
-          gradient: isSelected ? AppColors.goldGradient : null,
-          borderRadius: BorderRadius.circular(30),
-        ),
-        child: Row(
-          children: [
-            if (title == "PRIME" && !isSelected) ...[
-              Container(width: 4, height: 4, decoration: const BoxDecoration(color: AppColors.goldMedium, shape: BoxShape.circle)),
-              const SizedBox(width: 4),
-            ],
-            Text(
-              title,
-              style: TextStyle(
-                color: isSelected ? Colors.black : Colors.white.withOpacity(0.7),
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                fontSize: 12,
-                letterSpacing: 0.5,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── CUSTOM TAB BAR ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _MatchTabBar extends StatefulWidget {
+  final TabController controller;
+  final int newCount;
+  const _MatchTabBar({required this.controller, required this.newCount});
+
+  @override
+  State<_MatchTabBar> createState() => _MatchTabBarState();
+}
+
+class _MatchTabBarState extends State<_MatchTabBar> {
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(() => setState(() {}));
   }
 
-  // ─── Helper: Content Area (Header + Empty State) ───
-  Widget _buildContentArea({required bool isReceived}) {
-    final baseStream = isReceived
-        ? _receivedInterestsStream
-        : _sentInterestsStream;
-
-    return Column(
+  @override
+  Widget build(BuildContext context) {
+    return Row(
       children: [
-        Expanded(
-          child: StreamBuilder<List<InterestModel>>(
-            stream: baseStream,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(
-                  child: CircularProgressIndicator(color: AppColors.goldMedium),
-                );
-              }
-
-              final interests = snapshot.data ?? const <InterestModel>[];
-              final byOtherUser = <String, InterestModel>{};
-              for (final item in interests) {
-                final key = isReceived ? item.fromUserId : item.toUserId;
-                final previous = byOtherUser[key];
-                if (previous == null || item.updatedAt.isAfter(previous.updatedAt)) {
-                  byOtherUser[key] = item;
-                }
-              }
-
-              final uniqueInterests = byOtherUser.values.toList()
-                ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-
-              final filtered = uniqueInterests.where((item) {
-                if (_selectedFilter == 'All') return true;
-                final status = item.status.toLowerCase();
-                if (_selectedFilter == 'Pending') return status == 'pending';
-                if (_selectedFilter == 'Declined') return status == 'declined' || status == 'rejected';
-                return status == 'accepted' || status == 'replied';
-              }).where((item) {
-                if (_searchQuery.isEmpty) return true;
-                final otherUserId = isReceived ? item.fromUserId : item.toUserId;
-                return otherUserId.toLowerCase().contains(_searchQuery);
-              }).toList();
-
-              if (filtered.isEmpty) {
-                return Center(
-                  child: _PremiumEmptyState(
-                    icon: isReceived ? Icons.favorite_border : Icons.send_outlined,
-                    message: "No interests found.",
-                    subMessage: isReceived
-                        ? "When someone sends you an interest, it will appear here."
-                        : "Start exploring profiles and send interests to connect!",
-                  ),
-                );
-              }
-
-              return ListView.builder(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-                itemCount: filtered.length,
-                itemBuilder: (context, index) {
-                  final item = filtered[index];
-                  final otherUserId = isReceived ? item.fromUserId : item.toUserId;
-                  return _InterestTile(
-                    interest: item,
-                    otherUserId: otherUserId,
-                    isReceived: isReceived,
-                  );
-                },
-              );
-            },
-          ),
+        _TabPill(
+          label: 'New',
+          badge: widget.newCount,
+          isSelected: widget.controller.index == 0,
+          onTap: () => widget.controller.animateTo(0),
+        ),
+        const SizedBox(width: 28),
+        _TabPill(
+          label: 'Connections',
+          badge: 0,
+          isSelected: widget.controller.index == 1,
+          onTap: () => widget.controller.animateTo(1),
         ),
       ],
     );
   }
 }
 
-class _InterestTile extends StatelessWidget {
-  final InterestModel interest;
-  final String otherUserId;
-  final bool isReceived;
+class _TabPill extends StatelessWidget {
+  final String label;
+  final int badge;
+  final bool isSelected;
+  final VoidCallback onTap;
 
-  const _InterestTile({required this.interest, required this.otherUserId, required this.isReceived});
+  const _TabPill({
+    required this.label,
+    required this.badge,
+    required this.isSelected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: UserService.instance.getUserProfile(otherUserId),
-      builder: (context, snapshot) {
-        final profile = snapshot.data ?? <String, dynamic>{};
-        final name = (profile['name'] ?? 'Member').toString();
-        final city = (profile['city'] ?? 'Unknown').toString();
-        final status = interest.status.toUpperCase();
-
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.03),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white.withOpacity(0.1)),
-          ),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: () {
-                      if (profile.isNotEmpty) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => MatchProfileDetailPage(profile: profile),
-                          ),
-                        );
-                      }
-                    },
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: AppColors.goldMedium.withOpacity(0.2),
-                          backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
-                              ? NetworkImage(profile['photoUrl'])
-                              : null,
-                          child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
-                              ? const Icon(Icons.person, color: AppColors.goldMedium)
-                              : null,
-                        ),
-                        const SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(name, style: const TextStyle(color: AppColors.goldLight, fontWeight: FontWeight.bold, decoration: TextDecoration.underline, decorationColor: AppColors.goldMedium)),
-                            const SizedBox(height: 2),
-                            Text(city, style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.goldMedium.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.goldMedium.withOpacity(0.4)),
-                    ),
-                    child: Text(status, style: const TextStyle(color: AppColors.goldLight, fontSize: 11, fontWeight: FontWeight.bold)),
-                  ),
-                ],
-              ),
-              if (isReceived && interest.status.toLowerCase() == 'pending') ...[
-                const SizedBox(height: 12),
-                Row(
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () async {
-                      await InterestService.instance.updateInterestStatus(
-                        interestId: interest.id,
-                        status: 'declined',
-                      );
-                    },
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: Colors.white.withOpacity(0.25)),
-                      foregroundColor: Colors.white70,
-                    ),
-                    child: const Text('Decline'),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.white38,
+                    fontSize: 19,
+                    fontWeight:
+                        isSelected ? FontWeight.bold : FontWeight.w400,
+                    letterSpacing: 0.1,
                   ),
                 ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          await InterestService.instance.updateInterestStatus(
-                            interestId: interest.id,
-                            status: 'accepted',
-                          );
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.goldMedium,
-                          foregroundColor: AppColors.obsidian,
-                        ),
-                        child: const Text('Accept'),
+                if (badge > 0) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: AppColors.goldMedium,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      '$badge',
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ],
-            ],
-          ),
+            ),
+            const SizedBox(height: 8),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              height: 2,
+              width: isSelected ? 44 : 0,
+              decoration: BoxDecoration(
+                color: AppColors.goldMedium,
+                borderRadius: BorderRadius.circular(1),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── MATCH LIST TAB ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _MatchListTab extends StatelessWidget {
+  final Stream<List<InterestModel>> stream;
+  final bool isReceived;
+  final String emptyMessage;
+  final String emptySubMessage;
+  /// If non-null, only shows items matching this status
+  final String? filterStatus;
+
+  const _MatchListTab({
+    required this.stream,
+    required this.isReceived,
+    required this.emptyMessage,
+    required this.emptySubMessage,
+    this.filterStatus,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<InterestModel>>(
+      stream: stream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(
+              color: AppColors.goldMedium,
+              strokeWidth: 2,
+            ),
+          );
+        }
+
+        final all = snapshot.data ?? const <InterestModel>[];
+        // Apply status filter if provided
+        final interests = filterStatus == null
+            ? all
+            : all.where((i) => i.status.toLowerCase() == filterStatus!.toLowerCase()).toList();
+
+        // Deduplicate by other user, keep latest
+        final byOtherUser = <String, InterestModel>{};
+        for (final item in interests) {
+          final key = isReceived ? item.fromUserId : item.toUserId;
+          final prev = byOtherUser[key];
+          if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
+            byOtherUser[key] = item;
+          }
+        }
+        final sorted = byOtherUser.values.toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+        if (sorted.isEmpty) {
+          return _EmptyState(
+            icon: isReceived
+                ? Icons.favorite_outline_rounded
+                : Icons.people_outline_rounded,
+            message: emptyMessage,
+            subMessage: emptySubMessage,
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.only(top: 8, bottom: 80),
+          itemCount: sorted.length,
+          itemBuilder: (context, index) {
+            final item = sorted[index];
+            final otherUserId =
+                isReceived ? item.fromUserId : item.toUserId;
+            return _MatchRow(
+              interest: item,
+              otherUserId: otherUserId,
+              isReceived: isReceived,
+            );
+          },
         );
       },
     );
   }
 }
 
-// ─── Premium Glassmorphic Empty State ───
-class _PremiumEmptyState extends StatelessWidget {
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── CONNECTIONS TAB — accepted from both sent & received streams ──────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _ConnectionsTab extends StatelessWidget {
+  final Stream<List<InterestModel>> receivedStream;
+  final Stream<List<InterestModel>> sentStream;
+
+  const _ConnectionsTab({
+    required this.receivedStream,
+    required this.sentStream,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<InterestModel>>(
+      stream: receivedStream,
+      builder: (context, receivedSnap) {
+        return StreamBuilder<List<InterestModel>>(
+          stream: sentStream,
+          builder: (context, sentSnap) {
+            if (receivedSnap.connectionState == ConnectionState.waiting &&
+                sentSnap.connectionState == ConnectionState.waiting) {
+              return const Center(
+                child: CircularProgressIndicator(
+                    color: AppColors.goldMedium, strokeWidth: 2),
+              );
+            }
+
+            final received = receivedSnap.data ?? [];
+            final sent = sentSnap.data ?? [];
+
+            // Only accepted, merged, deduplicated by the other user
+            final byOtherUser = <String, InterestModel>{};
+
+            for (final item in received.where(
+                (i) => i.status.toLowerCase() == 'accepted')) {
+              final key = item.fromUserId; // the sender (the other person)
+              final prev = byOtherUser[key];
+              if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
+                byOtherUser[key] = item;
+              }
+            }
+            for (final item in
+                sent.where((i) => i.status.toLowerCase() == 'accepted')) {
+              final key = item.toUserId;
+              final prev = byOtherUser[key];
+              if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
+                byOtherUser[key] = item;
+              }
+            }
+
+            final sorted = byOtherUser.values.toList()
+              ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+            if (sorted.isEmpty) {
+              return const _EmptyState(
+                icon: Icons.people_outline_rounded,
+                message: 'No connections yet',
+                subMessage: 'When a match is accepted, they\'ll appear here.',
+              );
+            }
+
+            return ListView.builder(
+              padding: const EdgeInsets.only(top: 8, bottom: 80),
+              itemCount: sorted.length,
+              itemBuilder: (context, index) {
+                final item = sorted[index];
+                // Determine which side was received
+                final isReceived = item.status == 'accepted' &&
+                    received.any((r) => r.id == item.id);
+                final otherUserId =
+                    isReceived ? item.fromUserId : item.toUserId;
+                return _MatchRow(
+                  interest: item,
+                  otherUserId: otherUserId,
+                  isReceived: isReceived,
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── MATCH ROW ────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _MatchRow extends StatefulWidget {
+  final InterestModel interest;
+  final String otherUserId;
+  final bool isReceived;
+
+  const _MatchRow({
+    required this.interest,
+    required this.otherUserId,
+    required this.isReceived,
+  });
+
+  @override
+  State<_MatchRow> createState() => _MatchRowState();
+}
+
+class _MatchRowState extends State<_MatchRow> {
+  /// Cached future — created once in initState so rebuilds do NOT re-fire Firestore.
+  late final Future<Map<String, dynamic>?> _profileFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _profileFuture = UserService.instance.getUserProfile(widget.otherUserId);
+  }
+
+  String _getPhotoUrl(Map<String, dynamic> profile) {
+    final photos = profile['photos'];
+    if (photos is List && photos.isNotEmpty) {
+      return photos.first.toString();
+    }
+    return (profile['photoUrl'] ??
+            profile['profilePhoto'] ??
+            profile['profilePic'] ??
+            '')
+        .toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, dynamic>?>(
+      future: _profileFuture,
+      builder: (context, snapshot) {
+        final profile = snapshot.data ?? <String, dynamic>{};
+        final name = (profile['name'] ?? 'Member').toString();
+        final status = widget.interest.status.toLowerCase();
+        final photoUrl = _getPhotoUrl(profile);
+        final isNew = status == 'pending';
+        final isAccepted = status == 'accepted' || status == 'replied';
+        final isDeclined = status == 'declined';
+
+        // Subtitle text
+        String subtitle;
+        if (isAccepted) {
+          subtitle = 'Connected';
+        } else if (isDeclined) {
+          subtitle = 'Declined';
+        } else {
+          subtitle = 'New Match';
+        }
+
+        return GestureDetector(
+          onTap: () {
+            if (profile.isEmpty) return;
+            if (isAccepted) {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ChatConversationPage(
+                    otherUserId: widget.otherUserId,
+                    otherUserName: name,
+                  ),
+                ),
+              );
+            } else {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => MatchProfileDetailPage(profile: profile),
+                ),
+              );
+            }
+          },
+          onLongPress: isAccepted
+              ? () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      backgroundColor: const Color(0xFF1A1A1A),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20)),
+                      title: const Text('Disconnect',
+                          style: TextStyle(color: Colors.white)),
+                      content: Text(
+                        'Remove your connection with $name? This cannot be undone.',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text('Cancel',
+                              style: TextStyle(color: Colors.white54)),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text('Disconnect',
+                              style: TextStyle(color: Colors.redAccent)),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    await InterestService.instance.updateInterestStatus(
+                      interestId: widget.interest.id,
+                      status: 'declined',
+                    );
+                    if (!context.mounted) return;
+                  }
+                }
+              : null,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            decoration: const BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Color(0xFF1E1E1E), width: 1),
+              ),
+            ),
+            child: Row(
+              children: [
+                // ─── Avatar with online dot ───
+                Stack(
+                  children: [
+                    Container(
+                      width: 58,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isNew
+                              ? AppColors.goldMedium
+                              : isAccepted
+                                  ? const Color(0xFF2ECC71)
+                                  : Colors.white12,
+                          width: isNew || isAccepted ? 2 : 1,
+                        ),
+                      ),
+                      child: ClipOval(
+                        child: photoUrl.isNotEmpty
+                            ? Image.network(
+                                photoUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => _defaultAvatar(),
+                              )
+                            : _defaultAvatar(),
+                      ),
+                    ),
+                    // Online indicator
+                    Positioned(
+                      right: 2,
+                      bottom: 2,
+                      child: Container(
+                        width: 13,
+                        height: 13,
+                        decoration: BoxDecoration(
+                          color: (profile['isOnline'] == true ||
+                                  profile['online'] == true)
+                              ? const Color(0xFF2ECC71)
+                              : Colors.grey,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF0C0C0C),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(width: 16),
+
+                // ─── Name + subtitle ───
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.1,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          // Verified badge
+                          if (profile['profileVerified'] == true ||
+                              profile['idVerified'] == true) ...[
+                            const SizedBox(width: 5),
+                            const Icon(
+                              Icons.verified,
+                              color: AppColors.goldMedium,
+                              size: 15,
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          color: isAccepted
+                              ? const Color(0xFF2ECC71)
+                              : isDeclined
+                                  ? Colors.redAccent.withOpacity(0.7)
+                                  : AppColors.goldMedium,
+                          fontSize: 13,
+                          fontStyle: FontStyle.italic,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(width: 10),
+
+                // ─── Action area ───
+                if (widget.isReceived && isNew)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _CircleIconBtn(
+                        icon: Icons.close_rounded,
+                        color: Colors.white10,
+                        iconColor: Colors.white38,
+                        size: 38,
+                        onTap: () => InterestService.instance
+                            .updateInterestStatus(
+                                interestId: widget.interest.id,
+                                status: 'declined'),
+                      ),
+                      const SizedBox(width: 8),
+                      _CircleIconBtn(
+                        icon: Icons.favorite_rounded,
+                        color: AppColors.goldMedium,
+                        iconColor: Colors.black,
+                        size: 38,
+                        onTap: () async {
+                          // Accept interest
+                          await InterestService.instance.updateInterestStatus(
+                            interestId: widget.interest.id,
+                            status: 'accepted',
+                          );
+                          if (!context.mounted) return;
+                          // Fetch both profiles for the match overlay
+                          final myUid =
+                              FirebaseAuth.instance.currentUser?.uid ?? '';
+                          final myProfile =
+                              await UserService.instance.getUserProfile(myUid);
+                          final theirProfileSnap = snapshot.data;
+                          String myPhoto = '';
+                          if (myProfile != null) {
+                            final photos = myProfile['photos'];
+                            if (photos is List && photos.isNotEmpty) {
+                              myPhoto = photos.first.toString();
+                            } else {
+                              myPhoto = (myProfile['photoUrl'] ?? '').toString();
+                            }
+                          }
+                          String theirPhoto = '';
+                          if (theirProfileSnap != null) {
+                            final photos = theirProfileSnap['photos'];
+                            if (photos is List && photos.isNotEmpty) {
+                              theirPhoto = photos.first.toString();
+                            } else {
+                              theirPhoto =
+                                  (theirProfileSnap['photoUrl'] ?? '').toString();
+                            }
+                          }
+                          if (!context.mounted) return;
+                          await ItsAMatchOverlay.show(
+                            context,
+                            myPhotoUrl: myPhoto,
+                            theirPhotoUrl: theirPhoto,
+                            theirName: name,
+                            theirUserId: widget.otherUserId,
+                          );
+                        },
+                      ),
+                    ],
+                  )
+                else if (isAccepted)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2ECC71).withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: const Color(0xFF2ECC71).withOpacity(0.3)),
+                    ),
+                    child: const Text(
+                      'Chat',
+                      style: TextStyle(
+                        color: Color(0xFF2ECC71),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  )
+                else if (isNew && !widget.isReceived)
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: const BoxDecoration(
+                      color: AppColors.goldMedium,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _defaultAvatar() {
+    return Container(
+      color: const Color(0xFF1E1E1E),
+      child: const Icon(Icons.person, color: Colors.white24, size: 28),
+    );
+  }
+}
+
+class _CircleIconBtn extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final Color iconColor;
+  final double size;
+  final VoidCallback onTap;
+
+  const _CircleIconBtn({
+    required this.icon,
+    required this.color,
+    required this.iconColor,
+    required this.size,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Icon(icon, color: iconColor, size: size * 0.48),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── EMPTY STATE ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class _EmptyState extends StatelessWidget {
   final IconData icon;
   final String message;
   final String subMessage;
 
-  const _PremiumEmptyState({
+  const _EmptyState({
     required this.icon,
     required this.message,
     required this.subMessage,
@@ -375,87 +791,35 @@ class _PremiumEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 40),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Glowing Glass Icon Ring
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              // Ambient Glow
-              Container(
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: AppColors.goldMedium.withOpacity(0.15), blurRadius: 40, spreadRadius: 10)],
-                ),
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, color: AppColors.goldMedium, size: 64),
+            const SizedBox(height: 24),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
               ),
-              // Frosted Glass Ring
-              ClipRRect(
-                borderRadius: BorderRadius.circular(60),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: Container(
-                    width: 100,
-                    height: 100,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white.withOpacity(0.05),
-                      border: Border.all(color: AppColors.goldMedium.withOpacity(0.3), width: 1.5),
-                    ),
-                    child: Center(
-                      child: Icon(icon, color: AppColors.goldMedium, size: 40),
-                    ),
-                  ),
-                ),
-              ),
-              // Decorative Accent Dots
-              Positioned(top: 0, right: 10, child: Container(width: 8, height: 8, decoration: const BoxDecoration(shape: BoxShape.circle, color: AppColors.goldLight))),
-              Positioned(bottom: 10, left: 0, child: Container(width: 6, height: 6, decoration: BoxDecoration(shape: BoxShape.circle, color: AppColors.goldMedium.withOpacity(0.5)))),
-            ],
-          ),
-          
-          const SizedBox(height: 32),
-          
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, ),
-          ),
-          
-          const SizedBox(height: 12),
-          
-          Text(
-            subMessage,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13, height: 1.5),
-          ),
-          
-          const SizedBox(height: 40),
-          
-          // Call to Action (Explore Matches)
-          GestureDetector(
-            onTap: () {
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => const MainDashboard(initialIndex: 1)),
-                (route) => false,
-              );
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-              decoration: BoxDecoration(
-                border: Border.all(color: AppColors.goldMedium.withOpacity(0.5)),
-                borderRadius: BorderRadius.circular(30),
-                color: AppColors.goldMedium.withOpacity(0.05),
-              ),
-              child: const Text("Explore Matches", style: TextStyle(color: AppColors.goldLight, fontWeight: FontWeight.bold, fontSize: 13)),
             ),
-          ),
-        ],
+            const SizedBox(height: 10),
+            Text(
+              subMessage,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.4),
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

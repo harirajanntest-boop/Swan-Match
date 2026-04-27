@@ -413,7 +413,7 @@ class _NotificationTile extends StatelessWidget {
                                 Navigator.pushAndRemoveUntil(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (_) => const MainDashboard(initialIndex: 2),
+                                    builder: (_) => const MainDashboard(initialIndex: 1),
                                   ),
                                   (route) => false,
                                 );

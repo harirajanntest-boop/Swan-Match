@@ -4,18 +4,20 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
-import 'auth_gate.dart';
+import 'custom_login_page.dart';
 import 'help_center_page.dart';
 import 'blocked_profiles_page.dart';
 import 'ignored_profiles_page.dart';
-import 'otp_verification_page.dart';
-import 'success_stories_page.dart';
+import 'saved_profiles_page.dart';
+
 import 'privacy_policy_page.dart';
 import 'safe_swam_match_page.dart';
 import 'rate_us_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  final bool scrollToSecurity;
+
+  const SettingsPage({super.key, this.scrollToSecurity = false});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -25,20 +27,9 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
   late final AnimationController _entryController;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _securitySectionKey = GlobalKey();
 
-  // ─── State for Settings ───
-  // Privacy
-  String _mobileVisibility = 'All paid members';
-  String _horoscopeVisibility = 'Visible to all';
-  
-  // Advanced
-  String _callPreference = 'Call when there are important updates';
-  bool _actionConfirmation = true;
-
-  // Notifications
-  bool _pushNotifications = true;
-  bool _emailAlerts = true;
-  bool _smsAlerts = false;
   bool _isLoggingOut = false;
   bool _isDeletingAccount = false;
 
@@ -52,11 +43,27 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     Future.delayed(const Duration(milliseconds: 50), () {
       if (mounted) _entryController.forward();
     });
+
+    if (widget.scrollToSecurity) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && _securitySectionKey.currentContext != null) {
+            Scrollable.ensureVisible(
+              _securitySectionKey.currentContext!,
+              duration: const Duration(milliseconds: 600),
+              curve: Curves.easeInOutCubic,
+              alignment: 0.1, // Near the top
+            );
+          }
+        });
+      });
+    }
   }
 
   @override
   void dispose() {
     _entryController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -143,7 +150,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         const SnackBar(content: Text('Your account has been permanently deleted.')),
       );
       Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const AuthGate()),
+        MaterialPageRoute(builder: (_) => const CustomLoginPage()),
         (route) => false,
       );
     } on FirebaseAuthException catch (error) {
@@ -352,75 +359,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     );
   }
 
-  Future<void> _linkPhoneDialog() async {
-    final phoneController = TextEditingController();
-    bool isLoading = false;
-
-    await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => StatefulBuilder(
-            builder: (dialogCtx, setDialogState) {
-              return AlertDialog(
-                backgroundColor: AppColors.onyx,
-                title: const Text('Link Phone Number', style: TextStyle(color: Colors.white, )),
-                content: TextField(
-                  controller: phoneController,
-                  keyboardType: TextInputType.phone,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: InputDecoration(
-                    hintText: 'Enter phone number (+91...)',
-                    hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.3)),
-                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1))),
-                    focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.goldMedium)),
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: isLoading ? null : () => Navigator.pop(dialogCtx),
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
-                  ),
-                  ElevatedButton(
-                    onPressed: isLoading ? null : () async {
-                      final phone = phoneController.text.trim();
-                      if (phone.isEmpty) return;
-
-                      setDialogState(() => isLoading = true);
-                      try {
-                        await AuthService.instance.sendOtp(phoneNumber: phone);
-                        if (!context.mounted) return;
-                        Navigator.pop(dialogCtx);
-                        final success = await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => OtpVerificationPage(
-                              phoneNumber: phone,
-                              flowType: OtpFlowType.linking,
-                            ),
-                          ),
-                        );
-                        if (success == true && context.mounted) {
-                          setState(() {});
-                        }
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
-                        }
-                      } finally {
-                        setDialogState(() => isLoading = false);
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
-                    child: isLoading
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                        : const Text('Send OTP'),
-                  ),
-                ],
-              );
-            }
-        )
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -455,28 +393,17 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
               final isPasswordUser = providers.contains('password');
 
               return SingleChildScrollView(
+                controller: _scrollController,
                 padding: const EdgeInsets.only(bottom: 60),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                 
-                // ─── Privacy Settings ───
+                    // ─── Privacy Settings ───
                     _SettingsSection(
                       title: "Privacy Settings",
                       icon: Icons.lock_outline,
                       children: [
-                        _SettingsDropdownRow(
-                          label: "Show mobile number to",
-                          value: _mobileVisibility,
-                          options: const ['All paid members', 'Contacted / Responded to', 'Hide contact details'],
-                          onChanged: (val) => setState(() => _mobileVisibility = val!),
-                        ),
-                        _SettingsDropdownRow(
-                          label: "Who can view my horoscope",
-                          value: _horoscopeVisibility,
-                          options: const ['Visible to all', 'Contacted / Responded to', 'Protect horoscope'],
-                          onChanged: (val) => setState(() => _horoscopeVisibility = val!),
-                        ),
                         _SettingsToggleRow(
                           label: "Show Profile to Everyone",
                           subtitle: "Turn off to hide your profile from matches & recommendations.",
@@ -505,22 +432,10 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                       title: "Advanced Settings",
                       icon: Icons.tune,
                       children: [
-                        _SettingsDropdownRow(
-                          label: "Call Preferences",
-                          value: _callPreference,
-                          options: const [
-                            'Call when there are important updates',
-                            'Call after 1 month',
-                            'Call after 3 months',
-                            'Never'
-                          ],
-                          onChanged: (val) => setState(() => _callPreference = val!),
-                        ),
-                        _SettingsToggleRow(
-                          label: "Action Confirmation",
-                          subtitle: "Confirm before sending an interest",
-                          value: _actionConfirmation,
-                          onChanged: (val) => setState(() => _actionConfirmation = val),
+                        _SettingsActionRow(
+                          label: "Saved Profiles",
+                          subtitle: "Profiles you have bookmarked",
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SavedProfilesPage())),
                         ),
                         _SettingsActionRow(
                           label: "Blocked Profiles",
@@ -537,6 +452,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
 
                     // ─── Account Security (Linking) ───
                     _SettingsSection(
+                      key: _securitySectionKey,
                       title: "Account Security",
                       icon: Icons.security_outlined,
                       children: [
@@ -549,37 +465,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                           label: "Email & Password",
                           providerId: "password",
                           onLink: _linkEmailDialog,
-                        ),
-                        _buildLinkingRow(
-                          label: "Phone Number",
-                          providerId: "phone",
-                          onLink: _linkPhoneDialog,
-                        ),
-                      ],
-                    ),
-
-                    // ─── Notifications ───
-                    _SettingsSection(
-                      title: "Notifications",
-                      icon: Icons.notifications_outlined,
-                      children: [
-                        _SettingsToggleRow(
-                          label: "Push Notifications",
-                          subtitle: "Receive alerts on your device",
-                          value: _pushNotifications,
-                          onChanged: (val) => setState(() => _pushNotifications = val),
-                        ),
-                        _SettingsToggleRow(
-                          label: "Email Alerts",
-                          subtitle: "Receive matches & updates via email",
-                          value: _emailAlerts,
-                          onChanged: (val) => setState(() => _emailAlerts = val),
-                        ),
-                        _SettingsToggleRow(
-                          label: "SMS Alerts",
-                          subtitle: "Receive important updates via SMS",
-                          value: _smsAlerts,
-                          onChanged: (val) => setState(() => _smsAlerts = val),
                         ),
                       ],
                     ),
@@ -604,11 +489,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                             );
                           },
                         ),
-                        _SettingsActionRow(
-                          label: "Success Stories",
-                          subtitle: "Read inspiring stories from our users",
-                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SuccessStoriesPage())),
-                        ),
+                       
                         _SettingsActionRow(
                           label: "Privacy Policy",
                           subtitle: "Learn about our privacy practices",
@@ -661,7 +542,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                                     if (!context.mounted) return;
                                     Navigator.pushAndRemoveUntil(
                                       context,
-                                      MaterialPageRoute(builder: (_) => const AuthGate()),
+                                      MaterialPageRoute(builder: (_) => const CustomLoginPage()),
                                       (route) => false,
                                     );
                                   } catch (error) {
@@ -756,7 +637,7 @@ class _SettingsSection extends StatelessWidget {
   final IconData icon;
   final List<Widget> children;
 
-  const _SettingsSection({required this.title, required this.icon, required this.children});
+  const _SettingsSection({super.key, required this.title, required this.icon, required this.children});
 
   @override
   Widget build(BuildContext context) {

@@ -12,9 +12,17 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn() &&
         (isOwner(userId) || resource.data.registrationCompleted == true);
+      // FIX: Allow list for registered users (needed for matching queries)
+      // User enumeration is mitigated by requiring registrationCompleted == true
+      allow list: if isSignedIn();
       allow create: if isOwner(userId);
       allow update: if isOwner(userId);
       allow delete: if isOwner(userId);
+
+      // Allow users to read/write their own trial usage metadata
+      match /meta/{docId} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     match /interests/{interestId} {

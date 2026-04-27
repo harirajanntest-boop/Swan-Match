@@ -7,7 +7,7 @@ import '../../../../services/registration_draft_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
-import 'personal_details_page.dart';
+import 'onboarding_flow.dart';
 
 enum OtpFlowType { registration, login, linking, updatePhone, reauthPhone }
 enum OtpDeliveryChannel { sms, email }
@@ -247,7 +247,7 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
         if (!mounted) return;
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (context) => const PersonalDetailsPage()),
+          MaterialPageRoute(builder: (context) => const OnboardingFlow()),
           (route) => false,
         );
       } else if (widget.flowType == OtpFlowType.login) {

@@ -3,7 +3,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/create_account_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
 import 'package:swam_match_app/services/notification_service.dart' as v1;
@@ -12,6 +11,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:swam_match_app/services/user_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -30,13 +30,29 @@ class SwamMatchApp extends StatefulWidget {
   State<SwamMatchApp> createState() => _SwamMatchAppState();
 }
 
-class _SwamMatchAppState extends State<SwamMatchApp> {
+class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver {
   late final Future<String?> _initFuture;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initFuture = _initializeApp();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      UserService.instance.updateOnlineStatus(true);
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      UserService.instance.updateOnlineStatus(false);
+    }
   }
 
   Future<String?> _initializeApp() async {
@@ -44,6 +60,7 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
       await _performInitialization().timeout(const Duration(seconds: 12));
       return null;
     } catch (error) {
+      debugPrint("Initialization error: $error");
       return error.toString();
     }
   }
@@ -53,8 +70,8 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
       options: DefaultFirebaseOptions.currentPlatform,
     );
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    await PushNotificationService.instance.initialize();
-    await v1.NotificationService.instance.initialize();
+    PushNotificationService.instance.initialize().catchError((e) => debugPrint('PushNotification error: $e'));
+    v1.NotificationService.instance.initialize().catchError((e) => debugPrint('v1.NotificationService error: $e'));
   }
 
   @override
@@ -72,6 +89,23 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
           theme: ThemeData(
             brightness: Brightness.dark,
             fontFamily: GoogleFonts.poppins().fontFamily,
+            textTheme: TextTheme(
+              displayLarge: GoogleFonts.poppins(),
+              displayMedium: GoogleFonts.poppins(),
+              displaySmall: GoogleFonts.poppins(),
+              headlineLarge: GoogleFonts.poppins(),
+              headlineMedium: GoogleFonts.poppins(),
+              headlineSmall: GoogleFonts.poppins(),
+              titleLarge: GoogleFonts.poppins(),
+              titleMedium: GoogleFonts.poppins(),
+              titleSmall: GoogleFonts.poppins(),
+              bodyLarge: GoogleFonts.poppins(),
+              bodyMedium: GoogleFonts.poppins(),
+              bodySmall: GoogleFonts.poppins(),
+              labelLarge: GoogleFonts.poppins(),
+              labelMedium: GoogleFonts.poppins(),
+              labelSmall: GoogleFonts.poppins(),
+            ),
             // Sets the main background to deep black
             scaffoldBackgroundColor: AppColors.ivory,
             primaryColor: AppColors.goldMedium,
@@ -110,7 +144,6 @@ class _SwamMatchAppState extends State<SwamMatchApp> {
           routes: !initDone || hasFirebaseError
               ? const {}
               : {
-                  '/create-account': (context) => const CreateAccountPage(),
                   '/profile': (context) => const ProfileScreen(),
                   '/payment-success': (context) => const PaymentStatusPage(isSuccess: true),
                   '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
@@ -126,11 +159,11 @@ class _AppLoadingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Return a solid black screen during Firebase init.
+    // This perfectly matches the native splash screen and allows 
+    // the animated SplashPage to fade in seamlessly afterwards.
     return const Scaffold(
-      backgroundColor: AppColors.ivory,
-      body: Center(
-        child: CircularProgressIndicator(color: AppColors.goldMedium),
-      ),
+      backgroundColor: Colors.black,
     );
   }
 }

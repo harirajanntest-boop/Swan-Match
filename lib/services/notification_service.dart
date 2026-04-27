@@ -1,10 +1,9 @@
 import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/services.dart';
-import 'package:googleapis_auth/auth_io.dart';
-import 'package:http/http.dart' as http;
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'chat_presence_service.dart';
 
 class NotificationService {
   NotificationService._internal();
@@ -64,6 +63,16 @@ class NotificationService {
     RemoteNotification? notification = message.notification;
     AndroidNotification? android = message.notification?.android;
 
+    // Suppress chat message notifications if user is already in that chat
+    final senderId = message.data['senderId']?.toString() ??
+                    message.data['fromUserId']?.toString();
+    if (senderId != null && ChatPresenceService.instance.isInChatWith(senderId)) {
+      if (kDebugMode) {
+        print('Notification suppressed: user is in chat with $senderId');
+      }
+      return;
+    }
+
     if (notification != null && android != null) {
       _localNotifications.show(
         id: notification.hashCode,
@@ -87,24 +96,7 @@ class NotificationService {
     }
   }
 
-  Future<String?> getAccessToken() async {
-    try {
-      final serviceAccountJson = await rootBundle.loadString('assets/service_account.json');
-      final accountCredentials = ServiceAccountCredentials.fromJson(serviceAccountJson);
-      final scopes = ['https://www.googleapis.com/auth/cloud-platform'];
-      
-      final client = await clientViaServiceAccount(accountCredentials, scopes);
-      final token = client.credentials.accessToken.data;
-      client.close();
-      return token;
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error getting access token: $e');
-      }
-      return null;
-    }
-  }
-
+  // SECURITY: Service account removed - using Firebase Cloud Functions for server-side FCM notifications
   Future<void> sendNotification({
     required String? fcmToken,
     required String title,
@@ -113,49 +105,20 @@ class NotificationService {
   }) async {
     if (fcmToken == null || fcmToken.isEmpty) return;
 
-    final accessToken = await getAccessToken();
-    if (accessToken == null) return;
-
     try {
-      final serviceAccountJson = await rootBundle.loadString('assets/service_account.json');
-      final projectData = json.decode(serviceAccountJson);
-      final projectId = projectData['project_id'];
-
-      final response = await http.post(
-        Uri.parse('https://fcm.googleapis.com/v1/projects/$projectId/messages:send'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $accessToken',
-        },
-        body: json.encode({
-          'message': {
-            'token': fcmToken,
-            'notification': {
-              'title': title,
-              'body': body,
-            },
-            'data': data ?? {},
-            'android': {
-              'notification': {
-                'channel_id': 'high_importance_channel',
-              },
-            },
-          },
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        if (kDebugMode) {
-          print('Notification sent successfully');
-        }
-      } else {
-        if (kDebugMode) {
-          print('Failed to send notification: ${response.body}');
-        }
+      final callable = FirebaseFunctions.instance.httpsCallable('sendNotification');
+      await callable.call({
+        'fcmToken': fcmToken,
+        'title': title,
+        'body': body,
+        'data': data ?? {},
+      });
+      if (kDebugMode) {
+        print('Notification sent successfully via Cloud Function');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('Error sending FCM notification: $e');
+        print('Error sending FCM notification via Cloud Function: $e');
       }
     }
   }

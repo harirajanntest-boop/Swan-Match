@@ -4,7 +4,7 @@ import 'package:country_picker/country_picker.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
-import 'interests_page.dart';
+import 'interests_view.dart';
 
 class PartnerPreferencesPage extends StatefulWidget {
   const PartnerPreferencesPage({super.key});
@@ -191,8 +191,18 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     );
   }
 
-  Map<String, dynamic> _normalizePreferences(Map<String, dynamic>? raw) {
+  Map<String, dynamic> _normalizePreferences(Map<String, dynamic>? raw, {Map<String, dynamic>? rootProfile}) {
     final source = raw ?? <String, dynamic>{};
+    final root = rootProfile ?? <String, dynamic>{};
+
+    // Helper: read from nested section first, then flat root field as fallback
+    String flatFallback(String sectionKey, String key, String flatKey) {
+      final nested = (source[sectionKey] is Map)
+          ? (source[sectionKey] as Map)[key]?.toString().trim() ?? ''
+          : '';
+      if (nested.isNotEmpty) return nested;
+      return root[flatKey]?.toString().trim() ?? '';
+    }
 
     Map<String, dynamic> section(String key, Map<String, dynamic> defaults) {
       final existing = source[key];
@@ -205,38 +215,94 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
       return {...defaults};
     }
 
+    // Build age string from flat fields if not in nested
+    String ageFromFlat() {
+      final nested = (source['basicDetails'] is Map)
+          ? (source['basicDetails'] as Map)['age']?.toString().trim() ?? ''
+          : '';
+      if (nested.isNotEmpty) return nested;
+      final minAge = root['minAgePreference'];
+      final maxAge = root['maxAgePreference'];
+      if (minAge != null && maxAge != null) {
+        return '$minAge - $maxAge';
+      }
+      return '';
+    }
+
+    final basic = section('basicDetails', <String, dynamic>{
+      'age': '',
+      'height': '',
+      'maritalStatus': '',
+      'motherTongue': '',
+      'physicalStatus': '',
+    });
+    // Fallback age from flat fields
+    if ((basic['age'] ?? '').toString().trim().isEmpty) {
+      basic['age'] = ageFromFlat();
+    }
+
+    final lifestyle = section('lifestyle', <String, dynamic>{
+      'eatingHabits': '',
+      'smokingHabits': '',
+      'drinkingHabits': '',
+    });
+    // Fallback smoking/drinking from flat fields
+    if ((lifestyle['smokingHabits'] ?? '').toString().trim().isEmpty) {
+      lifestyle['smokingHabits'] = root['smoking']?.toString().trim() ?? '';
+    }
+    if ((lifestyle['drinkingHabits'] ?? '').toString().trim().isEmpty) {
+      lifestyle['drinkingHabits'] = root['drinking']?.toString().trim() ?? '';
+    }
+
+    final religious = section('religiousDetails', <String, dynamic>{
+      'religion': '',
+      'caste': '',
+      'star': '',
+      'dosham': '',
+    });
+    // Fallback religion from flat preferredReligion
+    if ((religious['religion'] ?? '').toString().trim().isEmpty) {
+      religious['religion'] = root['preferredReligion']?.toString().trim() ?? '';
+    }
+
+    final professional = section('professionalDetails', <String, dynamic>{
+      'education': '',
+      'employedIn': '',
+      'occupation': '',
+      'annualIncome': '',
+    });
+    // Fallback education from flat preferredEducation
+    if ((professional['education'] ?? '').toString().trim().isEmpty) {
+      professional['education'] = root['preferredEducation']?.toString().trim() ?? '';
+    }
+    // Fallback occupation from flat preferredProfession
+    if ((professional['occupation'] ?? '').toString().trim().isEmpty) {
+      professional['occupation'] = root['preferredProfession']?.toString().trim() ?? '';
+    }
+
+    final locationNested = section('locationDetails', <String, dynamic>{
+      'country': '',
+      'state': '',
+      'city': '',
+    });
+    // Fallback location from flat preferredLocation
+    if ((locationNested['country'] ?? '').toString().trim().isEmpty &&
+        (locationNested['city'] ?? '').toString().trim().isEmpty) {
+      final flatLocation = root['preferredLocation']?.toString().trim() ?? '';
+      if (flatLocation.isNotEmpty) {
+        locationNested['city'] = flatLocation;
+      }
+    }
+
     return <String, dynamic>{
-      'basicDetails': section('basicDetails', <String, dynamic>{
-        'age': '',
-        'height': '',
-        'maritalStatus': '',
-        'motherTongue': '',
-        'physicalStatus': '',
-      }),
-      'lifestyle': section('lifestyle', <String, dynamic>{
-        'eatingHabits': '',
-        'smokingHabits': '',
-        'drinkingHabits': '',
-      }),
-      'religiousDetails': section('religiousDetails', <String, dynamic>{
-        'religion': '',
-        'caste': '',
-        'star': '',
-        'dosham': '',
-      }),
-      'professionalDetails': section('professionalDetails', <String, dynamic>{
-        'education': '',
-        'employedIn': '',
-        'occupation': '',
-        'annualIncome': '',
-      }),
-      'locationDetails': section('locationDetails', <String, dynamic>{
-        'country': '',
-        'state': '',
-        'city': '',
-      }),
+      'basicDetails': basic,
+      'lifestyle': lifestyle,
+      'religiousDetails': religious,
+      'professionalDetails': professional,
+      'locationDetails': locationNested,
     };
   }
+
 
   Future<void> _editPreference({
     required String section,
@@ -269,6 +335,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
           : (profile?['partnerPreferences'] is Map
               ? Map<String, dynamic>.from(profile?['partnerPreferences'] as Map)
               : null),
+      rootProfile: profile,
     );
 
     final location = Map<String, dynamic>.from(
@@ -363,6 +430,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                   : (profile['partnerPreferences'] is Map
                     ? Map<String, dynamic>.from(profile['partnerPreferences'] as Map)
                     : null)),
+                rootProfile: profile,
               );
 
               String display(dynamic value) {
@@ -779,7 +847,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                           Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (context) => const InterestsPage(),
+                              builder: (context) => const InterestsView(),
                             ),
                           );
                         },

@@ -13,6 +13,17 @@
 				<string>com.googleusercontent.apps.439342747193-hbe2s6ca6om9f6qirg132r4i26u4hrff</string>
 			</array>
 		</dict>
+		<!-- Stripe payment return deep link -->
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.swanmatch.app.payment</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>swanmatch</string>
+			</array>
+		</dict>
 	</array>
 	<!-- End of the Google Sign-in Section -->
 	<key>NSLocationWhenInUseUsageDescription</key>

@@ -48,21 +48,14 @@ dependencies:
   shared_preferences: ^2.3.2
   google_fonts: ^6.2.1
   intl: ^0.19.0
-  path_provider: ^2.1.4
-  share_plus: ^10.1.2
   app_links: ^6.3.2
   google_sign_in: ^6.2.1
   flutter_local_notifications: ^21.0.0
   cloud_functions: ^5.6.2
   country_picker: ^2.0.21
-  geolocator: ^12.0.0
-  geocoding: ^3.0.0
-  firebase_functions: ^0.0.1-dev
-  googleapis_auth: ^2.0.0
-  http: ^1.6.0
-  pdf: ^3.11.1
   url_launcher: ^6.3.1
-  in_app_review: ^2.0.9
+  font_awesome_flutter: ^11.0.0
+  in_app_review: ^2.0.11
 
 dev_dependencies:
   flutter_test:
@@ -89,11 +82,10 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
-    - assets/service_account.json
-    - assets/images/image.png
-    - assets/images/guide/couple_welcome.png
-    - assets/images/guide/couple_matching.png
-    - assets/images/guide/couple_celebration.png
+    - assets/images/appicon.png
+    - assets/images/onboarding1.png
+    - assets/images/onborading3.png
+    - assets/images/sucess.png
   #   - images/a_dot_burr.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see
@@ -126,7 +118,7 @@ flutter:
 flutter_launcher_icons:
   android: "ic_launcher"
   ios: true
-  image_path: "assets/images/guide/icon.png"
+  image_path: "assets/images/appicon_padded.png"
   adaptive_icon_background: "#ffffff"
-  adaptive_icon_foreground: "assets/images/guide/icon.png"
+  adaptive_icon_foreground: "assets/images/appicon_padded.png"
   remove_alpha_ios: true

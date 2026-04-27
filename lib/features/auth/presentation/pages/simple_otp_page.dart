@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
 import 'main_dashboard.dart';
-import 'simple_onboarding.dart';
+import 'onboarding_flow.dart';
 
 class SimpleOtpPage extends StatefulWidget {
   final String phoneNumber;
@@ -87,6 +89,103 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
     try {
       final credential = await AuthService.instance.signInWithPhoneOtp(otp);
       
+      // NEW FLOW: Complete Firebase sign-in first to check if user exists
+      if (credential == null) {
+        print('DEBUG: Phone credential stored temporarily, completing sign-in to check user status');
+        
+        final auth = AuthService.instance;
+        
+        try {
+          // Complete Firebase sign-in first to get authentication
+          final userCredential = await auth.completeDelayedSignIn();
+          final user = userCredential.user;
+          
+          if (user == null) {
+            print('DEBUG: Failed to complete sign-in');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Failed to sign in')),
+              );
+            }
+            return;
+          }
+          
+          print('DEBUG: Firebase sign-in completed: ${user.uid}, phone: ${user.phoneNumber}');
+          
+          // Now check if user has completed onboarding
+          try {
+            final userDoc = await UserService.instance.getUserProfile(user.uid);
+            
+            if (userDoc != null) {
+              print('DEBUG: User profile found: $userDoc');
+              print('DEBUG: registrationCompleted value: ${userDoc['registrationCompleted']}');
+              
+              if (userDoc['registrationCompleted'] == true) {
+                // User has account + completed onboarding → Go to swipe page
+                print('DEBUG: User has completed onboarding, going to dashboard');
+                if (mounted) {
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (_) => const MainDashboard(initialIndex: 0)),
+                    (route) => false,
+                  );
+                }
+                return;
+              } else {
+                // User has account + NOT completed onboarding → Go to onboarding to complete it
+                print('DEBUG: User exists but hasn\'t completed onboarding, proceeding to onboarding');
+                if (mounted) {
+                  Navigator.pushAndRemoveUntil(
+                    context,
+                    MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+                    (route) => false,
+                  );
+                }
+                return;
+              }
+            } else {
+              // User doesn't have account → Sign out and start onboarding with delayed sign-in
+              print('DEBUG: No user profile found, treating as new user');
+              print('DEBUG: Signing out to start onboarding with delayed sign-in');
+              await FirebaseAuth.instance.signOut();
+              
+              // Store credential again for delayed sign-in after photo screen
+              await auth.sendOtp(phoneNumber: widget.phoneNumber);
+              
+              if (mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+                  (route) => false,
+                );
+              }
+              return;
+            }
+          } catch (e) {
+            print('DEBUG: Error checking user profile: $e');
+            // If profile check fails, proceed to onboarding
+            print('DEBUG: Proceeding to onboarding due to error');
+            if (mounted) {
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+                (route) => false,
+              );
+            }
+            return;
+          }
+        } catch (e) {
+          print('DEBUG: Error completing sign-in: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: ${e.toString()}')),
+            );
+          }
+          return;
+        }
+      }
+      
+      // This should not happen with new flow, but keep for backwards compatibility
       final user = credential.user!;
       
       // Check if user exists in database
@@ -107,7 +206,7 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
         if (mounted) {
           Navigator.pushAndRemoveUntil(
             context,
-            MaterialPageRoute(builder: (_) => const SimpleOnboarding()),
+            MaterialPageRoute(builder: (_) => const OnboardingFlow()),
             (route) => false,
           );
         }
@@ -130,7 +229,7 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
           if (mounted) {
             Navigator.pushAndRemoveUntil(
               context,
-              MaterialPageRoute(builder: (_) => const SimpleOnboarding()),
+              MaterialPageRoute(builder: (_) => const OnboardingFlow()),
               (route) => false,
             );
           }

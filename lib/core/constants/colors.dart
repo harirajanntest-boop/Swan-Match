@@ -5,9 +5,9 @@ class AppColors {
   static const Color obsidian = Color(0xFF080808); // Deep black background
   static const Color onyx = Color(0xFF151515);     // Slightly lighter black for cards
   
-  static const Color goldDark = Color(0xFFB8860B);
-  static const Color goldMedium = Color(0xFFD4AF37);
-  static const Color goldLight = Color(0xFFF1D592);
+  static const Color goldDark = Color(0xFFa08840);   // deeper tone of #c6a85c
+  static const Color goldMedium = Color(0xFFc6a85c); // requested brand gold
+  static const Color goldLight = Color(0xFFdec47e);  // lighter highlight
 
   // ─── The Magic Remapping ───────────────────────────────────────────────────
   // These map your previous Ivory/Rose variables to the new Black/Gold palette

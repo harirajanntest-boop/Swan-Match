@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
@@ -15,10 +16,14 @@ class MessagesView extends StatefulWidget {
   State<MessagesView> createState() => _MessagesViewState();
 }
 
-class _MessagesViewState extends State<MessagesView> {
+class _MessagesViewState extends State<MessagesView>
+    with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
-  bool _onlyUnread = false;
+
+  // ─── Animation ────────────────────────────────────────────────────────────
+  late final AnimationController _entryController;
+  late final Animation<double> _fadeAnim;
 
   // ─── STREAMS CACHED IN STATE ───
   late final Stream<List<Map<String, dynamic>>> _myChatsStream;
@@ -28,21 +33,38 @@ class _MessagesViewState extends State<MessagesView> {
   @override
   void initState() {
     super.initState();
+    _entryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+
+    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entryController,
+        curve: Curves.easeOut,
+      ),
+    );
+
     _myChatsStream = ChatService.instance.watchMyChats();
     _mySentInterestsStream = InterestService.instance.watchMySentInterests();
     _interestsForMeStream = InterestService.instance.watchInterestsForMe();
+
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) _entryController.forward();
+    });
   }
 
   @override
   void dispose() {
+    _entryController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
+    return FadeTransition(
+      opacity: _fadeAnim,
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -59,20 +81,6 @@ class _MessagesViewState extends State<MessagesView> {
                   letterSpacing: 1,
                 ),
               ),
-            ),
-
-            // ─── Main Tab Bar ───
-            TabBar(
-              dividerColor: Colors.white.withOpacity(0.05),
-              indicatorColor: AppColors.goldMedium,
-              indicatorWeight: 3,
-              labelColor: AppColors.goldMedium,
-              unselectedLabelColor: Colors.white.withOpacity(0.4),
-              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 0.5),
-              tabs: const [
-                Tab(text: "Messages"),
-                Tab(text: "Calls"),
-              ],
             ),
 
             Expanded(
@@ -105,27 +113,14 @@ class _MessagesViewState extends State<MessagesView> {
                           final received = receivedSnapshot.data ?? const <dynamic>[];
                           final mergedChats = _mergeAcceptedInterests(chats, sent, received);
 
-                          return TabBarView(
-                            children: [
-                              _buildMessageContent(
-                                context,
-                                title: "Incoming messages",
-                                emptyMessage: "No messages received yet.",
-                                emptySub: "When someone messages you, it will appear here.",
-                                icon: Icons.chat_bubble_outline,
-                                chats: mergedChats,
-                                incomingOnly: true,
-                              ),
-                              _buildMessageContent(
-                                context,
-                                title: "Your recent call history",
-                                emptyMessage: "No recent calls.",
-                                emptySub: "Call history will appear here.",
-                                icon: Icons.phone_in_talk_outlined,
-                                chats: const <Map<String, dynamic>>[],
-                                incomingOnly: true,
-                              ),
-                            ],
+                          return _buildMessageContent(
+                            context,
+                            title: "Incoming messages",
+                            emptyMessage: "No messages received yet.",
+                            emptySub: "When someone messages you, it will appear here.",
+                            icon: Icons.chat_bubble_outline,
+                            chats: mergedChats,
+                            incomingOnly: true,
                           );
                         },
                       );
@@ -204,7 +199,6 @@ class _MessagesViewState extends State<MessagesView> {
       if (currentUid.isEmpty || lastSender.isEmpty) return true;
       final directionMatches = incomingOnly ? lastSender != currentUid : lastSender == currentUid;
       if (!directionMatches) return false;
-      if (_onlyUnread && !(lastSender != currentUid)) return false;
 
       if (_searchQuery.isEmpty) return true;
       final lastMessage = (chat['lastMessage'] ?? '').toString().toLowerCase();
@@ -216,48 +210,7 @@ class _MessagesViewState extends State<MessagesView> {
 
     return Column(
       children: [
-        // ─── Sub-Header & Actions ───
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600, height: 1.4),
-                ),
-              ),
-              const SizedBox(width: 12),
-              // Action Buttons (Filter)
-              Row(
-                children: [
-                  GestureDetector(
-                    onTap: () => setState(() => _onlyUnread = !_onlyUnread),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _onlyUnread ? AppColors.goldMedium.withOpacity(0.16) : Colors.white.withOpacity(0.05),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: Colors.white.withOpacity(0.2)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.tune, color: Colors.white.withOpacity(0.8), size: 14),
-                          const SizedBox(width: 6),
-                          Text(
-                            _onlyUnread ? 'Unread only' : 'All',
-                            style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 12, fontWeight: FontWeight.w600),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
+        // ─── Search Bar ───
 
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -358,69 +311,110 @@ class _ChatThreadTile extends StatelessWidget {
         final city = (profile['city'] ?? '').toString();
         final lastMessage = (chat['lastMessage'] ?? '').toString();
 
-        Future<void> openConversation() async {
-          if (otherUserId.isEmpty) {
-            showLinearMessage(context, 'Chat user unavailable.', isError: true);
-            return;
-          }
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ChatConversationPage(
-                otherUserId: otherUserId,
-                otherUserName: name,
-              ),
-            ),
-          );
-        }
+        return _buildChatTile(context, profile, name, city, lastMessage, otherUserId);
+      },
+    );
+  }
 
-        return GestureDetector(
-          onTap: openConversation,
-          child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.03),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white.withOpacity(0.1)),
+  Widget _buildChatTile(
+    BuildContext context,
+    Map<String, dynamic> profile,
+    String name,
+    String city,
+    String lastMessage,
+    String otherUserId,
+  ) {
+    // Get photo URL from either photoUrl field or photos array
+    String photoUrl = (profile['photoUrl'] ?? '').toString();
+    if (photoUrl.isEmpty && profile['photos'] is List && (profile['photos'] as List).isNotEmpty) {
+      photoUrl = (profile['photos'] as List).first.toString();
+    }
+
+    Future<void> openConversation() async {
+      if (otherUserId.isEmpty) {
+        showLinearMessage(context, 'Chat user unavailable.', isError: true);
+        return;
+      }
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatConversationPage(
+            otherUserId: otherUserId,
+            otherUserName: name,
           ),
-          child: Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: AppColors.goldMedium.withOpacity(0.2),
-                backgroundImage: (profile['showPhotosToEveryone'] != false && (profile['photoUrl'] ?? '').isNotEmpty)
-                    ? NetworkImage(profile['photoUrl'])
-                    : null,
-                child: (profile['showPhotosToEveryone'] == false || (profile['photoUrl'] ?? '').isEmpty)
-                    ? const Icon(Icons.person, color: AppColors.goldMedium)
-                    : null,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: openConversation,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
+            child: Row(
+              children: [
+                Stack(
                   children: [
-                    GestureDetector(
-                      onTap: openConversation,
-                      child: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: AppColors.goldMedium.withValues(alpha: 0.2),
+                      backgroundImage: photoUrl.isNotEmpty
+                          ? CachedNetworkImageProvider(photoUrl)
+                          : null,
+                      child: photoUrl.isEmpty
+                          ? const Icon(Icons.person, color: AppColors.goldMedium)
+                          : null,
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      lastMessage.isEmpty ? city : lastMessage,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 12),
-                    ),
+                    if (profile['isOnline'] == true || profile['online'] == true)
+                      Positioned(
+                        bottom: 0,
+                        right: 0,
+                        child: Container(
+                          width: 14,
+                          height: 14,
+                          decoration: BoxDecoration(
+                            color: Colors.greenAccent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.black, width: 2),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
-              ),
-              Icon(Icons.chat_bubble_outline, color: AppColors.goldMedium.withOpacity(0.9), size: 20),
-              const SizedBox(width: 10),
-              Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.4)),
-            ],
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis),
+                          ),
+                          if (profile['profileVerified'] == true || profile['idVerified'] == true) ...[
+                            const SizedBox(width: 4),
+                            const Icon(Icons.verified, color: AppColors.goldMedium, size: 14),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        lastMessage.isEmpty ? city : lastMessage,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.2)),
+              ],
+            ),
           ),
-        ));
-      },
+          const Divider(color: Colors.white10, height: 1),
+        ],
+      ),
     );
   }
 }
@@ -444,41 +438,7 @@ class _MessageEmptyState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Glowing Glass Icon Ring
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: [BoxShadow(color: AppColors.goldMedium.withOpacity(0.1), blurRadius: 40, spreadRadius: 10)],
-                ),
-              ),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(50),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white.withOpacity(0.03),
-                      border: Border.all(color: AppColors.goldMedium.withOpacity(0.2), width: 1.5),
-                    ),
-                    child: Center(
-                      child: Icon(icon, color: AppColors.goldMedium, size: 32),
-                    ),
-                  ),
-                ),
-              ),
-              // Floating Particles
-              Positioned(top: -5, right: 5, child: Container(width: 6, height: 6, decoration: const BoxDecoration(shape: BoxShape.circle, color: AppColors.goldLight))),
-              Positioned(bottom: 5, left: -5, child: Container(width: 4, height: 4, decoration: BoxDecoration(shape: BoxShape.circle, color: AppColors.goldMedium.withOpacity(0.5)))),
-            ],
-          ),
+          Icon(icon, color: AppColors.goldMedium, size: 64),
           
           const SizedBox(height: 24),
           

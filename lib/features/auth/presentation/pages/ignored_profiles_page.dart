@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -28,15 +29,9 @@ class IgnoredProfilesPage extends StatelessWidget {
       body: StreamBuilder<Map<String, dynamic>?>(
         stream: UserService.instance.watchCurrentUserProfile(),
         builder: (context, snapshot) {
-          final ignoredMap = Map<String, dynamic>.from(snapshot.data?['ignoredProfiles'] ?? {});
-          final now = DateTime.now();
-          
-          final activeIgnoredUids = ignoredMap.entries.where((e) {
-            final expiry = (e.value as Timestamp).toDate();
-            return expiry.isAfter(now);
-          }).map((e) => e.key).toList();
+          final ignoredMatchIds = (snapshot.data?['ignoredMatchIds'] as List<dynamic>? ?? []).map((e) => e.toString()).toList();
 
-          if (activeIgnoredUids.isEmpty) {
+          if (ignoredMatchIds.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -51,10 +46,9 @@ class IgnoredProfilesPage extends StatelessWidget {
 
           return ListView.builder(
             padding: const EdgeInsets.all(20),
-            itemCount: activeIgnoredUids.length,
+            itemCount: ignoredMatchIds.length,
             itemBuilder: (context, index) {
-              final uid = activeIgnoredUids[index];
-              final expiry = (ignoredMap[uid] as Timestamp).toDate();
+              final uid = ignoredMatchIds[index];
 
               return FutureBuilder<Map<String, dynamic>?>(
                 future: UserService.instance.getUserProfile(uid),
@@ -74,17 +68,17 @@ class IgnoredProfilesPage extends StatelessWidget {
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       leading: CircleAvatar(
                         backgroundColor: AppColors.onyx,
-                        backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                        backgroundImage: photoUrl.isNotEmpty ? CachedNetworkImageProvider(photoUrl) : null,
                         child: photoUrl.isEmpty ? const Icon(Icons.person, color: AppColors.goldMedium) : null,
                       ),
                       title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                       subtitle: Text(
-                        "Hidden until ${DateFormat('dd MMM, hh:mm a').format(expiry)}", 
+                        "Permanently Hidden", 
                         style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11)
                       ),
                       trailing: TextButton(
                         onPressed: () => UserService.instance.unignoreUser(uid),
-                        child: const Text("Show Now", style: TextStyle(color: AppColors.goldMedium)),
+                        child: const Text("Un-ignore", style: TextStyle(color: AppColors.goldMedium)),
                       ),
                     ),
                   );

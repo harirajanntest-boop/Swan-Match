@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'auth_gate.dart';
+import 'custom_login_page.dart';
+import 'package:swam_match_app/services/user_service.dart';
+import 'onboarding_flow.dart';
 import 'main_dashboard.dart';
+import 'intro_onboarding_screens.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -39,19 +44,71 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     Timer(const Duration(milliseconds: 2500), _checkAuth);
   }
 
-  void _checkAuth() {
+  Future<void> _checkAuth() async {
     if (!mounted) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const MainDashboard()),
-      );
+      // Check if user has completed registration
+      try {
+        final profile = await UserService.instance.getUserProfile(user.uid);
+        if (!mounted) return;
+        if (profile != null && profile['registrationCompleted'] == true) {
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (ctx, anim, sec) => const MainDashboard(),
+              transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+              transitionDuration: const Duration(milliseconds: 800),
+            ),
+          );
+        } else {
+          // Logged in but incomplete profile → details filling
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (ctx, anim, sec) => const OnboardingFlow(),
+              transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+              transitionDuration: const Duration(milliseconds: 800),
+            ),
+          );
+        }
+      } catch (_) {
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          PageRouteBuilder(
+            pageBuilder: (ctx, anim, sec) => const OnboardingFlow(),
+            transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+            transitionDuration: const Duration(milliseconds: 800),
+          ),
+        );
+      }
     } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const AuthGate()),
-      );
+      // Check if user has seen intro onboarding
+      final prefs = await SharedPreferences.getInstance();
+      final hasSeenIntro = prefs.getBool('hasSeenIntroOnboarding') ?? false;
+      
+      if (!mounted) return;
+      
+      if (hasSeenIntro) {
+        Navigator.pushReplacement(
+          context,
+          PageRouteBuilder(
+            pageBuilder: (ctx, anim, sec) => const CustomLoginPage(),
+            transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+            transitionDuration: const Duration(milliseconds: 800),
+          ),
+        );
+      } else {
+        Navigator.pushReplacement(
+          context,
+          PageRouteBuilder(
+            pageBuilder: (ctx, anim, sec) => const IntroOnboardingScreens(),
+            transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+            transitionDuration: const Duration(milliseconds: 800),
+          ),
+        );
+      }
     }
   }
 
@@ -64,7 +121,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.obsidian,
+      backgroundColor: Colors.black,
       body: Center(
         child: FadeTransition(
           opacity: _fadeAnimation,
@@ -73,59 +130,30 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Premium Heart Element
-                Container(
-                  width: 140,
-                  height: 140,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.goldMedium.withOpacity(0.2),
-                        blurRadius: 50,
-                        spreadRadius: 10,
-                      ),
-                    ],
-                    gradient: const RadialGradient(
-                      colors: [Color(0xFF333333), Color(0xFF1A1A1A)],
-                    ),
-                    border: Border.all(
-                      color: AppColors.goldMedium.withOpacity(0.3),
-                      width: 2,
-                    ),
-                  ),
-                  child: Center(
-                    child: Icon(
-                      Icons.favorite,
-                      color: AppColors.goldMedium,
-                      size: 70,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black.withOpacity(0.5),
-                          offset: const Offset(0, 4),
-                          blurRadius: 10,
-                        ),
-                      ],
-                    ),
-                  ),
+                Image.asset(
+                  'assets/images/appicon.png',
+                  width: 150,
+                  height: 150,
+                  fit: BoxFit.contain,
                 ),
-                const SizedBox(height: 32),
-                const Text(
-                  "SWAN MATCH",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    letterSpacing: 4,
-                    fontWeight: FontWeight.w200,
-                  ),
-                ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 24),
                 Text(
-                  "Exclusively for Elite Souls",
+                  "SWAN MATCH",
+                  style: GoogleFonts.cinzel(
+                    color: AppColors.goldMedium,
+                    fontSize: 32,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  "Intentional connection\nfor a lifetime.",
+                  textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: AppColors.goldLight.withOpacity(0.5),
-                    fontSize: 12,
-                    letterSpacing: 1.5,
+                    color: Colors.white70,
+                    fontSize: 14,
+                    height: 1.4,
                   ),
                 ),
               ],

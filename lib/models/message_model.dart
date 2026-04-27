@@ -7,6 +7,9 @@ class MessageModel {
 	final String receiverId;
 	final String text;
 	final DateTime sentAt;
+	/// True when the message has been written locally but not yet confirmed by
+	/// the Firestore server. Used to show a "sending" indicator.
+	final bool hasPendingWrites;
 
 	const MessageModel({
 		required this.id,
@@ -15,6 +18,7 @@ class MessageModel {
 		required this.receiverId,
 		required this.text,
 		required this.sentAt,
+		this.hasPendingWrites = false,
 	});
 
 	Map<String, dynamic> toMap() {
@@ -28,7 +32,7 @@ class MessageModel {
 		};
 	}
 
-	factory MessageModel.fromMap(Map<String, dynamic> map) {
+	factory MessageModel.fromMap(Map<String, dynamic> map, {bool hasPendingWrites = false}) {
 		return MessageModel(
 			id: (map['id'] ?? '') as String,
 			chatId: (map['chatId'] ?? '') as String,
@@ -38,6 +42,7 @@ class MessageModel {
 			sentAt: map['sentAt'] is Timestamp
 					? (map['sentAt'] as Timestamp).toDate()
 					: DateTime.now(),
+			hasPendingWrites: hasPendingWrites,
 		);
 	}
 }

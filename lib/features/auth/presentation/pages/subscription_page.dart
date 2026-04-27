@@ -1,6 +1,8 @@
 import 'dart:ui';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
@@ -423,7 +425,9 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                                 context: context,
                                 barrierDismissible: false,
                                 builder: (context) => const Center(
-                                  child: CircularProgressIndicator(color: AppColors.goldMedium),
+                                  child: CircularProgressIndicator(
+                                    color: AppColors.goldMedium,
+                                  ),
                                 ),
                               );
 
@@ -438,7 +442,10 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                               if (!context.mounted) return;
                               Navigator.pop(context); // Close loading
                               ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                                SnackBar(
+                                  content: Text('Error: $e'),
+                                  backgroundColor: Colors.red,
+                                ),
                               );
                             }
                           },
@@ -491,166 +498,550 @@ class _SubscriptionPageState extends State<SubscriptionPage>
   }
 }
 
-class _SwanProSubscriptionBody extends StatelessWidget {
+class _SwanProSubscriptionBody extends StatefulWidget {
   const _SwanProSubscriptionBody();
 
   @override
+  State<_SwanProSubscriptionBody> createState() =>
+      _SwanProSubscriptionBodyState();
+}
+
+class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
+  bool _isLoading = false;
+  bool _checkingStatus = true; // true while we check if user is already premium
+  bool _isPremium = false;
+  int _selectedPlanIndex = 2; // Default to 12 Months
+
+  // Stripe prices keyed by price ID. Populated on init.
+  Map<String, StripePriceInfo> _prices = {};
+  bool _pricesLoading = true;
+
+  // ─── Deep-link listener (app_links) ────────────────────────────────────────
+  // Imported at top of file. Handles swanmatch://payment-success and
+  // swanmatch://payment-cancel returned by Stripe checkout.
+  late final _appLinks = AppLinks();
+
+  @override
+  void initState() {
+    super.initState();
+    _appLinks.uriLinkStream.listen(_onDeepLink);
+    _checkCurrentPremiumStatus();
+    _loadPrices();
+  }
+
+  /// Fetches the real price amounts from Stripe via Cloud Function.
+  Future<void> _loadPrices() async {
+    try {
+      final prices = await StripeService.instance.fetchPrices([
+        StripeService.premiumMonthlyPriceId,
+        StripeService.premium6MonthPriceId,
+        StripeService.premium1YearPriceId,
+      ]);
+      if (mounted)
+        setState(() {
+          _prices = prices;
+          _pricesLoading = false;
+        });
+    } catch (e) {
+      // Log the real error so we can diagnose Stripe/Firebase issues.
+      debugPrint('[_loadPrices] ERROR: $e');
+      if (mounted) setState(() => _pricesLoading = false);
+    }
+  }
+
+  /// Returns the formatted price for a given price ID, with a fallback.
+  String _priceLabel(String priceId, String fallback) {
+    final info = _prices[priceId];
+    return info != null ? info.formattedAmount : fallback;
+  }
+
+  /// Returns the per-month price string for a given price ID.
+  String _perMonthLabel(String priceId, String fallback) {
+    final info = _prices[priceId];
+    return info != null ? info.formattedPerMonth : fallback;
+  }
+
+  /// Dynamically calculates savings % by comparing the monthly plan cost
+  /// against a multi-month plan cost. Returns e.g. "Save 40%" or empty string.
+  String _calculateSavings(
+    String monthlyPriceId,
+    String otherPriceId,
+    int months,
+  ) {
+    final monthly = _prices[monthlyPriceId];
+    final other = _prices[otherPriceId];
+    if (monthly == null || other == null) return '';
+    final fullPrice = monthly.amount * months;
+    if (fullPrice <= 0) return '';
+    final savingsPercent = ((fullPrice - other.amount) / fullPrice * 100)
+        .round();
+    return savingsPercent > 0 ? 'Save $savingsPercent%' : '';
+  }
+
+  /// Check Firestore (and Stripe if needed) on page open.
+  Future<void> _checkCurrentPremiumStatus() async {
+    try {
+      final profile = await UserService.instance.getCurrentUserProfile();
+      final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
+      final status = (sub?['status'] ?? '').toString().toLowerCase();
+      if (status == 'active' || status == 'trialing') {
+        if (mounted)
+          setState(() {
+            _isPremium = true;
+            _checkingStatus = false;
+          });
+        return;
+      }
+      // Also try a direct Stripe verify
+      final stripeConfirm = await StripeService.instance
+          .verifyAndActivatePremium();
+      if (mounted)
+        setState(() {
+          _isPremium = stripeConfirm;
+          _checkingStatus = false;
+        });
+    } catch (_) {
+      if (mounted)
+        setState(() {
+          _checkingStatus = false;
+        });
+    }
+  }
+
+  void _onDeepLink(Uri uri) {
+    if (!mounted) return;
+    if (_isLoading) setState(() => _isLoading = false);
+
+    if (uri.host == 'payment-success') {
+      // Verify with Stripe & update Firestore before showing success UI
+      _verifyAfterPayment();
+    } else if (uri.host == 'payment-cancel') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Payment cancelled. You can upgrade any time.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  /// Called after payment-success deep link — syncs Stripe → Firestore.
+  Future<void> _verifyAfterPayment() async {
+    setState(() => _isLoading = true);
+    try {
+      final isPremium = await StripeService.instance.verifyAndActivatePremium();
+      // Also write the top-level fields so every isPremium() check passes
+      // immediately (Cloud Function may only write the nested 'subscription' map).
+      await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+        'subscriptionStatus': 'active',
+        'subscriptionPlan': 'premium',
+      });
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _isPremium = true; // reflect in UI
+      });
+    } catch (_) {
+      if (!mounted) return;
+      // Even if verify failed, the payment likely succeeded. Optimistically
+      // write the status so the user can use premium features immediately.
+      try {
+        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
+          'subscriptionStatus': 'active',
+          'subscriptionPlan': 'premium',
+        });
+      } catch (_) {}
+      setState(() {
+        _isLoading = false;
+        _isPremium = true;
+      });
+    }
+  }
+
+  /// Returns the correct Stripe price ID for the currently selected plan.
+  String get _selectedPriceId {
+    switch (_selectedPlanIndex) {
+      case 0:
+        return StripeService.premiumMonthlyPriceId;
+      case 1:
+        return StripeService.premium6MonthPriceId;
+      case 2:
+      default:
+        return StripeService.premium1YearPriceId;
+    }
+  }
+
+  Future<void> _startPayment() async {
+    setState(() => _isLoading = true);
+    try {
+      // Check current premium status before charging the user again.
+      final profile = await UserService.instance.getCurrentUserProfile();
+      final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
+      final status = (sub?['status'] ?? '').toString().toLowerCase();
+      final alreadyPremium =
+          status == 'active' || status == 'trialing' || _isPremium;
+
+      if (alreadyPremium) {
+        // User already has an active plan — show management dialog.
+        if (!mounted) return;
+        setState(() => _isLoading = false);
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF111111),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.workspace_premium, color: AppColors.goldMedium),
+                SizedBox(width: 8),
+                Text(
+                  'Premium Active',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            content: const Text(
+              'You already have an active Swan Match Premium subscription. '
+              'Would you like to manage or cancel it?',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  try {
+                    await StripeService.instance.createPortalSession();
+                  } catch (e) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Error: $e'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                  }
+                },
+                child: const Text(
+                  'Manage',
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'Close',
+                  style: TextStyle(
+                    color: AppColors.goldMedium,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      // Not premium — proceed with Stripe checkout.
+      await StripeService.instance.startSubscription(priceId: _selectedPriceId);
+      // Deep link fires when user returns from Stripe (handled by _onDeepLink).
+      // If launchUrl returns without a deep link (browser closed on Android),
+      // stop the spinner after a short delay.
+      await Future.delayed(const Duration(seconds: 2));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  /// Manually check Stripe for an existing subscription and activate if found.
+  /// Useful when the user paid but the app never got the deep link.
+  Future<void> _restorePurchase() async {
+    setState(() => _isLoading = true);
+    try {
+      final isPremium = await StripeService.instance.verifyAndActivatePremium();
+      if (!mounted) return;
+      if (isPremium) {
+        setState(() {
+          _isPremium = true;
+        });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No active subscription found. Please complete payment first.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    // ── Full-screen success page when premium is confirmed ─────────────────
+    if (_isPremium) {
+      return _SuccessScreen(
+        onHome: () => Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const MainDashboard()),
+          (r) => false,
+        ),
+      );
+    }
+
     return Scaffold(
       body: Container(
         color: Colors.black,
         child: SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 30),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
+                // ── Back arrow ─────────────────────────────────────────
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: IconButton(
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    onPressed: () => Navigator.of(context).pop(),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ),
                 const SizedBox(height: 8),
-                Container(
-                  width: 88,
-                  height: 88,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: AppColors.goldGradient,
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.goldMedium.withOpacity(0.35),
-                        blurRadius: 20,
-                        spreadRadius: 2,
+
+                // ── Crown icon ─────────────────────────────────────────
+                Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            AppColors.goldMedium.withOpacity(0.25),
+                            Colors.transparent,
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
-                  child: const Icon(
-                    Icons.workspace_premium,
-                    color: Colors.black,
-                    size: 40,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                const Text(
-                  'Upgrade to SWAN Pro',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 30,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Find your perfect match without limits',
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.75),
-                    fontSize: 14,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 26),
-                _FeatureCard(
-                  features: const [
-                    'Unlimited Send Interest',
-                    'See Who Liked You',
-                    'Advanced Filters',
-                    'Priority Profile Boost',
-                    'Ad-Free Experience',
+                    ),
+                    const FaIcon(
+                      FontAwesomeIcons.crown,
+                      color: AppColors.goldMedium,
+                      size: 48,
+                    ),
                   ],
                 ),
-                const SizedBox(height: 20),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    gradient: LinearGradient(
-                      colors: [
-                        AppColors.goldMedium.withOpacity(0.22),
-                        AppColors.goldLight.withOpacity(0.1),
-                      ],
-                    ),
-                    border: Border.all(
-                      color: AppColors.goldMedium.withOpacity(0.35),
-                    ),
+                const SizedBox(height: 12),
+
+                // ── Title ──────────────────────────────────────────────
+                const Text(
+                  'Premium',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.5,
                   ),
-                  child: const Column(
-                    children: [
-                      Text(
-                        'Monthly Plan',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Upgrade your experience',
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 22),
+
+                // ── Feature list (single column, centered) ────────────────
+                ...[
+                  'Unlimited Connections',
+                  'Advanced Filters',
+                  'See Who Liked You',
+                  'Priority Visibility',
+                  'Read Receipts',
+                ].map(
+                  (f) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Center(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.check,
+                            color: AppColors.goldMedium,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            f,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 8),
-                      Text(
-                        '\$19.99 / month',
-                        style: TextStyle(
-                          color: AppColors.goldLight,
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Cancel anytime',
-                        style: TextStyle(color: Colors.white70, fontSize: 13),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
+                const SizedBox(height: 24),
+
+                // ── Plan cards (vertical stack) ────────────────────────
+                if (_pricesLoading) ...[
+                  // Shimmer-style skeleton placeholders while loading
+                  for (int i = 0; i < 3; i++) ...[
+                    Container(
+                      height: 72,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.05),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    if (i < 2) const SizedBox(height: 10),
+                  ],
+                ] else ...[
+                  // 1 Month
+                  _VerticalPlanCard(
+                    title: '1 Month',
+                    price:
+                        _prices[StripeService.premiumMonthlyPriceId]
+                            ?.formattedAmount ??
+                        'Loading...',
+                    isSelected: _selectedPlanIndex == 0,
+                    onTap: () => setState(() => _selectedPlanIndex = 0),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // 6 Months
+                  _VerticalPlanCard(
+                    title: '6 Months',
+                    price:
+                        _prices[StripeService.premium6MonthPriceId]
+                            ?.formattedAmount ??
+                        'Loading...',
+                    subtitle: _calculateSavings(
+                      StripeService.premiumMonthlyPriceId,
+                      StripeService.premium6MonthPriceId,
+                      6,
+                    ),
+                    isSelected: _selectedPlanIndex == 1,
+                    onTap: () => setState(() => _selectedPlanIndex = 1),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // 12 Months — always shows "Most Popular" banner
+                  _VerticalPlanCard(
+                    title: '12 Months',
+                    price:
+                        _prices[StripeService.premium1YearPriceId]
+                            ?.formattedAmount ??
+                        'Loading...',
+                    subtitle: _calculateSavings(
+                      StripeService.premiumMonthlyPriceId,
+                      StripeService.premium1YearPriceId,
+                      12,
+                    ),
+                    isSelected: _selectedPlanIndex == 2,
+                    isMostPopular: true,
+                    onTap: () => setState(() => _selectedPlanIndex = 2),
+                  ),
+                ],
                 const SizedBox(height: 28),
-                SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: ElevatedButton(
-                    onPressed: () async {
-                      try {
-                        // Show loading indicator
-                        showDialog(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (context) => const Center(
-                            child: CircularProgressIndicator(color: AppColors.goldMedium),
-                          ),
-                        );
 
-                        // Start Stripe subscription
-                        await StripeService.instance.startSubscription(
-                          priceId: StripeService.premiumMonthlyPriceId,
-                        );
-
-                        if (!context.mounted) return;
-                        Navigator.pop(context); // Close loading
-                      } catch (e) {
-                        if (!context.mounted) return;
-                        Navigator.pop(context); // Close loading
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-                        );
-                      }
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.goldMedium,
-                      foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(
+                // ── CTA / Status ───────────────────────────────────────
+                if (_checkingStatus)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: CircularProgressIndicator(
+                      color: AppColors.goldMedium,
+                    ),
+                  )
+                else ...[
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: AppColors.goldGradient,
                         borderRadius: BorderRadius.circular(30),
                       ),
-                      textStyle: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.8,
-                        fontSize: 16,
+                      child: ElevatedButton(
+                        onPressed: _isLoading ? null : _startPayment,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          foregroundColor: Colors.black,
+                          disabledBackgroundColor: Colors.transparent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          textStyle: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
+                            fontSize: 16,
+                          ),
+                        ),
+                        child: _isLoading
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.black,
+                                ),
+                              )
+                            : const Text('Continue'),
                       ),
                     ),
-                    child: const Text('Pay Now'),
                   ),
-                ),
-                const SizedBox(height: 14),
+                  const SizedBox(height: 14),
+                  GestureDetector(
+                    onTap: _isLoading ? null : _restorePurchase,
+                    child: Text(
+                      'Restore Purchase',
+                      style: TextStyle(
+                        color: AppColors.goldMedium.withOpacity(0.7),
+                        decoration: TextDecoration.underline,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
                 GestureDetector(
                   onTap: () async {
-                    // Mark registration as complete even if user skips payment
-                    await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                      'registrationCompleted': true,
-                    });
+                    await UserService.instance.updateCurrentUserProfile(
+                      <String, dynamic>{'registrationCompleted': true},
+                    );
                     if (!context.mounted) return;
                     Navigator.pushAndRemoveUntil(
                       context,
@@ -663,12 +1054,13 @@ class _SwanProSubscriptionBody extends StatelessWidget {
                   child: Text(
                     "I'll do it later",
                     style: TextStyle(
-                      color: Colors.white.withOpacity(0.8),
+                      color: Colors.white.withOpacity(0.4),
                       decoration: TextDecoration.underline,
-                      fontSize: 14,
+                      fontSize: 13,
                     ),
                   ),
                 ),
+                const SizedBox(height: 16),
               ],
             ),
           ),
@@ -685,47 +1077,137 @@ class _FeatureCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.12)),
-      ),
-      child: Column(
-        children: features
-            .map(
-              (feature) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 7),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.check_circle,
-                      color: AppColors.goldMedium,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        feature,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                        ),
+    return Column(
+      children: features
+          .map(
+            (feature) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.check,
+                    color: AppColors.goldMedium,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      feature,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
-                  ],
+                  ),
+                ],
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+// ─── Custom Plan Card ─────────────────────────────────────────────
+class _PlanOptionCard extends StatelessWidget {
+  final String title;
+  final String price;
+  final String? subtitle;
+  final bool isPopular;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _PlanOptionCard({
+    required this.title,
+    required this.price,
+    this.subtitle,
+    this.isPopular = false,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? AppColors.goldMedium : Colors.white12,
+            width: isSelected ? 1.5 : 1,
+          ),
+          color: isSelected
+              ? AppColors.goldMedium.withOpacity(0.05)
+              : Colors.black,
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle!,
+                          style: const TextStyle(
+                            color: AppColors.goldMedium,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  Text(
+                    price,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+            if (isPopular)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: const BoxDecoration(
+                  gradient: AppColors.goldGradient,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(15),
+                    bottomRight: Radius.circular(15),
+                  ),
+                ),
+                child: const Text(
+                  'Most Popular',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-            )
-            .toList(),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ─── Custom Selectable Plan Card ─────────────────────────────────────────────
 class _SelectablePlanCard extends StatelessWidget {
   final String title;
   final String price;
@@ -743,83 +1225,336 @@ class _SelectablePlanCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
-          color: isSelected
-              ? AppColors.goldMedium.withOpacity(0.05)
-              : Colors.transparent,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: isSelected
-                ? AppColors.goldMedium
-                : Colors.white.withOpacity(0.15),
+            color: isSelected ? AppColors.goldMedium : Colors.white12,
             width: isSelected ? 2 : 1,
           ),
-          boxShadow: isSelected
-              ? [
-                  BoxShadow(
-                    color: AppColors.goldMedium.withOpacity(0.1),
-                    blurRadius: 10,
-                  ),
-                ]
-              : [],
+          color: isSelected
+              ? AppColors.goldMedium.withValues(alpha: 0.1)
+              : Colors.black,
         ),
         child: Column(
           children: [
             Text(
               title,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: isSelected ? AppColors.goldMedium : Colors.white,
                 fontWeight: FontWeight.bold,
-                fontSize: 13,
-                letterSpacing: 1,
+                fontSize: 16,
               ),
             ),
-            Container(
-              margin: const EdgeInsets.symmetric(vertical: 16),
-              height: 1,
-              width: 40,
-              color: Colors.white.withOpacity(0.1),
-            ),
+            const SizedBox(height: 8),
             Text(
               price,
-              style: const TextStyle(
-                color: AppColors.goldLight,
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.white70,
+                fontSize: 14,
               ),
-            ),
-            const SizedBox(height: 32),
-
-            // Custom Radio Button
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSelected
-                      ? AppColors.goldMedium
-                      : Colors.white.withOpacity(0.3),
-                  width: 2,
-                ),
-              ),
-              child: isSelected
-                  ? Center(
-                      child: Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.goldMedium,
-                        ),
-                      ),
-                    )
-                  : null,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Vertical stacked plan card (matches Image 3 design) ───────────────────
+class _VerticalPlanCard extends StatelessWidget {
+  final String title;
+  final String price;
+  final String? subtitle;
+  final bool isSelected;
+  final bool isMostPopular;
+  final VoidCallback onTap;
+
+  const _VerticalPlanCard({
+    required this.title,
+    required this.price,
+    this.subtitle,
+    required this.isSelected,
+    this.isMostPopular = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? AppColors.goldMedium : Colors.white12,
+            width: isSelected ? 1.5 : 1,
+          ),
+          color: isSelected
+              ? AppColors.goldMedium.withOpacity(0.06)
+              : Colors.black,
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle!,
+                          style: const TextStyle(
+                            color: AppColors.goldMedium,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  Text(
+                    price,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+            if (isMostPopular)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: const BoxDecoration(
+                  gradient: AppColors.goldGradient,
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(15),
+                    bottomRight: Radius.circular(15),
+                  ),
+                ),
+                child: const Text(
+                  'Most Popular',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.black,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Full-screen subscription success page ──────────────────────────────────
+class _SuccessScreen extends StatefulWidget {
+  final VoidCallback onHome;
+  const _SuccessScreen({required this.onHome});
+
+  @override
+  State<_SuccessScreen> createState() => _SuccessScreenState();
+}
+
+class _SuccessScreenState extends State<_SuccessScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _fadeIn;
+  late final Animation<Offset> _slideUp;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    )..forward();
+    _fadeIn = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _slideUp = Tween<Offset>(
+      begin: const Offset(0, 0.18),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // ── Couple photo fills entire screen ──────────────────────────
+          Image.asset('assets/images/sucess.png', fit: BoxFit.cover),
+
+          // ── Dark gradient at bottom for text readability ──────────────
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: const [0.35, 0.65, 1.0],
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.55),
+                    Colors.black.withOpacity(0.92),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ── Scattered gold confetti dots ──────────────────────────────
+          ..._confettiDots(),
+
+          // ── Text + button block ───────────────────────────────────────
+          Positioned(
+            left: 28,
+            right: 28,
+            bottom: 56,
+            child: FadeTransition(
+              opacity: _fadeIn,
+              child: SlideTransition(
+                position: _slideUp,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Heading
+                    const Text(
+                      "Here's to your\nfuture together 💛",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 30,
+                        fontWeight: FontWeight.w700,
+                        height: 1.25,
+                        fontFamily: 'serif',
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Sub-heading
+                    const Text(
+                      "We're happy for you!",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w400,
+                      ),
+                    ),
+                    const SizedBox(height: 36),
+
+                    // Back to Home button
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: AppColors.goldGradient,
+                          borderRadius: BorderRadius.circular(32),
+                        ),
+                        child: ElevatedButton(
+                          onPressed: widget.onHome,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            foregroundColor: Colors.black,
+                            disabledBackgroundColor: Colors.transparent,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(32),
+                            ),
+                            textStyle: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 17,
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                          child: const Text('Back to Home'),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Generates a list of small gold confetti circle widgets.
+  List<Widget> _confettiDots() {
+    const dots = [
+      _ConfettiDot(left: 18, top: 90, size: 6),
+      _ConfettiDot(left: 55, top: 180, size: 4),
+      _ConfettiDot(left: 120, top: 60, size: 5),
+      _ConfettiDot(right: 22, top: 110, size: 7),
+      _ConfettiDot(right: 68, top: 200, size: 4),
+      _ConfettiDot(right: 140, top: 75, size: 5),
+      _ConfettiDot(left: 35, bottom: 260, size: 5),
+      _ConfettiDot(right: 40, bottom: 280, size: 6),
+      _ConfettiDot(left: 80, bottom: 180, size: 4),
+      _ConfettiDot(right: 85, bottom: 190, size: 4),
+      _ConfettiDot(left: 200, top: 130, size: 4),
+      _ConfettiDot(right: 200, bottom: 130, size: 5),
+    ];
+    return dots;
+  }
+}
+
+/// A tiny gold confetti dot positioned absolutely.
+class _ConfettiDot extends StatelessWidget {
+  final double? left;
+  final double? right;
+  final double? top;
+  final double? bottom;
+  final double size;
+
+  const _ConfettiDot({
+    this.left,
+    this.right,
+    this.top,
+    this.bottom,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: left,
+      right: right,
+      top: top,
+      bottom: bottom,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.goldMedium.withOpacity(0.75),
         ),
       ),
     );

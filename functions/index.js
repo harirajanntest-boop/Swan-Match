@@ -5,75 +5,90 @@ admin.initializeApp();
 
 exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async (event) => {
   const notificationDetails = event.data?.data();
-  if (!notificationDetails) return;
+  if (!notificationDetails) {
+    console.log('[onNotificationCreated] No data in event');
+    return;
+  }
 
   const toUserId = notificationDetails.toUserId;
-  const title = notificationDetails.title;
-  const message = notificationDetails.message;
+  const fromUserId = notificationDetails.fromUserId;
+  const title = notificationDetails.title || 'New Notification';
+  const message = notificationDetails.message || '';
 
-  if (!toUserId) return;
+  console.log(`[onNotificationCreated] to=${toUserId}, from=${fromUserId}, title=${title}`);
+
+  // Prevent sending notification to the sender
+  if (!toUserId || toUserId === fromUserId) {
+    console.log('[onNotificationCreated] Skipping: same sender/receiver or no toUserId');
+    return;
+  }
 
   try {
     // 1. Fetch user data to get FCM tokens
     const userSnapshot = await admin.firestore().collection('users').doc(toUserId).get();
     
     if (!userSnapshot.exists) {
-      console.log(`User ${toUserId} does not exist`);
+      console.log(`[onNotificationCreated] User ${toUserId} does not exist`);
       return;
     }
 
     const userData = userSnapshot.data();
     const fcmTokens = userData.fcmTokens || [];
+    console.log(`[onNotificationCreated] Found ${fcmTokens.length} FCM tokens for ${toUserId}`);
 
     if (fcmTokens.length === 0) {
-      console.log(`User ${toUserId} has no FCM tokens`);
+      console.log(`[onNotificationCreated] User ${toUserId} has no FCM tokens`);
       return;
     }
 
-    // 2. Construct the push payload
-    const payload = {
-      notification: {
-        title: title || 'New Notification',
-        body: message || '',
-      },
-      data: {
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        title: title || 'New Notification',
-        body: message || '',
-        ...notificationDetails.meta, // include any additional metadata for frontend routing
-      },
-      tokens: fcmTokens,
-    };
+    // 2. Send one notification per token (v9 Admin SDK pattern)
+    const sendPromises = fcmTokens.map(token =>
+      admin.messaging().send({
+        token,
+        notification: { title, body: message },
+        data: {
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          title,
+          body: message,
+          fromUserId: fromUserId || '',
+          type: notificationDetails.type || 'general',
+        },
+        android: {
+          priority: 'high',
+          notification: { channelId: 'high_importance_channel', sound: 'default' },
+        },
+        apns: {
+          payload: { aps: { sound: 'default', badge: 1 } },
+        },
+      }).catch(err => {
+        console.error(`[onNotificationCreated] Failed for token ${token.substring(0,20)}...: ${err.message}`);
+        return null;
+      })
+    );
 
-    // 3. Send the message via FCM
-    const response = await admin.messaging().sendEachForMulticast(payload);
-    
-    console.log(`Successfully sent message to ${response.successCount} tokens`);
-    
-    // 4. Optionally cleanup invalid tokens
-    if (response.failureCount > 0) {
-      const failedTokens = [];
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success) {
-          failedTokens.push(fcmTokens[idx]);
-        }
+    const results = await Promise.all(sendPromises);
+    const successCount = results.filter(r => r !== null).length;
+    console.log(`[onNotificationCreated] Sent ${successCount}/${fcmTokens.length} notifications`);
+
+    // 3. Clean up invalid tokens
+    const invalidTokens = fcmTokens.filter((_, i) => results[i] === null);
+    if (invalidTokens.length > 0) {
+      console.log(`[onNotificationCreated] Removing ${invalidTokens.length} invalid tokens`);
+      await admin.firestore().collection('users').doc(toUserId).update({
+        fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens)
       });
-      
-      if (failedTokens.length > 0) {
-        console.log('Removing invalid tokens...');
-        await admin.firestore().collection('users').doc(toUserId).update({
-          fcmTokens: admin.firestore.FieldValue.arrayRemove(...failedTokens)
-        });
-      }
     }
   } catch (error) {
-    console.error('Error sending push notification:', error);
+    console.error('[onNotificationCreated] Fatal error:', error.message, error.code);
   }
 });
 
 exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messageId}', async (event) => {
   const messageDetails = event.data?.data();
-  if (!messageDetails) return;
+  if (!messageDetails) {
+    console.log('[onMessageCreated] No message data');
+    return;
+  }
 
   const receiverId = messageDetails.receiverId || messageDetails.toUserId;
   const senderId = messageDetails.senderId;
@@ -81,61 +96,72 @@ exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messag
   const messageText = messageDetails.text || messageDetails.message || '';
   const chatId = event.params.chatId;
 
-  if (!receiverId) return;
+  console.log(`[onMessageCreated] chatId=${chatId}, from=${senderId}, to=${receiverId}, text=${messageText.substring(0,30)}`);
+
+  // Prevent sending notification to the sender
+  if (!receiverId || receiverId === senderId) {
+    console.log('[onMessageCreated] Skipping: self-message or no receiver');
+    return;
+  }
 
   try {
     const userSnapshot = await admin.firestore().collection('users').doc(receiverId).get();
 
     if (!userSnapshot.exists) {
-      console.log(`User ${receiverId} does not exist`);
+      console.log(`[onMessageCreated] Receiver ${receiverId} not found in Firestore`);
       return;
     }
 
     const userData = userSnapshot.data();
     const fcmTokens = userData.fcmTokens || [];
+    console.log(`[onMessageCreated] Found ${fcmTokens.length} tokens for receiver ${receiverId}`);
 
     if (fcmTokens.length === 0) {
-      console.log(`User ${receiverId} has no FCM tokens`);
+      console.log(`[onMessageCreated] No FCM tokens for ${receiverId}`);
       return;
     }
 
-    const payload = {
-      notification: {
-        title: senderName,
-        body: messageText,
-      },
-      data: {
-        click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        title: senderName,
-        body: messageText,
-        type: 'chat',
-        chatId: chatId || '',
-        senderId: senderId || '',
-      },
-      tokens: fcmTokens,
-    };
+    // Send one message per token for best compatibility
+    const sendPromises = fcmTokens.map(token =>
+      admin.messaging().send({
+        token,
+        notification: { title: senderName, body: messageText || '📩 New message' },
+        data: {
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          type: 'chat',
+          chatId: chatId || '',
+          senderId: senderId || '',
+          title: senderName,
+          body: messageText || 'New message',
+        },
+        android: {
+          priority: 'high',
+          notification: { channelId: 'high_importance_channel', sound: 'default' },
+        },
+        apns: {
+          payload: { aps: { sound: 'default', badge: 1, contentAvailable: true } },
+          headers: { 'apns-priority': '10' },
+        },
+      }).catch(err => {
+        console.error(`[onMessageCreated] Failed for token ${token.substring(0,20)}...: ${err.code} ${err.message}`);
+        return null;
+      })
+    );
 
-    const response = await admin.messaging().sendEachForMulticast(payload);
+    const results = await Promise.all(sendPromises);
+    const successCount = results.filter(r => r !== null).length;
+    console.log(`[onMessageCreated] Sent ${successCount}/${fcmTokens.length} notifications successfully`);
 
-    console.log(`Successfully sent message to ${response.successCount} tokens`);
-
-    if (response.failureCount > 0) {
-      const failedTokens = [];
-      response.responses.forEach((resp, idx) => {
-        if (!resp.success) {
-          failedTokens.push(fcmTokens[idx]);
-        }
+    // Clean up invalid tokens
+    const invalidTokens = fcmTokens.filter((_, i) => results[i] === null);
+    if (invalidTokens.length > 0) {
+      console.log(`[onMessageCreated] Removing ${invalidTokens.length} invalid tokens`);
+      await admin.firestore().collection('users').doc(receiverId).update({
+        fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens)
       });
-
-      if (failedTokens.length > 0) {
-        console.log('Removing invalid tokens...');
-        await admin.firestore().collection('users').doc(receiverId).update({
-          fcmTokens: admin.firestore.FieldValue.arrayRemove(...failedTokens)
-        });
-      }
     }
   } catch (error) {
-    console.error('Error sending message notification:', error);
+    console.error('[onMessageCreated] Fatal error:', error.message, error.code);
   }
 });
 
@@ -170,7 +196,7 @@ exports.checkPhoneExists = onCall(async (request) => {
  * Expected data: { priceId: string, successUrl: string, cancelUrl: string }
  */
 exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (request) => {
-  // 6. AUTH GUARD
+  // AUTH GUARD
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
@@ -182,25 +208,41 @@ exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (re
 
   const uid = request.auth.uid;
   const email = request.auth.token.email;
-  // 1. Instantiate Stripe INSIDE handler
-  const stripe = require('stripe')(stripeSecretKey.value());
+
+  console.log(`[createCheckoutSession] uid=${uid}, email=${email}, priceId=${priceId}`);
+  console.log(`[createCheckoutSession] successUrl=${successUrl}, cancelUrl=${cancelUrl}`);
+
+  // Validate secret exists
+  const rawSecret = stripeSecretKey.value();
+  if (!rawSecret) {
+    console.error('[createCheckoutSession] STRIPE_SECRET_KEY secret is empty!');
+    throw new HttpsError('internal', 'Payment service is not configured.');
+  }
+  console.log(`[createCheckoutSession] Stripe key prefix: ${rawSecret.trim().substring(0, 7)}...`);
+
+  const stripe = require('stripe')(rawSecret.trim());
 
   try {
-    // 1. Get or create Stripe customer
+    // Get or create Stripe customer
     const userRef = admin.firestore().collection('users').doc(uid);
     const userDoc = await userRef.get();
-    let stripeCustomerId = userDoc.data()?.stripeCustomerId;
+    let stripeCustomerId = userDoc.exists ? userDoc.data()?.stripeCustomerId : null;
 
     if (!stripeCustomerId) {
+      console.log(`[createCheckoutSession] Creating new Stripe customer for uid=${uid}`);
       const customer = await stripe.customers.create({
-        email: email,
+        email: email || `${uid}@swanmatch.app`,
         metadata: { firebaseUid: uid },
       });
       stripeCustomerId = customer.id;
-      await userRef.update({ stripeCustomerId: stripeCustomerId });
+      await userRef.set({ stripeCustomerId }, { merge: true });
+      console.log(`[createCheckoutSession] Created Stripe customer: ${stripeCustomerId}`);
+    } else {
+      console.log(`[createCheckoutSession] Reusing Stripe customer: ${stripeCustomerId}`);
     }
 
-    // 2. Create session
+    // Create Stripe Checkout Session
+    console.log('[createCheckoutSession] Creating checkout session...');
     const session = await stripe.checkout.sessions.create({
       customer: stripeCustomerId,
       payment_method_types: ['card'],
@@ -208,22 +250,36 @@ exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (re
       mode: 'subscription',
       success_url: successUrl,
       cancel_url: cancelUrl,
-      // 5. CHECKOUT SESSION - Added client_reference_id and metadata
       client_reference_id: uid,
       metadata: { userId: uid },
     });
 
+    console.log(`[createCheckoutSession] Session created: id=${session.id}, url=${session.url}`);
     return { sessionId: session.id, url: session.url };
   } catch (error) {
-    console.error('Stripe Session Error:', error);
-    throw new HttpsError('internal', error.message);
+    console.error('[createCheckoutSession] Stripe error:', error.type, error.message, error.raw);
+    throw new HttpsError('internal', `Stripe error: ${error.message}`);
   }
 });
 
 /**
  * Stripe - Webhook Handler
  */
-exports.handleStripeWebhook = onRequest({ secrets: [stripeSecretKey, stripeWebhookSecret] }, async (req, res) => {
+exports.handleStripeWebhook = onRequest(
+  {
+    secrets: [stripeSecretKey, stripeWebhookSecret],
+    rawBody: true, // Required for Stripe signature verification
+  },
+  async (req, res) => {
+    // Debug logging
+    console.log('=== WEBHOOK HIT ===');
+    console.log('Method:', req.method);
+    console.log('Has stripe-signature:', !!req.headers['stripe-signature']);
+    console.log('Has rawBody:', !!req.rawBody);
+    console.log('rawBody type:', typeof req.rawBody);
+    console.log('Has webhookSecret:', !!stripeWebhookSecret.value());
+    console.log('webhookSecret starts with whsec_:', stripeWebhookSecret.value()?.startsWith('whsec_'));
+
   const sig = req.headers['stripe-signature'];
   const webhookSecretValue = stripeWebhookSecret.value();
 
@@ -238,7 +294,7 @@ exports.handleStripeWebhook = onRequest({ secrets: [stripeSecretKey, stripeWebho
     return res.status(400).send('Missing stripe-signature header.');
   }
 
-  const stripe = require('stripe')(stripeSecretKey.value());
+  const stripe = require('stripe')(stripeSecretKey.value().trim());
   let event;
 
   try {
@@ -376,34 +432,269 @@ exports.handleStripeWebhook = onRequest({ secrets: [stripeSecretKey, stripeWebho
 });
 
 /**
- * verifySubscription - Source of truth for premium status
+ * verifySubscription - Source of truth for premium status.
+ * Queries Stripe API directly (not just stale Firestore) so this works
+ * even when the webhook never fired (e.g. first purchase in test mode).
+ * Also writes the authoritative status back to Firestore.
  */
-exports.verifySubscription = onCall(async (request) => {
-  // Check if context.auth is null
+exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
   const uid = request.auth.uid;
+  console.log(`[verifySubscription] Checking premium for uid=${uid}`);
+
   try {
-    const userDoc = await admin.firestore().collection('users').doc(uid).get();
+    const db = admin.firestore();
+    const userRef = db.collection('users').doc(uid);
+    const userDoc = await userRef.get();
+
     if (!userDoc.exists) {
       return { isPremium: false, expiresAt: null };
     }
 
     const userData = userDoc.data();
-    const status = userData.subscriptionStatus;
-    const expiry = userData.billingPeriodEnd; // This is a Firestore Timestamp
-    
-    // Check status === 'active' AND billingPeriodEnd > Date.now()
-    const isPremium = status === 'active' && expiry && expiry.toMillis() > Date.now();
-    
-    return { 
-      isPremium: !!isPremium, 
-      expiresAt: expiry ? expiry.toMillis() : null 
+    const stripeCustomerId = userData.stripeCustomerId;
+
+    // ── Fast path: no Stripe customer means no subscription ──────────────────
+    if (!stripeCustomerId) {
+      console.log(`[verifySubscription] No stripeCustomerId for uid=${uid}`);
+      // Still check Firestore fields set manually (admin overrides)
+      const status = userData.subscriptionStatus;
+      const isPremiumAdmin = status === 'active' || status === 'trialing' ||
+                             userData.subscriptionPlan === 'premium';
+      return { isPremium: isPremiumAdmin, expiresAt: null };
+    }
+
+    // ── Query Stripe for active subscriptions ────────────────────────────────
+    const rawSecret = stripeSecretKey.value();
+    if (!rawSecret) {
+      // Fall back to Firestore if secret unavailable
+      const status = userData.subscriptionStatus;
+      const expiry = userData.billingPeriodEnd;
+      const isPremium = (status === 'active' || status === 'trialing') &&
+                        (!expiry || expiry.toMillis() > Date.now());
+      return { isPremium: !!isPremium, expiresAt: expiry ? expiry.toMillis() : null };
+    }
+
+    const stripe = require('stripe')(rawSecret.trim());
+    const subscriptions = await stripe.subscriptions.list({
+      customer: stripeCustomerId,
+      status: 'all',
+      limit: 5,
+    });
+
+    console.log(`[verifySubscription] Found ${subscriptions.data.length} subscriptions for ${stripeCustomerId}`);
+
+    // Find the best active/trialing subscription
+    let isPremium = false;
+    let expiresAt = null;
+    let bestSub = null;
+
+    for (const sub of subscriptions.data) {
+      console.log(`[verifySubscription] Sub id=${sub.id} status=${sub.status} end=${sub.current_period_end}`);
+      if (sub.status === 'active' || sub.status === 'trialing') {
+        isPremium = true;
+        expiresAt = sub.current_period_end * 1000;
+        bestSub = sub;
+        break;
+      }
+    }
+
+    // ── Write back to Firestore so isPremium() works offline ─────────────────
+    const updatePayload = {
+      subscriptionStatus: isPremium ? (bestSub?.status || 'active') : (subscriptions.data[0]?.status || 'free'),
+      subscriptionPlan: isPremium ? 'premium' : 'free',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
+    if (bestSub) {
+      updatePayload.stripeSubscriptionId = bestSub.id;
+      updatePayload.billingPeriodEnd = admin.firestore.Timestamp.fromMillis(bestSub.current_period_end * 1000);
+      updatePayload.billingPeriodStart = admin.firestore.Timestamp.fromMillis(bestSub.current_period_start * 1000);
+    }
+    await userRef.set(updatePayload, { merge: true });
+    console.log(`[verifySubscription] Updated Firestore: isPremium=${isPremium}`);
+
+    return { isPremium, expiresAt };
   } catch (error) {
-    console.error('verifySubscription Error:', error);
-    throw new HttpsError('internal', 'Internal error verifying subscription.');
+    console.error('[verifySubscription] Error:', error);
+    throw new HttpsError('internal', `Error verifying subscription: ${error.message}`);
+  }
+});
+
+/**
+ * getStripePrices - Returns Stripe price details with server-side per-month
+ * calculation so the client never hard-codes prices.
+ *
+ * Expected data: { priceIds: string[] }
+ * Returns: { prices: { [priceId]: { id, amount, currency, interval,
+ *   intervalCount, formattedAmount, formattedPerMonth, productName } } }
+ */
+exports.getStripePrices = onCall({ secrets: [stripeSecretKey] }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const { priceIds } = request.data;
+  if (!Array.isArray(priceIds) || priceIds.length === 0) {
+    throw new HttpsError('invalid-argument', '"priceIds" must be a non-empty array.');
+  }
+
+  const rawSecret = stripeSecretKey.value();
+  if (!rawSecret) {
+    throw new HttpsError('internal', 'Payment service is not configured.');
+  }
+
+  const stripe = require('stripe')(rawSecret.trim());
+
+  // Currency symbol lookup
+  const currencySymbols = {
+    usd: '$', eur: '€', gbp: '£', inr: '₹',
+    aud: 'A$', cad: 'C$', sgd: 'S$', aed: 'AED',
+  };
+
+  function formatAmount(amountInCents, currency) {
+    const symbol = currencySymbols[currency] || currency.toUpperCase() + ' ';
+    const major = amountInCents / 100;
+    const formatted = Number.isInteger(major)
+      ? major.toString()
+      : major.toFixed(2);
+    return `${symbol}${formatted}`;
+  }
+
+  try {
+    const results = await Promise.all(
+      priceIds.map(async (id) => {
+        const price = await stripe.prices.retrieve(id, {
+          expand: ['product'],
+        });
+
+        const unitAmount = price.unit_amount; // in cents / paise
+        const currency = price.currency;      // lowercase, e.g. "usd"
+        const interval = price.recurring?.interval || 'month';
+        const intervalCount = price.recurring?.interval_count || 1;
+        const productName = price.product?.name || '';
+
+        // Calculate raw dollar/rupee amount
+        const amount = unitAmount / 100;
+
+        // Calculate per-month amount
+        let perMonthAmount;
+        if (interval === 'year') {
+          perMonthAmount = amount / (12 * intervalCount);
+        } else if (interval === 'month' && intervalCount > 1) {
+          perMonthAmount = amount / intervalCount;
+        } else {
+          perMonthAmount = amount;
+        }
+
+        return {
+          id: price.id,
+          amount: parseFloat(amount.toFixed(2)),
+          currency: currency.toUpperCase(),
+          interval,
+          intervalCount,
+          formattedAmount: formatAmount(unitAmount, currency),
+          formattedPerMonth: `${formatAmount(Math.round(perMonthAmount * 100), currency)}/month`,
+          productName,
+        };
+      })
+    );
+
+    // Return as a map keyed by priceId for O(1) lookup on client
+    const pricesMap = {};
+    for (const r of results) {
+      pricesMap[r.id] = r;
+    }
+    return { prices: pricesMap };
+  } catch (error) {
+    console.error('[getStripePrices] Stripe error:', error.message);
+    throw new HttpsError('internal', `Stripe error: ${error.message}`);
+  }
+});
+
+
+/**
+ * sendNotification - Manual FCM notification sending (callable)
+ * Replaces client-side service account usage for security
+ */
+exports.sendNotification = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const { fcmToken, title, body, data } = request.data;
+
+  if (!fcmToken) {
+    throw new HttpsError('invalid-argument', 'FCM token is required.');
+  }
+
+  if (!title || !body) {
+    throw new HttpsError('invalid-argument', 'Title and body are required.');
+  }
+
+  try {
+    const message = {
+      token: fcmToken,
+      notification: {
+        title: title,
+        body: body,
+      },
+      data: data || {},
+      android: {
+        notification: {
+          channel_id: 'high_importance_channel',
+        },
+      },
+    };
+
+    const response = await admin.messaging().send(message);
+    return { success: true, messageId: response };
+  } catch (error) {
+    console.error('Error sending FCM notification:', error);
+    throw new HttpsError('internal', error.message);
+  }
+});
+
+/**
+ * Stripe - Create Portal Session
+ * Allows users to manage/cancel their subscription
+ */
+exports.createPortalSession = onCall({ secrets: [stripeSecretKey] }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const uid = request.auth.uid;
+  const rawSecret = stripeSecretKey.value();
+  if (!rawSecret) {
+    throw new HttpsError('internal', 'Payment service is not configured.');
+  }
+
+  const stripe = require('stripe')(rawSecret.trim());
+  const db = admin.firestore();
+
+  try {
+    const userDoc = await db.collection('users').doc(uid).get();
+    if (!userDoc.exists) {
+      throw new HttpsError('not-found', 'User not found.');
+    }
+
+    const stripeCustomerId = userDoc.data().stripeCustomerId;
+    if (!stripeCustomerId) {
+      throw new HttpsError('failed-precondition', 'No Stripe customer found for this user.');
+    }
+
+    // Create a billing portal session
+    const session = await stripe.billingPortal.sessions.create({
+      customer: stripeCustomerId,
+      return_url: request.data.returnUrl || 'swanmatch://payment-cancel',
+    });
+
+    return { url: session.url };
+  } catch (error) {
+    console.error('[createPortalSession] Stripe error:', error);
+    throw new HttpsError('internal', `Stripe error: ${error.message}`);
   }
 });

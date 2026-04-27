@@ -1,8 +1,11 @@
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
+import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:in_app_review/in_app_review.dart';
@@ -125,8 +128,8 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         // Swipe right → Save
         widget.onToggleSave(uid, true);
       } else {
-        // Swipe left → Dismiss
-        widget.onDismiss(uid);
+        // Swipe left → Just skip, don't dismiss
+        // No action needed, just move to next
       }
 
       setState(() {
@@ -136,6 +139,39 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         _isDragging = false;
         _isAnimating = false;
       });
+    });
+  }
+
+  void _moveToBottom() async {
+    if (_currentIndex >= widget.matches.length) return;
+    
+    final match = widget.matches[_currentIndex];
+    final uid = (match['uid'] ?? '').toString();
+    
+    if (uid.isEmpty) {
+      setState(() {
+        _currentIndex++;
+      });
+      return;
+    }
+    
+    // Add to ignored profiles for 24 hours
+    final currentIgnored = widget.userProfile['ignoredProfiles'] is Map
+        ? Map<String, dynamic>.from(widget.userProfile['ignoredProfiles'] as Map)
+        : <String, dynamic>{};
+    
+    currentIgnored[uid] = Timestamp.fromDate(DateTime.now().add(const Duration(hours: 24)));
+    
+    try {
+      await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'ignoredProfiles': currentIgnored});
+      if (!mounted) return;
+      showLinearMessage(context, 'Profile ignored for 24 hours');
+    } catch (e) {
+      print('Error adding to ignored profiles: $e');
+    }
+    
+    setState(() {
+      _currentIndex++;
     });
   }
 
@@ -203,9 +239,7 @@ class _SwipeCardStackState extends State<SwipeCardStack>
       children: [
         // ─── Card stack ───
         Expanded(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Stack(
+          child: Stack(
               clipBehavior: Clip.none,
               alignment: Alignment.center,
               children: [
@@ -219,7 +253,6 @@ class _SwipeCardStackState extends State<SwipeCardStack>
                 // Top (active) card
                 _buildTopCard(),
               ],
-            ),
           ),
         ),
 
@@ -230,37 +263,20 @@ class _SwipeCardStackState extends State<SwipeCardStack>
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _buildActionBtn(
-                icon: Icons.refresh,
-                color: Colors.yellow.shade600,
-                bgColor: Colors.grey.shade800,
-                size: 48,
-                onTap: () {
-                  // Rewind functionality
-                },
-              ),
-              _buildActionBtn(
                 icon: Icons.close,
-                color: Colors.white,
+                color: Colors.red,
                 bgColor: Colors.grey.shade800,
                 size: 56,
                 onTap: () {
                   if (_isAnimating || _currentIndex >= widget.matches.length) {
                     return;
                   }
-                  _swipeRight = false;
-                  _animateOut();
+                  _moveToBottom();
                 },
               ),
               _buildActionBtn(
-                icon: Icons.star,
+                icon: Icons.bookmark,
                 color: Colors.blue.shade400,
-                bgColor: Colors.grey.shade800,
-                size: 56,
-                onTap: _tapSendInterest,
-              ),
-              _buildActionBtn(
-                icon: Icons.favorite,
-                color: Colors.green.shade400,
                 bgColor: Colors.grey.shade800,
                 size: 56,
                 onTap: () {
@@ -272,13 +288,11 @@ class _SwipeCardStackState extends State<SwipeCardStack>
                 },
               ),
               _buildActionBtn(
-                icon: Icons.flash_on,
-                color: Colors.purple.shade400,
+                icon: Icons.favorite,
+                color: Colors.green.shade400,
                 bgColor: Colors.grey.shade800,
-                size: 48,
-                onTap: () {
-                  // Boost functionality
-                },
+                size: 56,
+                onTap: _tapSendInterest,
               ),
             ],
           ),
@@ -422,12 +436,7 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         height: size,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          gradient: isMain ? AppColors.goldGradient : null,
-          color: isMain ? null : bgColor,
-          border: Border.all(
-            color: isMain ? Colors.transparent : color.withOpacity(0.3),
-            width: 2,
-          ),
+          color: color,
           boxShadow: isMain
               ? [
                   BoxShadow(
@@ -440,7 +449,7 @@ class _SwipeCardStackState extends State<SwipeCardStack>
         ),
         child: Icon(
           icon,
-          color: color,
+          color: Colors.white,
           size: size * 0.42,
         ),
       ),
@@ -581,17 +590,17 @@ class _SwipeMatchCard extends StatelessWidget {
               Positioned(
                 bottom: 20,
                 left: 20,
+                right: 20,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      name,
-                      style: const TextStyle(
+                      age.isNotEmpty ? '$name, $age' : name,
+                      style: GoogleFonts.poppins(
                         color: Colors.white,
                         fontSize: 36,
                         fontWeight: FontWeight.bold,
-                        fontFamily: 'serif',
                         letterSpacing: 0.5,
                         shadows: [
                           Shadow(
@@ -602,41 +611,31 @@ class _SwipeMatchCard extends StatelessWidget {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Text(
-                          age.isNotEmpty ? '$age' : '',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 28,
-                            fontWeight: FontWeight.w400,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black,
-                                offset: Offset(0, 2),
-                                blurRadius: 4,
+                    if (interests.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: interests.take(3).map((interest) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white.withOpacity(0.2)),
+                            ),
+                            child: Text(
+                              interest,
+                              style: GoogleFonts.poppins(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
                               ),
-                            ],
-                          ),
-                        ),
-                        if (age.isNotEmpty) const SizedBox(width: 8),
-                        const Text(
-                          '2 miles away',
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 18,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black,
-                                offset: Offset(0, 2),
-                                blurRadius: 4,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
                   ],
                 ),
               ),

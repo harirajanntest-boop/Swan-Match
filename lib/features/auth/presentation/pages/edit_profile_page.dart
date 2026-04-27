@@ -28,12 +28,17 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
   final Map<String, IconData> _sectionIcons = {
     "Basic Details": Icons.person_outline,
+    "Status & Intent": Icons.favorite_outline,
     "Location": Icons.location_on_outlined,
     "Education & Profession": Icons.work_outline,
+    "Socioeconomic": Icons.attach_money_outlined,
     "Lifestyle": Icons.fitness_center_outlined,
+    "Cultural & Language": Icons.language_outlined,
     "Values & Identity": Icons.psychology_outlined,
-    "Interests": Icons.favorite_outline,
-    "Photos": Icons.photo_library_outlined,
+    "Personality": Icons.emoji_emotions_outlined,
+    "Partner Preferences": Icons.tune_rounded,
+    "Interests": Icons.interests_outlined,
+    "Visibility": Icons.visibility_outlined,
     "Bio": Icons.edit_note_outlined,
   };
 
@@ -112,6 +117,17 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                               },
                             );
                           }),
+                          // ── Dedicated Photo Manager (replaces generic Photos accordion) ──
+                          _PhotoManagerSection(
+                            profile: profile,
+                            isUploadingPhoto: _isUploadingPhoto,
+                            isOpen: _expandedSection == 'Photos',
+                            onTap: () => setState(() {
+                              _expandedSection = _expandedSection == 'Photos' ? null : 'Photos';
+                            }),
+                            onAdd: () => _uploadProfilePhoto(profile),
+                            onDelete: (index) => _deletePhotoAtIndex(profile, index),
+                          ),
                           const SizedBox(height: 40),
                         ],
                       ),
@@ -452,6 +468,52 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     }
   }
 
+  /// Delete a photo at a specific index in the photos array.
+  Future<void> _deletePhotoAtIndex(Map<String, dynamic> profile, int index) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.onyx,
+        title: const Text('Remove Photo?', style: TextStyle(color: Colors.white)),
+        content: const Text('Are you sure you want to remove this photo?',
+            style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white70))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove', style: TextStyle(color: Colors.redAccent))),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final existingPhotos = profile['photos'] is List
+        ? List<String>.from(profile['photos'] as List)
+        : <String>[];
+    if (index < 0 || index >= existingPhotos.length) return;
+    existingPhotos.removeAt(index);
+
+    // If we removed the first photo, update profilePicture too
+    final updates = <String, dynamic>{'photos': existingPhotos};
+    if (index == 0) {
+      updates['profilePicture'] = existingPhotos.isNotEmpty ? existingPhotos.first : null;
+    }
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      await UserService.instance.updateCurrentUserProfile(updates);
+      if (!mounted) return;
+      showLinearMessage(context, 'Photo removed.');
+    } catch (_) {
+      if (!mounted) return;
+      showLinearMessage(context, 'Failed to remove photo.', isError: true);
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
+  }
+
   Future<void> _deleteProfilePhoto(Map<String, dynamic> profile) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -675,91 +737,122 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Map<String, Object?> _fieldMap(String section, String label) {
-    if (section == 'Bio' && label == 'About You') {
-      return {'key': 'bio'};
-    }
+    if (section == 'Bio' && label == 'About You') return {'key': 'bio'};
 
     if (section == 'Basic Details') {
       switch (label) {
-        case 'First Name':
-          return {'key': 'firstName'};
-        case 'Gender':
-          return {'key': 'gender'};
-        case 'Show Gender':
-          return {'key': 'showGender'};
-        case 'Partner Preference':
-          return {'key': 'partnerPreference'};
+        case 'First Name': return {'key': 'firstName'};
+        case 'Last Name': return {'key': 'lastName'};
+        case 'Gender': return {'key': 'gender'};
+        case 'Show Gender on Profile': return {'key': 'showGender'};
+        case 'Partner Preference': return {'key': 'partnerPreference'};
+      }
+    }
+
+    if (section == 'Status & Intent') {
+      switch (label) {
+        case 'Looking For': return {'key': 'lookingFor'};
+        case 'Marital Status': return {'key': 'maritalStatus'};
+        case 'Has Children': return {'key': 'hasChildren'};
+        case 'Children Details': return {'key': 'childrenDetails'};
+        case 'Willing to Relocate': return {'key': 'willingToRelocate'};
       }
     }
 
     if (section == 'Location') {
       switch (label) {
-        case 'City':
-          return {'key': 'city'};
-        case 'State':
-          return {'key': 'state'};
-        case 'Country':
-          return {'key': 'country'};
-        case 'Distance Preference':
-          return {'key': 'distanceKm'};
+        case 'City': return {'key': 'city'};
+        case 'State': return {'key': 'state'};
+        case 'Country': return {'key': 'country'};
+        case 'Distance Preference': return {'key': 'distanceKm'};
       }
     }
 
     if (section == 'Education & Profession') {
       switch (label) {
-        case 'Highest Qualification':
-          return {'key': 'highestQualification'};
-        case 'University':
-          return {'key': 'university'};
-        case 'Profession':
-          return {'key': 'profession'};
-        case 'What Are You Looking For?':
-          return {'key': 'lookingFor'};
+        case 'Education Level': return {'key': 'educationLevel'};
+        case 'Highest Qualification': return {'key': 'highestQualification'};
+        case 'University': return {'key': 'university'};
+        case 'Profession': return {'key': 'profession'};
+        case 'Industry': return {'key': 'industry'};
+      }
+    }
+
+    if (section == 'Socioeconomic') {
+      switch (label) {
+        case 'Income Range': return {'key': 'incomeRange'};
+        case 'Net Worth Range': return {'key': 'netWorthRange'};
+        case 'Lifestyle Tags': return {'key': 'lifestyleTags'};
       }
     }
 
     if (section == 'Lifestyle') {
       switch (label) {
-        case 'Drinking':
-          return {'key': 'drinking'};
-        case 'Smoking':
-          return {'key': 'smoking'};
-        case 'Workout':
-          return {'key': 'workout'};
-        case 'Pets':
-          return {'key': 'pets'};
+        case 'Drinking': return {'key': 'drinking'};
+        case 'Smoking': return {'key': 'smoking'};
+        case 'Workout': return {'key': 'workout'};
+        case 'Pets': return {'key': 'pets'};
+      }
+    }
+
+    if (section == 'Cultural & Language') {
+      switch (label) {
+        case 'Religion': return {'key': 'religion'};
+        case 'Spiritual Level': return {'key': 'spiritualLevel'};
+        case 'Ethnicity': return {'key': 'ethnicity'};
+        case 'Primary Language': return {'key': 'primaryLanguage'};
+        case 'Other Languages': return {'key': 'otherLanguages'};
+        case 'Family Values Importance': return {'key': 'familyValuesImportance'};
       }
     }
 
     if (section == 'Values & Identity') {
       switch (label) {
-        case 'Communication Style':
-          return {'key': 'communicationStyle'};
-        case 'Love Language':
-          return {'key': 'loveLanguage'};
-        case 'Education Level':
-          return {'key': 'educationLevel'};
-        case 'Zodiac':
-          return {'key': 'zodiac'};
+        case 'Communication Style': return {'key': 'communicationStyle'};
+        case 'Love Language': return {'key': 'loveLanguage'};
+        case 'Zodiac': return {'key': 'zodiac'};
+      }
+    }
+
+    if (section == 'Personality') {
+      switch (label) {
+        case 'Personality Traits': return {'key': 'personalityTraits'};
+      }
+    }
+
+    if (section == 'Partner Preferences') {
+      switch (label) {
+        case 'Min Age Preference': return {'key': 'minAgePreference'};
+        case 'Max Age Preference': return {'key': 'maxAgePreference'};
+        case 'Preferred Location': return {'key': 'preferredLocation'};
+        case 'Preferred Education': return {'key': 'preferredEducation'};
+        case 'Preferred Profession': return {'key': 'preferredProfession'};
+        case 'Preferred Religion': return {'key': 'preferredReligion'};
+        case 'Preferred Lifestyle': return {'key': 'preferredLifestyle'};
       }
     }
 
     if (section == 'Interests') {
       switch (label) {
-        case 'Your Interests':
-          return {'key': 'interests'};
+        case 'Your Interests': return {'key': 'interests'};
+      }
+    }
+
+    if (section == 'Visibility') {
+      switch (label) {
+        case 'Profile Visibility': return {'key': 'profileVisibility'};
       }
     }
 
     if (section == 'Photos') {
       switch (label) {
-        case 'Profile Picture':
-          return {'key': 'profilePicture'};
+        case 'Profile Picture': return {'key': 'profilePicture'};
       }
     }
 
     return {'key': null};
   }
+
 
   Map<String, Map<String, String>> _buildProfileData(Map<String, dynamic> profile) {
     String value(String key, {String fallback = '+ Add Details'}) {
@@ -772,50 +865,99 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     String listValue(String key) {
       final raw = profile[key];
       if (raw == null) return '+ Add Details';
-      if (raw is List && raw.isNotEmpty) {
-        return raw.join(', ');
-      }
+      if (raw is List && raw.isNotEmpty) return raw.join(', ');
       return '+ Add Details';
     }
 
+    String boolValue(String key) {
+      final raw = profile[key];
+      if (raw == null) return '+ Add Details';
+      if (raw is bool) return raw ? 'Yes' : 'No';
+      return raw.toString();
+    }
+
     return {
+      // ── Step 1: Basic Identity ──────────────────────────────────────────────
       "Basic Details": {
         "First Name": value('firstName', fallback: 'Member'),
+        "Last Name": value('lastName'),
         "Gender": value('gender'),
-        "Show Gender": value('showGender') == 'true' ? 'Yes' : 'No',
+        "Show Gender on Profile": value('showGender') == 'true' ? 'Yes' : 'No',
         "Age": _formatAge(profile['dateOfBirth'], fallbackAge: profile['age']),
         "Partner Preference": value('partnerPreference'),
       },
+      // ── Step 2: Status & Intent ──────────────────────────────────────────────
+      "Status & Intent": {
+        "Looking For": value('lookingFor'),
+        "Marital Status": value('maritalStatus'),
+        "Has Children": boolValue('hasChildren'),
+        "Children Details": value('childrenDetails'),
+        "Willing to Relocate": boolValue('willingToRelocate'),
+      },
+      // ── Location ─────────────────────────────────────────────────────────────
       "Location": {
         "City": value('city'),
         "State": value('state'),
         "Country": value('country'),
         "Distance Preference": '${value('distanceKm', fallback: '50')} km',
       },
+      // ── Step 3: Education & Profession ────────────────────────────────────────
       "Education & Profession": {
+        "Education Level": value('educationLevel'),
         "Highest Qualification": value('highestQualification'),
         "University": value('university'),
         "Profession": value('profession'),
-        "What Are You Looking For?": value('lookingFor'),
+        "Industry": value('industry'),
       },
+      // ── Step 3: Socioeconomic ─────────────────────────────────────────────────
+      "Socioeconomic": {
+        "Income Range": value('incomeRange'),
+        "Net Worth Range": value('netWorthRange'),
+        "Lifestyle Tags": listValue('lifestyleTags'),
+      },
+      // ── Step 5: Lifestyle ─────────────────────────────────────────────────────
       "Lifestyle": {
         "Drinking": value('drinking'),
         "Smoking": value('smoking'),
         "Workout": value('workout'),
         "Pets": listValue('pets'),
       },
+      // ── Step 4: Cultural & Language ───────────────────────────────────────────
+      "Cultural & Language": {
+        "Religion": value('religion'),
+        "Spiritual Level": value('spiritualLevel'),
+        "Ethnicity": value('ethnicity'),
+        "Primary Language": value('primaryLanguage'),
+        "Other Languages": listValue('otherLanguages'),
+        "Family Values Importance": '${value('familyValuesImportance', fallback: '3')} / 5',
+      },
+      // ── Step 5: Values & Identity ─────────────────────────────────────────────
       "Values & Identity": {
         "Communication Style": value('communicationStyle'),
         "Love Language": value('loveLanguage'),
-        "Education Level": value('educationLevel'),
         "Zodiac": value('zodiac'),
       },
+      // ── Step 5: Personality ───────────────────────────────────────────────────
+      "Personality": {
+        "Personality Traits": listValue('personalityTraits'),
+      },
+      // ── Step 6: Partner Preferences ──────────────────────────────────────────
+      "Partner Preferences": {
+        "Min Age Preference": value('minAgePreference', fallback: '18'),
+        "Max Age Preference": value('maxAgePreference', fallback: '50'),
+        "Preferred Location": value('preferredLocation'),
+        "Preferred Education": value('preferredEducation'),
+        "Preferred Profession": value('preferredProfession'),
+        "Preferred Religion": value('preferredReligion'),
+        "Preferred Lifestyle": listValue('preferredLifestyle'),
+      },
+      // ── Interests ─────────────────────────────────────────────────────────────
       "Interests": {
         "Your Interests": listValue('interests'),
       },
-      "Photos": {
-        "Profile Picture": value('profilePicture', fallback: 'Not set'),
-        "Total Photos": profile['photos'] is List ? '${(profile['photos'] as List).length}' : '0',
+      // ── Step 8: Visibility ────────────────────────────────────────────────────
+      "Visibility": {
+        "Profile Visibility": value('profileVisibility', fallback: 'Curated Matches Only'),
       },
       "Bio": {
         "About You": value('bio', fallback: 'No bio yet'),
@@ -942,6 +1084,267 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     );
   }
 
+}
+
+// ─── Photo Manager Section ───────────────────────────────────────────────────
+class _PhotoManagerSection extends StatelessWidget {
+  final Map<String, dynamic> profile;
+  final bool isUploadingPhoto;
+  final bool isOpen;
+  final VoidCallback onTap;
+  final VoidCallback onAdd;
+  final void Function(int index) onDelete;
+
+  const _PhotoManagerSection({
+    required this.profile,
+    required this.isUploadingPhoto,
+    required this.isOpen,
+    required this.onTap,
+    required this.onAdd,
+    required this.onDelete,
+  });
+
+  List<String> get _photos {
+    final raw = profile['photos'];
+    if (raw is List && raw.isNotEmpty) {
+      return raw.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+    }
+    // Fall back to single profilePicture
+    final single = (profile['profilePicture'] ??
+            profile['photoUrl'] ??
+            profile['profileImageUrl'] ??
+            '')
+        .toString()
+        .trim();
+    return single.isNotEmpty ? [single] : [];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final photos = _photos;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      decoration: BoxDecoration(
+        color: isOpen
+            ? Colors.white.withOpacity(0.05)
+            : Colors.white.withOpacity(0.02),
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: isOpen
+            ? [BoxShadow(color: AppColors.goldMedium.withOpacity(0.05), blurRadius: 20)]
+            : [],
+      ),
+      child: Column(
+        children: [
+          // Header
+          InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                children: [
+                  Icon(Icons.photo_library_outlined,
+                      color: isOpen ? AppColors.goldMedium : Colors.white54,
+                      size: 22),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Photos',
+                      style: TextStyle(
+                        color: isOpen ? AppColors.goldLight : Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  // Badge showing photo count
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.goldMedium.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${photos.length}',
+                      style: const TextStyle(
+                          color: AppColors.goldMedium,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  AnimatedRotation(
+                    turns: isOpen ? 0.5 : 0.0,
+                    duration: const Duration(milliseconds: 300),
+                    child: Icon(Icons.keyboard_arrow_down,
+                        color: Colors.white.withOpacity(0.5)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Expandable photo grid
+          AnimatedSize(
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeOutCubic,
+            child: isOpen
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (photos.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            child: Center(
+                              child: Text(
+                                'No photos yet. Tap + to add your first photo.',
+                                style: TextStyle(
+                                    color: Colors.white.withOpacity(0.4),
+                                    fontSize: 13),
+                              ),
+                            ),
+                          ),
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            childAspectRatio: 0.75,
+                          ),
+                          itemCount: photos.length + 1, // +1 for Add tile
+                          itemBuilder: (ctx, i) {
+                            // Last tile = "Add Photo" button
+                            if (i == photos.length) {
+                              return GestureDetector(
+                                onTap: isUploadingPhoto ? null : onAdd,
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: AppColors.goldMedium.withOpacity(0.08),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: AppColors.goldMedium.withOpacity(0.35),
+                                        width: 1.5),
+                                  ),
+                                  child: isUploadingPhoto
+                                      ? const Center(
+                                          child: SizedBox(
+                                            width: 24,
+                                            height: 24,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: AppColors.goldMedium),
+                                          ),
+                                        )
+                                      : const Column(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.add_photo_alternate_outlined,
+                                                color: AppColors.goldMedium,
+                                                size: 28),
+                                            SizedBox(height: 6),
+                                            Text('Add Photo',
+                                                style: TextStyle(
+                                                    color: AppColors.goldMedium,
+                                                    fontSize: 11,
+                                                    fontWeight:
+                                                        FontWeight.w600)),
+                                          ],
+                                        ),
+                                ),
+                              );
+                            }
+
+                            // Photo tile with delete button
+                            return Stack(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: Image.network(
+                                    photos[i],
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                    fit: BoxFit.cover,
+                                    loadingBuilder: (_, child, progress) =>
+                                        progress == null
+                                            ? child
+                                            : Container(
+                                                color: const Color(0xFF1A1A1A),
+                                                child: const Center(
+                                                  child: CircularProgressIndicator(
+                                                      strokeWidth: 1.5,
+                                                      color: AppColors.goldMedium),
+                                                ),
+                                              ),
+                                    errorBuilder: (_, __, ___) => Container(
+                                      color: const Color(0xFF1A1A1A),
+                                      child: const Icon(Icons.broken_image,
+                                          color: Colors.white24),
+                                    ),
+                                  ),
+                                ),
+                                // "First" badge on main photo
+                                if (i == 0)
+                                  Positioned(
+                                    left: 6,
+                                    bottom: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.goldMedium,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: const Text('Main',
+                                          style: TextStyle(
+                                              color: Colors.black,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold)),
+                                    ),
+                                  ),
+                                // Delete button
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: GestureDetector(
+                                    onTap: () => onDelete(i),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.black87,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(Icons.close,
+                                          color: Colors.white, size: 12),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap a photo to remove it. The first photo is your main profile picture.',
+                          style: TextStyle(
+                              color: Colors.white.withOpacity(0.3),
+                              fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ─── Custom Animated Glassmorphic Accordion ───

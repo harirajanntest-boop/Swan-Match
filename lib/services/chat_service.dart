@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../core/utils/stream_utils.dart';
 import 'app_notification_service.dart';
 import '../models/message_model.dart';
+import 'trial_service.dart';
 
 class ChatService {
 	ChatService._();
@@ -41,12 +42,16 @@ class ChatService {
 		}, SetOptions(merge: true));
 	}
 
-	Future<void> sendMessage({
+	Future<bool> sendMessage({
 		required String receiverId,
 		required String text,
 	}) async {
 		final sender = _auth.currentUser;
-		if (sender == null || text.trim().isEmpty) return;
+		if (sender == null || text.trim().isEmpty) return false;
+
+		// ── Premium gate: only premium users can message ────────────────────
+		final check = await TrialService.instance.canSendMessage();
+		if (!check.allowed) return false; // caller should show upgrade dialog
 
 		final chatId = chatIdFor(sender.uid, receiverId);
 		final id = _messagesRef(chatId).doc().id;
@@ -82,6 +87,7 @@ class ChatService {
 				'event': 'new_message',
 			},
 		);
+		return true;
 	}
 
 	Stream<List<Map<String, dynamic>>> watchMyChats() {
@@ -112,11 +118,20 @@ class ChatService {
 			final chatId = chatIdFor(uid, otherUserId);
 			return _messagesRef(chatId)
 					.orderBy('sentAt', descending: true)
-					.snapshots()
+					// includeMetadataChanges: true → locally-written docs appear immediately
+					// with hasPendingWrites=true before the server confirms them.
+					.snapshots(includeMetadataChanges: true)
 					.map(
-						(snapshot) => snapshot.docs
-								.map((doc) => MessageModel.fromMap(doc.data()))
-								.toList(),
+						(snapshot) {
+							final messages = snapshot.docs
+								.map((doc) => MessageModel.fromMap(
+											doc.data(),
+											hasPendingWrites: doc.metadata.hasPendingWrites,
+										))
+								.toList();
+							final seen = <String>{};
+							return messages.where((m) => seen.add(m.id)).toList();
+						}
 					);
 		});
 	}

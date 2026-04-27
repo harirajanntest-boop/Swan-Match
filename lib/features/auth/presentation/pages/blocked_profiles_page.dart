@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
@@ -64,7 +65,7 @@ class BlockedProfilesPage extends StatelessWidget {
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       leading: CircleAvatar(
                         backgroundColor: AppColors.onyx,
-                        backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
+                        backgroundImage: photoUrl.isNotEmpty ? CachedNetworkImageProvider(photoUrl) : null,
                         child: photoUrl.isEmpty ? const Icon(Icons.person, color: AppColors.goldMedium) : null,
                       ),
                       title: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),

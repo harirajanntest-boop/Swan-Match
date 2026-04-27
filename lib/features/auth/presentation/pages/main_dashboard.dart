@@ -1,6 +1,6 @@
-
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/match_service.dart';
@@ -13,12 +13,11 @@ import 'messages_view.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../../services/stripe_service.dart';
 import 'package:in_app_review/in_app_review.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../services/auth_service.dart';
 import 'settings_page.dart';
 import '../../../../shared/widgets/gold_button.dart';
-import 'feature_guide_page.dart';
 import 'profile_screen.dart';
+
 
 class MainDashboard extends StatefulWidget {
   final int initialIndex;
@@ -45,34 +44,23 @@ class _MainDashboardState extends State<MainDashboard> {
     _currentIndex = widget.initialIndex;
     _pendingProfileToOpen = widget.initialProfileToOpen;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      // Show the feature guide first (only once for new users)
-      final guideSeen = await _checkAndShowFeatureGuide();
-      // Only show the linking popup if the guide was already seen
-      // (otherwise we navigated away and this context is disposed)
-      if (guideSeen && mounted) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        UserService.instance.updateOnlineStatus(true);
         _checkAndShowLinkingPopup();
+        _syncSubscriptionStatus();
       }
     });
   }
 
-  /// Returns `true` if the guide was already seen (no navigation happened).
-  /// Returns `false` if we navigated to the guide page.
-  Future<bool> _checkAndShowFeatureGuide() async {
-    final alreadySeen = await FeatureGuidePage.hasBeenShown();
-    if (!alreadySeen && mounted) {
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const FeatureGuidePage(
-            destination: MainDashboard(),
-          ),
-        ),
-        (route) => false,
-      );
-      return false;
+  /// Silently syncs subscription status with Stripe on startup.
+  /// This fixes the case where the user paid but the webhook never fired.
+  Future<void> _syncSubscriptionStatus() async {
+    try {
+      await StripeService.instance.verifyAndActivatePremium();
+    } catch (_) {
+      // Non-critical — don't show errors to the user at startup.
     }
-    return true;
   }
 
   Future<void> _checkAndShowLinkingPopup() async {
@@ -85,24 +73,8 @@ class _MainDashboardState extends State<MainDashboard> {
       });
     }
 
-    final linkedIds = AuthService.instance.getLinkedProviderIds();
-    final missing = <String>[];
-    if (!linkedIds.contains('google.com')) missing.add('Google');
-    if (!linkedIds.contains('password')) missing.add('Email');
-    if (!linkedIds.contains('phone')) missing.add('Phone Number');
-
-    if (missing.isEmpty) return;
-
-    final prefs = await SharedPreferences.getInstance();
-    final lastShown = prefs.getInt('last_linking_popup_time') ?? 0;
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    // Show daily (24 hours = 86400000 ms)
-    if (now - lastShown > 86400000) {
-      if (!mounted) return;
-      await _showLinkingDialog(missing);
-      await prefs.setInt('last_linking_popup_time', now);
-    }
+    // Account linking popup is disabled for now
+    return;
   }
 
   Future<void> _showLinkingDialog(List<String> missing) async {
@@ -173,7 +145,7 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   void _openUpgradeTab() {
-    setState(() => _currentIndex = 4);
+    setState(() => _currentIndex = 3);
   }
 
   @override
@@ -187,18 +159,9 @@ class _MainDashboardState extends State<MainDashboard> {
         );
         break;
       case 1:
-        currentPage = _MatchesView(
-          pendingProfileToOpen: _pendingProfileToOpen,
-          onPendingProfileOpened: () {
-            if (!mounted) return;
-            setState(() => _pendingProfileToOpen = null);
-          },
-        );
-        break;
-      case 2:
         currentPage = const InterestsView();
         break;
-      case 3:
+      case 2:
         currentPage = const MessagesView();
         break;
       default:
@@ -206,36 +169,95 @@ class _MainDashboardState extends State<MainDashboard> {
     }
 
     return Scaffold(
-      backgroundColor: AppColors.obsidian,
+      backgroundColor: const Color(0xFF0A0A0A),
       body: currentPage,
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: AppColors.obsidian,
-          border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
-          boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.8), blurRadius: 20, offset: const Offset(0, -5))
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          backgroundColor: AppColors.obsidian,
-          type: BottomNavigationBarType.fixed,
-          selectedItemColor: AppColors.goldMedium,
-          unselectedItemColor: Colors.white.withOpacity(0.4),
-          selectedLabelStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, height: 1.8),
-          unselectedLabelStyle: const TextStyle(fontSize: 10, height: 1.8),
-          items: const [
-            BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: "Home"),
-            BottomNavigationBarItem(icon: Icon(Icons.style_outlined), activeIcon: Icon(Icons.style), label: "Matches"),
-            BottomNavigationBarItem(icon: Icon(Icons.favorite_border), activeIcon: Icon(Icons.favorite), label: "Interests"),
-            BottomNavigationBarItem(icon: Icon(Icons.chat_bubble_outline), activeIcon: Icon(Icons.chat_bubble), label: "Messages"),
-            BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: "Profile"),
-          ],
+      bottomNavigationBar: _SwanBottomNav(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+      ),
+    );
+  }
+}
+
+// ─── Premium 4-tab bottom nav ─────────────────────────────────────────────────
+class _SwanBottomNav extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onTap;
+
+  const _SwanBottomNav({required this.currentIndex, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      _NavItem(icon: Icons.search_rounded, activeIcon: Icons.search_rounded, label: 'Discover'),
+      _NavItem(icon: Icons.favorite_border_rounded, activeIcon: Icons.favorite_rounded, label: 'Matches'),
+      _NavItem(icon: Icons.chat_bubble_outline_rounded, activeIcon: Icons.chat_bubble_rounded, label: 'Chat'),
+      _NavItem(icon: Icons.person_outline_rounded, activeIcon: Icons.person_rounded, label: 'Profile'),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF111111),
+        border: Border(top: BorderSide(color: Colors.white.withOpacity(0.07), width: 0.5)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 24, offset: const Offset(0, -4)),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 64,
+          child: Row(
+            children: List.generate(items.length, (index) {
+              final item = items[index];
+              final isSelected = index == currentIndex;
+              return Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => onTap(index),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 200),
+                          child: Icon(
+                            isSelected ? item.activeIcon : item.icon,
+                            key: ValueKey(isSelected),
+                            color: isSelected ? AppColors.goldMedium : Colors.white.withOpacity(0.35),
+                            size: 24,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 200),
+                          style: TextStyle(
+                            color: isSelected ? AppColors.goldMedium : Colors.white.withOpacity(0.35),
+                            fontSize: 13,
+                            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                            letterSpacing: 0.2,
+                          ),
+                          child: Text(item.label),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
         ),
       ),
     );
   }
+}
+
+class _NavItem {
+  final IconData icon;
+  final IconData activeIcon;
+  final String label;
+  const _NavItem({required this.icon, required this.activeIcon, required this.label});
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -265,6 +287,8 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
   String _occupationFilter = '';
   String _heightFilter = '';
   String _starFilter = '';
+  // ─ Gender filter: 'All' | 'Male' | 'Female' ─
+  String _genderFilter = 'All';
   final MatchService _matchService = MatchService.instance;
   String? _lastOpenedProfileUid;
 
@@ -338,9 +362,36 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text("Discover", style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w600, letterSpacing: 1)),
-                  Container(
-                    decoration: BoxDecoration(color: AppColors.onyx, borderRadius: BorderRadius.circular(30), border: Border.all(color: AppColors.goldMedium.withOpacity(0.3))),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [_buildTierToggle("Regular"), _buildTierToggle("PRIME")]),
+                  Row(
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(color: AppColors.onyx, borderRadius: BorderRadius.circular(30), border: Border.all(color: AppColors.goldMedium.withOpacity(0.3))),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [_buildTierToggle("Regular"), _buildTierToggle("PRIME")]),
+                      ),
+                      const SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: _showAdvancedFilterSheet,
+                        child: Container(
+                          width: 38, height: 38,
+                          decoration: BoxDecoration(
+                            color: AppColors.onyx,
+                            borderRadius: BorderRadius.circular(19),
+                            border: Border.all(
+                              color: (_genderFilter != 'All' || _occupationFilter.isNotEmpty || _heightFilter.isNotEmpty || _starFilter.isNotEmpty || _ageRange != const RangeValues(18, 60))
+                                  ? AppColors.goldMedium
+                                  : AppColors.goldMedium.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.tune_rounded,
+                            color: (_genderFilter != 'All' || _occupationFilter.isNotEmpty || _heightFilter.isNotEmpty || _starFilter.isNotEmpty || _ageRange != const RangeValues(18, 60))
+                                ? AppColors.goldMedium
+                                : Colors.white54,
+                            size: 18,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -400,9 +451,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
     Map<String, dynamic> hiddenMap,
   ) {
     final city = (profile['city'] ?? '').toString().trim();
-    final ignoredProfiles = profile['ignoredProfiles'] is Map
-        ? Map<String, dynamic>.from(profile['ignoredProfiles'] as Map)
-        : <String, dynamic>{};
+    final ignoredMatchIds = (profile['ignoredMatchIds'] as List<dynamic>? ?? []).map((e) => e.toString()).toSet();
     final blockedUids = List<String>.from(profile['blockedUids'] ?? []);
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -410,10 +459,8 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
       final uid = (item['uid'] ?? '').toString();
       if (uid.isEmpty) return false;
       if (blockedUids.contains(uid)) return false;
-      if (ignoredProfiles.containsKey(uid)) {
-        final expiry = (ignoredProfiles[uid] as Timestamp).toDate().millisecondsSinceEpoch;
-        if (expiry > now) return false;
-      }
+      if (ignoredMatchIds.contains(uid)) return false;
+      
       final hiddenUntil = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
       if (hiddenUntil > now) return false;
 
@@ -429,6 +476,11 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
       if (_locationOnly && city.isNotEmpty) {
         final matchCity = (item['city'] ?? '').toString().trim().toLowerCase();
         if (matchCity.isEmpty || matchCity != city.toLowerCase()) return false;
+      }
+      // ─ Gender filter ─
+      if (_genderFilter != 'All') {
+        final g = (item['gender'] ?? '').toString().toLowerCase();
+        if (g != _genderFilter.toLowerCase()) return false;
       }
 
       final rawDob = item['dateOfBirth'];
@@ -566,12 +618,13 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                             },
                             onDismissTemporarily: () async {
                               if (uid.isEmpty) return;
-                              final currentHidden = profile['hiddenMatches'] is Map
-                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map) : <String, dynamic>{};
-                              currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
-                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'hiddenMatches': currentHidden});
+                              final curIgnored = ((profile['ignoredMatchIds'] ?? []) as List)
+                                  .map((e) => e.toString()).toSet();
+                              curIgnored.add(uid);
+                              await UserService.instance
+                                  .updateCurrentUserProfile({'ignoredMatchIds': curIgnored.toList()});
                               if (!context.mounted) return;
-                              showLinearMessage(context, 'Match hidden for 2 hours.');
+                              showLinearMessage(context, 'Profile ignored.');
                             },
                             onTap: (profile) {
                               final viewedUid = (profile['uid'] ?? '').toString();
@@ -687,12 +740,13 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                             },
                             onDismissTemporarily: () async {
                               if (uid.isEmpty) return;
-                              final currentHidden = profile['hiddenMatches'] is Map
-                                  ? Map<String, dynamic>.from(profile['hiddenMatches'] as Map) : <String, dynamic>{};
-                              currentHidden[uid] = DateTime.now().add(const Duration(hours: 2)).millisecondsSinceEpoch;
-                              await UserService.instance.updateCurrentUserProfile(<String, dynamic>{'hiddenMatches': currentHidden});
+                              final curIgnored = ((profile['ignoredMatchIds'] ?? []) as List)
+                                  .map((e) => e.toString()).toSet();
+                              curIgnored.add(uid);
+                              await UserService.instance
+                                  .updateCurrentUserProfile({'ignoredMatchIds': curIgnored.toList()});
                               if (!context.mounted) return;
-                              showLinearMessage(context, 'Match hidden for 2 hours.');
+                              showLinearMessage(context, 'Profile ignored.');
                             },
                             onTap: (profile) {
                               final viewedUid = (profile['uid'] ?? '').toString();
@@ -874,6 +928,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
     final heightController = TextEditingController(text: _heightFilter);
     final starController = TextEditingController(text: _starFilter);
     RangeValues tempAge = _ageRange;
+    String tempGender = _genderFilter;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -910,7 +965,56 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Advanced Filters', style: TextStyle(color: AppColors.goldLight, fontSize: 20, fontWeight: FontWeight.bold)),
+                    // ─── Header row ───
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text('Filters', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                        ),
+                        GestureDetector(
+                          onTap: () => Navigator.pop(ctx),
+                          child: const Icon(Icons.close_rounded, color: Colors.white54, size: 22),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // ─── Gender filter ───
+                    const Text('Show', style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: ['All', 'Male', 'Female'].map((g) {
+                        final selected = tempGender == g;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: GestureDetector(
+                            onTap: () => setModalState(() => tempGender = g),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: selected ? AppColors.goldMedium : Colors.white.withOpacity(0.06),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: selected ? AppColors.goldMedium : Colors.white.withOpacity(0.15),
+                                ),
+                              ),
+                              child: Text(
+                                g,
+                                style: TextStyle(
+                                  color: selected ? Colors.black : Colors.white70,
+                                  fontWeight: selected ? FontWeight.bold : FontWeight.w400,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 20),
+                    const Divider(color: Colors.white10, height: 1),
+                    const SizedBox(height: 16),
+                    const Text('Advanced Filters', style: TextStyle(color: AppColors.goldLight, fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 12),
                     Text('Age: ${tempAge.start.round()} - ${tempAge.end.round()}', style: TextStyle(color: Colors.white.withOpacity(0.8))),
                     RangeSlider(
@@ -953,6 +1057,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                               _ageRange = tempAge;
                               _occupationFilter = occupationController.text.trim();
                               _heightFilter = heightController.text.trim();
+                              _genderFilter = tempGender;
                             });
                             Navigator.pop(ctx);
                           },
@@ -974,6 +1079,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                                 _occupationFilter = '';
                                 _heightFilter = '';
                                 _starFilter = '';
+                                _genderFilter = 'All';
                               });
                               Navigator.pop(ctx);
                             },
@@ -994,6 +1100,7 @@ class _MatchesViewState extends State<_MatchesView> with SingleTickerProviderSta
                                 _occupationFilter = occupationController.text.trim();
                                 _heightFilter = heightController.text.trim();
                                 _starFilter = starController.text.trim();
+                                _genderFilter = tempGender;
                               });
                               Navigator.pop(ctx);
                             },

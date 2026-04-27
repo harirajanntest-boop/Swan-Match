@@ -46,13 +46,41 @@ class UserService {
   Future<void> updateCurrentUserProfile(Map<String, dynamic> updates) async {
     final user = _auth.currentUser;
     if (user == null) return;
+    _invalidateCache(user.uid);
     await upsertUserProfile(uid: user.uid, data: updates);
   }
 
-  Future<Map<String, dynamic>?> getUserProfile(String uid) async {
-    final snapshot = await _userRef(uid).get();
-    return snapshot.data();
+  Future<void> updateOnlineStatus(bool isOnline) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+      await _userRef(user.uid).set({
+        'isOnline': isOnline,
+        'online': isOnline,
+        'lastActive': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (e) {
+      print('Error updating online status: $e');
+    }
   }
+
+  /// In-memory cache: uid → profile data.
+  /// Eliminates redundant Firestore reads for the same profile within a session.
+  final Map<String, Map<String, dynamic>> _profileCache = {};
+
+  /// Invalidate cache entry when a profile is updated.
+  void _invalidateCache(String uid) => _profileCache.remove(uid);
+
+  Future<Map<String, dynamic>?> getUserProfile(String uid) async {
+    if (_profileCache.containsKey(uid)) return _profileCache[uid];
+    final snapshot = await _userRef(uid).get();
+    final data = snapshot.data();
+    if (data != null) {
+      _profileCache[uid] = <String, dynamic>{...data, 'uid': uid};
+    }
+    return _profileCache[uid];
+  }
+
 
   Future<Map<String, dynamic>?> getCurrentUserProfile() async {
     final user = _auth.currentUser;
@@ -326,11 +354,9 @@ class UserService {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;
 
-    // Hide for 2 days
-    final expiration = DateTime.now().add(const Duration(days: 2));
     await _userRef(
       currentUser.uid,
-    ).update({'ignoredProfiles.$uid': Timestamp.fromDate(expiration)});
+    ).update({'ignoredMatchIds': FieldValue.arrayUnion([uid])});
   }
 
   Future<void> unignoreUser(String uid) async {
@@ -338,13 +364,100 @@ class UserService {
     if (currentUser == null) return;
     await _userRef(
       currentUser.uid,
-    ).update({'ignoredProfiles.$uid': FieldValue.delete()});
+    ).update({'ignoredMatchIds': FieldValue.arrayRemove([uid])});
   }
 
   bool isPremium(Map<String, dynamic>? profile) {
     if (profile == null) return false;
+    // Top-level fields (set by UI / legacy)
     final status = profile['subscriptionStatus']?.toString().toLowerCase();
     final plan = profile['subscriptionPlan']?.toString().toLowerCase();
-    return status == 'active' || status == 'trialing' || plan == 'premium';
+    if (status == 'active' || status == 'trialing' || plan == 'premium') {
+      return true;
+    }
+    // Nested 'subscription' map written by the verifySubscription Cloud Function
+    final sub = profile['subscription'];
+    if (sub is Map) {
+      final nestedStatus = sub['status']?.toString().toLowerCase();
+      if (nestedStatus == 'active' || nestedStatus == 'trialing') return true;
+    }
+    return false;
+  }
+
+  /// Count users by relationship goal (lookingFor field)
+  Stream<Map<String, int>> watchUserCountsByRelationshipGoal() {
+    return _firestore.collection('users').snapshots().map((snapshot) {
+      final counts = <String, int>{
+        'Ready to Marry': 0,
+        'Something Serious': 0,
+        'Long-term Partner': 0,
+        'Just Browsing': 0,
+        'Let Love Lead': 0,
+      };
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final lookingFor = data['lookingFor']?.toString();
+        if (lookingFor != null) {
+          // Exact matching with case-insensitive comparison
+          final normalized = lookingFor.toLowerCase().trim();
+          if (normalized == 'ready to marry' || normalized == 'ready to Marry') {
+            counts['Ready to Marry'] = (counts['Ready to Marry'] ?? 0) + 1;
+          } else if (normalized == 'something serious') {
+            counts['Something Serious'] = (counts['Something Serious'] ?? 0) + 1;
+          } else if (normalized == 'long-term partner' || normalized == 'long term partner') {
+            counts['Long-term Partner'] = (counts['Long-term Partner'] ?? 0) + 1;
+          } else if (normalized == 'just browsing') {
+            counts['Just Browsing'] = (counts['Just Browsing'] ?? 0) + 1;
+          } else if (normalized == 'let love lead') {
+            counts['Let Love Lead'] = (counts['Let Love Lead'] ?? 0) + 1;
+          }
+        }
+      }
+
+      return counts;
+    });
+  }
+
+  /// Get users by relationship goal
+  Stream<List<Map<String, dynamic>>> getUsersByRelationshipGoal(String goalTitle) {
+    // Convert goal title to lowercase for matching
+    final goalLower = goalTitle.toLowerCase();
+    
+    return _firestore.collection('users').snapshots().map((snapshot) {
+      final users = <Map<String, dynamic>>[];
+      
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final lookingFor = data['lookingFor']?.toString();
+        if (lookingFor != null) {
+          final normalized = lookingFor.toLowerCase().trim();
+          
+          bool matches = false;
+          if (goalLower.contains('ready to marry') && 
+              (normalized == 'ready to marry' || normalized == 'ready to Marry')) {
+            matches = true;
+          } else if (goalLower.contains('something serious') && 
+              normalized == 'something serious') {
+            matches = true;
+          } else if (goalLower.contains('long-term') && 
+              (normalized == 'long-term partner' || normalized == 'long term partner')) {
+            matches = true;
+          } else if (goalLower.contains('just browsing') && 
+              normalized == 'just browsing') {
+            matches = true;
+          } else if (goalLower.contains('let love lead') && 
+              normalized == 'let love lead') {
+            matches = true;
+          }
+          
+          if (matches && data['registrationCompleted'] == true) {
+            users.add(<String, dynamic>{...data, 'uid': doc.id});
+          }
+        }
+      }
+      
+      return users;
+    });
   }
 }

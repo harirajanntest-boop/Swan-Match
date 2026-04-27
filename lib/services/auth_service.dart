@@ -17,9 +17,40 @@ class AuthService {
   OAuthCredential? pendingGoogleCredential;
   String? pendingGoogleEmail;
 
+  // Temporary credentials for delayed sign-in
+  OAuthCredential? _temporaryGoogleCredential;
+  PhoneAuthCredential? _temporaryPhoneCredential;
+  String? _temporaryPhoneNumber;
+  String? _temporaryGoogleEmail;
+  String? _temporaryGoogleDisplayName;
+  String? _temporaryGooglePhotoUrl;
+
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   User? get currentUser => _auth.currentUser;
+
+  // Getters for temporary credentials
+  OAuthCredential? get temporaryGoogleCredential => _temporaryGoogleCredential;
+  PhoneAuthCredential? get temporaryPhoneCredential =>
+      _temporaryPhoneCredential;
+  String? get temporaryPhoneNumber => _temporaryPhoneNumber;
+  String? get temporaryGoogleEmail => _temporaryGoogleEmail;
+  String? get temporaryGoogleDisplayName => _temporaryGoogleDisplayName;
+  String? get temporaryGooglePhotoUrl => _temporaryGooglePhotoUrl;
+
+  // Check if there are pending temporary credentials
+  bool get hasPendingCredentials =>
+      _temporaryGoogleCredential != null || _temporaryPhoneCredential != null;
+
+  // Clear temporary credentials (call on app exit or when starting fresh)
+  void clearTemporaryCredentials() {
+    _temporaryGoogleCredential = null;
+    _temporaryPhoneCredential = null;
+    _temporaryPhoneNumber = null;
+    _temporaryGoogleEmail = null;
+    _temporaryGoogleDisplayName = null;
+    _temporaryGooglePhotoUrl = null;
+  }
 
   Future<void> sendOtp({
     required String phoneNumber,
@@ -35,8 +66,9 @@ class AuthService {
       phoneNumber: normalizedPhone,
       forceResendingToken: _resendToken,
       verificationCompleted: (PhoneAuthCredential credential) async {
-        // Auto-retrieval on Android — sign in silently
-        await _auth.signInWithCredential(credential);
+        // Auto-retrieval on Android — store credential temporarily instead of signing in
+        _temporaryPhoneCredential = credential;
+        _temporaryPhoneNumber = normalizedPhone;
         if (!completer.isCompleted) {
           completer.complete();
         }
@@ -52,6 +84,8 @@ class AuthService {
         // Save verificationId and navigate to OTP screen
         _verificationId = verificationId;
         _resendToken = resendToken;
+        // Store phone number for later use
+        _temporaryPhoneNumber = normalizedPhone;
         if (!completer.isCompleted) {
           completer.complete();
         }
@@ -85,9 +119,31 @@ class AuthService {
     );
   }
 
-  Future<UserCredential> signInWithPhoneOtp(String otpCode) async {
+  Future<UserCredential?> signInWithPhoneOtp(String otpCode) async {
     final credential = createPhoneCredential(otpCode);
-    return await _auth.signInWithCredential(credential);
+    // ── NEW FLOW: Store credential temporarily, don't sign in yet ──
+    _temporaryPhoneCredential = credential;
+    // Return null to indicate delayed sign-in
+    return null;
+  }
+
+  // New method to complete Firebase sign-in with temporary credentials
+  Future<UserCredential> completeDelayedSignIn() async {
+    if (_temporaryGoogleCredential != null) {
+      final result = await _auth.signInWithCredential(
+        _temporaryGoogleCredential!,
+      );
+      clearTemporaryCredentials();
+      return result;
+    } else if (_temporaryPhoneCredential != null) {
+      final result = await _auth.signInWithCredential(
+        _temporaryPhoneCredential!,
+      );
+      clearTemporaryCredentials();
+      return result;
+    } else {
+      throw Exception('No temporary credentials found to complete sign-in');
+    }
   }
 
   Future<void> registerWithEmailAndPhone({
@@ -270,44 +326,15 @@ class AuthService {
       return await current.linkWithCredential(googleCredential);
     }
 
-    // ── Sign in with Google credential first (needed for Firestore access) ──
-    try {
-      final result = await _auth.signInWithCredential(googleCredential);
-      final user = result.user;
-      final googleEmail = (user?.email ?? account.email).trim();
+    // ── NEW FLOW: Store credential temporarily, don't sign in yet ──
+    // Store the Google credential and user info for delayed sign-in
+    _temporaryGoogleCredential = googleCredential;
+    _temporaryGoogleEmail = (account.email ?? '').trim();
+    _temporaryGoogleDisplayName = account.displayName;
+    _temporaryGooglePhotoUrl = account.photoUrl;
 
-      if (user != null) {
-        // Check if the user has a Firestore profile
-        Map<String, dynamic>? profile;
-        try {
-          profile = await UserService.instance.getUserProfile(user.uid);
-        } catch (_) {
-          profile = null;
-        }
-
-        // Skip email lookup to avoid permission issues
-        // Let the auth gate handle user existence checking
-        // This prevents PERMISSION_DENIED errors from email queries
-
-        if (profile != null) {
-          // Existing user with profile → allow sign-in
-          return result;
-        }
-
-        // ── No profile found → new user, allow sign-in and let auth gate handle it ──
-        // Don't throw exception - let auth gate handle user creation and flow
-        return result;
-      }
-
-      return result;
-    } on FirebaseAuthException catch (error) {
-      if (error.code == 'account-exists-with-different-credential') {
-        pendingGoogleCredential = googleCredential;
-        pendingGoogleEmail = error.email;
-        throw GoogleNeedsLinkingException(email: (error.email ?? '').trim());
-      }
-      rethrow;
-    }
+    // Return null to indicate delayed sign-in
+    return null;
   }
 
   Future<UserCredential> linkPendingGoogleCredential() async {
@@ -447,7 +474,10 @@ class AuthService {
     String registeredEmail = '';
     try {
       final profile = await UserService.instance.getUserProfile(user.uid);
-      registeredEmail = (profile?['email'] ?? '').toString().trim().toLowerCase();
+      registeredEmail = (profile?['email'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
     } catch (_) {}
     // Fallback to Firebase Auth email
     if (registeredEmail.isEmpty) {
@@ -560,7 +590,7 @@ class AuthService {
         case 'provider-already-linked':
           return 'This sign-in method is already connected to your account.';
         case 'invalid-credential':
-          return 'Your session has expired. Please log in again.';
+          return 'Invalid email or password. If you signed up with Google or Apple, please use those options.';
         default:
           break;
       }

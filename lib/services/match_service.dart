@@ -29,29 +29,14 @@ class MatchService {
         userDoc,
       ) async {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
-        final partnerPreference = (myProfile['partnerPreference'] ?? '').toString().trim().toLowerCase();
 
-        // Determine which genders to show based on partnerPreference
-        List<String> genderValues = [];
-        if (partnerPreference == 'female' || partnerPreference == 'women') {
-          genderValues = ['Female', 'female'];
-        } else if (partnerPreference == 'male' || partnerPreference == 'men') {
-          genderValues = ['Male', 'male'];
-        } else if (partnerPreference == 'both') {
-          genderValues = ['Male', 'male', 'Female', 'female'];
-        }
-
-        // Build query with gender filter if partnerPreference is set
-        Query<Map<String, dynamic>> query = _firestore
+        // Fetch ALL registered users — gender filtering is handled
+        // entirely client-side in SwipePage._applyFilters so that the
+        // Discover filter chips (All / Male / Female) work correctly.
+        final snapshot = await _firestore
             .collection('users')
-            .where('registrationCompleted', isEqualTo: true);
-
-        if (genderValues.isNotEmpty) {
-          query = query.where('gender', whereIn: genderValues);
-        }
-
-        // Get all registered users
-        final snapshot = await query.get();
+            .where('registrationCompleted', isEqualTo: true)
+            .get();
 
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
         final ignoredMap = Map<String, dynamic>.from(
@@ -358,6 +343,94 @@ class MatchService {
           }
         }
         return ordered;
+      });
+    });
+  }
+
+  /// Get matches filtered by relationship goal (lookingFor field)
+  Stream<List<Map<String, dynamic>>> watchMatchesByRelationshipGoal(String goalTitle) {
+    return switchMap(_uidStream, (uid) {
+      if (uid == null) {
+        return Stream.value(<Map<String, dynamic>>[]);
+      }
+
+      return _firestore.collection('users').doc(uid).snapshots().asyncMap((
+        userDoc,
+      ) async {
+        final myProfile = userDoc.data() ?? <String, dynamic>{};
+        final partnerPreference = (myProfile['partnerPreference'] ?? '').toString().trim().toLowerCase();
+
+        // Determine which genders to show based on partnerPreference
+        List<String> genderValues = [];
+        if (partnerPreference == 'female' || partnerPreference == 'women') {
+          genderValues = ['Female', 'female'];
+        } else if (partnerPreference == 'male' || partnerPreference == 'men') {
+          genderValues = ['Male', 'male'];
+        } else if (partnerPreference == 'both') {
+          genderValues = ['Male', 'male', 'Female', 'female'];
+        }
+
+        // Build query with gender filter if partnerPreference is set
+        Query<Map<String, dynamic>> query = _firestore
+            .collection('users')
+            .where('registrationCompleted', isEqualTo: true);
+
+        if (genderValues.isNotEmpty) {
+          query = query.where('gender', whereIn: genderValues);
+        }
+
+        // Get all registered users
+        final snapshot = await query.get();
+
+        final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
+        final ignoredMap = Map<String, dynamic>.from(
+          myProfile['ignoredProfiles'] ?? {},
+        );
+        final now = DateTime.now();
+
+        // Convert goal title to lowercase for matching
+        final goalLower = goalTitle.toLowerCase();
+
+        return snapshot.docs
+            .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
+            .where((profile) {
+              final pUid = (profile['uid'] ?? '').toString();
+              if (pUid == uid) return false;
+              if (blockedUids.contains(pUid)) return false;
+
+              final ignoreExpiry = ignoredMap[pUid];
+              if (ignoreExpiry is Timestamp &&
+                  ignoreExpiry.toDate().isAfter(now)) {
+                return false;
+              }
+
+              // Filter by relationship goal
+              final lookingFor = profile['lookingFor']?.toString();
+              if (lookingFor == null) return false;
+              final normalized = lookingFor.toLowerCase().trim();
+
+              bool matches = false;
+              if (goalLower.contains('ready to marry') && 
+                  (normalized == 'ready to marry' || normalized == 'ready to Marry')) {
+                matches = true;
+              } else if (goalLower.contains('something serious') && 
+                  normalized == 'something serious') {
+                matches = true;
+              } else if (goalLower.contains('long-term') && 
+                  (normalized == 'long-term partner' || normalized == 'long term partner')) {
+                matches = true;
+              } else if (goalLower.contains('just browsing') && 
+                  normalized == 'just browsing') {
+                matches = true;
+              } else if (goalLower.contains('let love lead') && 
+                  normalized == 'let love lead') {
+                matches = true;
+              }
+
+              return matches;
+            })
+            .where(_isVisibleToEveryone)
+            .toList();
       });
     });
   }
