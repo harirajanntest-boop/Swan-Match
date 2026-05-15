@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
@@ -143,11 +144,41 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
 
     setState(() => _isDeletingAccount = true);
     try {
-      await UserService.instance.deleteCurrentUserCompletely();
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) throw Exception('No authenticated user found.');
+
+      // ── Soft delete: mark user document as deleted and clear personal data ──
+      final now = DateTime.now();
+      final scheduledHardDelete = now.add(const Duration(days: 30));
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'isDeleted': true,
+        'status': 'deleted',
+        'deletedAt': FieldValue.serverTimestamp(),
+        'scheduledHardDeleteAt': Timestamp.fromDate(scheduledHardDelete),
+        // Clear personal identifiers
+        'firstName': 'Deleted',
+        'lastName': 'Account',
+        'name': 'Deleted Account',
+        'displayName': 'Deleted Account',
+        'bio': '',
+        'shortBio': '',
+        'aboutMe': '',
+        'phoneNumber': '',
+        'email': '',
+        'photoUrl': '',
+        'profilePhotoUrl': '',
+        'photos': <String>[],
+        'isOnline': false,
+        'online': false,
+        'fcmTokens': <String>[],
+      });
+
+      // Sign the user out — Cloud Function handles hard deletion after 30 days
+      await AuthService.instance.signOut();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Your account has been permanently deleted.')),
+        const SnackBar(content: Text('Your account has been scheduled for deletion.')),
       );
       Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const CustomLoginPage()),
@@ -156,7 +187,7 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     } on FirebaseAuthException catch (error) {
       if (!mounted) return;
       final message = error.code == 'requires-recent-login'
-          ? 'Please login again recently, then retry deleting your account.'
+          ? 'Please log in again, then retry deleting your account.'
           : AuthService.instance.readableAuthError(error);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     } catch (_) {

@@ -3,6 +3,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/widgets/deleted_user_avatar.dart';
 import 'chat_conversation_page.dart';
 import '../../../../services/chat_service.dart';
 import '../../../../services/interest_service.dart';
@@ -307,11 +309,18 @@ class _ChatThreadTile extends StatelessWidget {
         }
 
         final profile = snapshot.data ?? const <String, dynamic>{};
-        final name = (profile['name'] ?? 'Member').toString();
-        final city = (profile['city'] ?? '').toString();
+        final isDeletedUser = DeletedUserHelper.isDeleted(
+            snapshot.data == null ? null : profile);
+        final name = isDeletedUser
+            ? 'Deleted Account'
+            : (profile['name'] ?? 'Member').toString();
+        final city = isDeletedUser
+            ? 'This account no longer exists'
+            : (profile['city'] ?? '').toString();
         final lastMessage = (chat['lastMessage'] ?? '').toString();
 
-        return _buildChatTile(context, profile, name, city, lastMessage, otherUserId);
+        return _buildChatTile(context, profile, name, city, lastMessage,
+            otherUserId, isDeletedUser);
       },
     );
   }
@@ -323,6 +332,7 @@ class _ChatThreadTile extends StatelessWidget {
     String city,
     String lastMessage,
     String otherUserId,
+    bool isDeletedUser,
   ) {
     // Get photo URL from either photoUrl field or photos array
     String photoUrl = (profile['photoUrl'] ?? '').toString();
@@ -333,6 +343,11 @@ class _ChatThreadTile extends StatelessWidget {
     Future<void> openConversation() async {
       if (otherUserId.isEmpty) {
         showLinearMessage(context, 'Chat user unavailable.', isError: true);
+        return;
+      }
+      // Prevent opening chat for deleted users
+      if (isDeletedUser) {
+        showLinearMessage(context, 'This account no longer exists.', isError: true);
         return;
       }
       await Navigator.push(
@@ -356,17 +371,13 @@ class _ChatThreadTile extends StatelessWidget {
               children: [
                 Stack(
                   children: [
-                    CircleAvatar(
+                    DeletedUserAvatar(
+                      photoUrl: DeletedUserHelper.getAvatarUrl(profile),
                       radius: 26,
-                      backgroundColor: AppColors.goldMedium.withValues(alpha: 0.2),
-                      backgroundImage: photoUrl.isNotEmpty
-                          ? CachedNetworkImageProvider(photoUrl)
-                          : null,
-                      child: photoUrl.isEmpty
-                          ? const Icon(Icons.person, color: AppColors.goldMedium)
-                          : null,
+                      isDeleted: isDeletedUser,
                     ),
-                    if (profile['isOnline'] == true || profile['online'] == true)
+                    if (!isDeletedUser &&
+                        (profile['isOnline'] == true || profile['online'] == true))
                       Positioned(
                         bottom: 0,
                         right: 0,

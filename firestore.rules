@@ -10,13 +10,23 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
+      // Any signed-in user can read a profile if it is complete (needed for
+      // chat lists, match cards, etc.) — deleted docs are still readable so
+      // the UI can render the "Deleted Account" placeholder gracefully.
       allow read: if isSignedIn() &&
         (isOwner(userId) || resource.data.registrationCompleted == true);
       // FIX: Allow list for registered users (needed for matching queries)
-      // User enumeration is mitigated by requiring registrationCompleted == true
       allow list: if isSignedIn();
       allow create: if isOwner(userId);
-      allow update: if isOwner(userId);
+      // Owners can update their own doc UNLESS the doc is already soft-deleted.
+      // The owner IS allowed to set isDeleted=true (the soft-delete write itself).
+      allow update: if isOwner(userId) &&
+        (
+          // Allow the soft-delete write (isDeleted going from false/null to true)
+          request.resource.data.isDeleted == true ||
+          // Allow normal updates only when the account is not yet deleted
+          resource.data.get('isDeleted', false) != true
+        );
       allow delete: if isOwner(userId);
 
       // Allow users to read/write their own trial usage metadata

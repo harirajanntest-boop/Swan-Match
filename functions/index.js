@@ -1,4 +1,5 @@
 const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 
 admin.initializeApp();
@@ -346,18 +347,38 @@ exports.handleStripeWebhook = onRequest(
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted': {
         const subscription = event.data.object;
+        const periodStart = subscription.current_period_start;
+        const periodEnd = subscription.current_period_end;
+
+        const updateData = {
+          subscriptionStatus: subscription.status,
+          stripeSubscriptionId: subscription.id,
+          subscriptionPlan: subscription.status === 'active' ? 'premium' : 'free',
+          cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        // Only add timestamps if values exist and are valid integers
+        if (periodStart && Number.isInteger(Number(periodStart))) {
+          updateData.billingPeriodStart = admin.firestore.Timestamp.fromMillis(
+            Number(periodStart) * 1000
+          );
+        }
+
+        if (periodEnd && Number.isInteger(Number(periodEnd))) {
+          updateData.billingPeriodEnd = admin.firestore.Timestamp.fromMillis(
+            Number(periodEnd) * 1000
+          );
+        }
+
         const customer = await stripe.customers.retrieve(subscription.customer);
         const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
-        
+
         if (uid) {
-          await db.collection('users').doc(uid).update({
-            subscriptionStatus: subscription.status,
-            stripeSubscriptionId: subscription.id,
-            billingPeriodStart: admin.firestore.Timestamp.fromMillis(subscription.current_period_start * 1000),
-            billingPeriodEnd: admin.firestore.Timestamp.fromMillis(subscription.current_period_end * 1000),
-            subscriptionPlan: subscription.status === 'active' ? 'premium' : 'free',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
+          await db.collection('users').doc(uid).update(updateData);
+          console.log(`Subscription updated for uid=${uid} status=${subscription.status}`);
+        } else {
+          console.log('No uid found in customer metadata — skipping Firestore update');
         }
         break;
       }
@@ -698,3 +719,66 @@ exports.createPortalSession = onCall({ secrets: [stripeSecretKey] }, async (requ
     throw new HttpsError('internal', `Stripe error: ${error.message}`);
   }
 });
+
+/**
+ * hardDeleteExpiredAccounts — runs daily at 03:00 UTC.
+ * Permanently removes user data for accounts that have passed their
+ * 30-day soft-delete retention window (scheduledHardDeleteAt <= now).
+ *
+ * For each expired account it will:
+ *  1. Delete all photos from Firebase Storage.
+ *  2. Delete the Firestore user document.
+ *  3. Delete the Firebase Auth account.
+ */
+exports.hardDeleteExpiredAccounts = onSchedule(
+  { schedule: '0 3 * * *', timeZone: 'UTC' },
+  async (_event) => {
+    const db = admin.firestore();
+    const now = admin.firestore.Timestamp.now();
+
+    console.log('[hardDelete] Starting daily hard-delete run at', new Date().toISOString());
+
+    const snapshot = await db
+      .collection('users')
+      .where('isDeleted', '==', true)
+      .where('scheduledHardDeleteAt', '<=', now)
+      .get();
+
+    if (snapshot.empty) {
+      console.log('[hardDelete] No expired accounts found.');
+      return;
+    }
+
+    console.log(`[hardDelete] Found ${snapshot.size} account(s) to hard-delete.`);
+
+    for (const doc of snapshot.docs) {
+      const uid = doc.id;
+      console.log(`[hardDelete] Processing uid=${uid}`);
+
+      try {
+        // 1. Delete photos from Firebase Storage
+        const bucket = admin.storage().bucket();
+        const [files] = await bucket.getFiles({ prefix: `users/${uid}/` });
+        if (files.length > 0) {
+          await Promise.all(files.map((f) => f.delete().catch((e) =>
+            console.warn(`[hardDelete] Could not delete file ${f.name}: ${e.message}`)
+          )));
+          console.log(`[hardDelete] Deleted ${files.length} storage file(s) for uid=${uid}`);
+        }
+
+        // 2. Delete Firestore document
+        await doc.ref.delete();
+        console.log(`[hardDelete] Deleted Firestore doc for uid=${uid}`);
+
+        // 3. Delete Firebase Auth account
+        await admin.auth().deleteUser(uid);
+        console.log(`[hardDelete] Deleted Auth account for uid=${uid}`);
+      } catch (err) {
+        console.error(`[hardDelete] Failed for uid=${uid}: ${err.message}`);
+        // Continue processing remaining accounts
+      }
+    }
+
+    console.log('[hardDelete] Run complete.');
+  }
+);

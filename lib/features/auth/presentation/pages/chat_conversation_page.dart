@@ -10,6 +10,8 @@ import '../../../../models/message_model.dart';
 import '../../../../services/chat_service.dart';
 import '../../../../services/chat_presence_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/widgets/deleted_user_avatar.dart';
 import 'match_profile_detail_page.dart';
 import 'subscription_page.dart';
 
@@ -62,6 +64,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
 
   String? _getProfileImageUrl() {
     if (_otherUserProfile == null) return null;
+    // Return null for deleted users so placeholder is shown
+    if (DeletedUserHelper.isDeleted(_otherUserProfile)) return null;
     String photoUrl = (_otherUserProfile!['photoUrl'] ?? '').toString();
     if (photoUrl.isEmpty &&
         _otherUserProfile!['photos'] is List &&
@@ -70,6 +74,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     }
     return photoUrl.isEmpty ? null : photoUrl;
   }
+
+  bool get _isOtherUserDeleted =>
+      DeletedUserHelper.isDeleted(_otherUserProfile);
 
   @override
   void dispose() {
@@ -100,6 +107,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
 
   void _openPartnerProfile() {
     if (_otherUserProfile == null) return;
+    // Don't navigate to the profile of a deleted user
+    if (_isOtherUserDeleted) return;
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -242,16 +251,10 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
             children: [
               Hero(
                 tag: 'chat_avatar_${widget.otherUserId}',
-                child: CircleAvatar(
+                child: DeletedUserAvatar(
+                  photoUrl: _getProfileImageUrl(),
                   radius: 18,
-                  backgroundColor: AppColors.goldMedium.withValues(alpha: 0.2),
-                  backgroundImage: _getProfileImageUrl() != null
-                      ? CachedNetworkImageProvider(_getProfileImageUrl()!)
-                      : null,
-                  child: _getProfileImageUrl() == null
-                      ? const Icon(Icons.person,
-                          color: AppColors.goldMedium, size: 18)
-                      : null,
+                  isDeleted: _isOtherUserDeleted,
                 ),
               ),
               const SizedBox(width: 10),
@@ -372,11 +375,10 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                 ),
               ),
 
-              // ── Input bar ──
-              SafeArea(
-                top: false,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              // ── Input bar (hidden for deleted users) ──
+              if (_isOtherUserDeleted)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   decoration: BoxDecoration(
                     color: AppColors.obsidian,
                     border: Border(
@@ -384,57 +386,90 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                           color: Colors.white.withValues(alpha: 0.07)),
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _messageController,
-                          minLines: 1,
-                          maxLines: 4,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _send(),
-                          style: const TextStyle(color: Colors.white),
-                          decoration: InputDecoration(
-                            hintText: 'Type a message…',
-                            hintStyle: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.4)),
-                            filled: true,
-                            fillColor: Colors.white.withValues(alpha: 0.06),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(24),
-                              borderSide: BorderSide.none,
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.info_outline,
+                            color: Colors.white30, size: 18),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'This account no longer exists. You cannot send new messages.',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 13,
                             ),
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 12),
                           ),
                         ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                // ── Normal input bar ──
+                SafeArea(
+                  top: false,
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.obsidian,
+                      border: Border(
+                        top: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.07)),
                       ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 48,
-                        height: 48,
-                        child: ElevatedButton(
-                          onPressed: _isSending ? null : _send,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.goldMedium,
-                            foregroundColor: AppColors.obsidian,
-                            shape: const CircleBorder(),
-                            padding: EdgeInsets.zero,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _messageController,
+                            minLines: 1,
+                            maxLines: 4,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) => _send(),
+                            style: const TextStyle(color: Colors.white),
+                            decoration: InputDecoration(
+                              hintText: 'Type a message…',
+                              hintStyle: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.4)),
+                              filled: true,
+                              fillColor: Colors.white.withValues(alpha: 0.06),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                borderSide: BorderSide.none,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 12),
+                            ),
                           ),
-                          child: _isSending
-                              ? const SizedBox(
-                                  width: 18, height: 18,
-                                  child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: AppColors.obsidian),
-                                )
-                              : const Icon(Icons.send_rounded, size: 20),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: ElevatedButton(
+                            onPressed: _isSending ? null : _send,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.goldMedium,
+                              foregroundColor: AppColors.obsidian,
+                              shape: const CircleBorder(),
+                              padding: EdgeInsets.zero,
+                            ),
+                            child: _isSending
+                                ? const SizedBox(
+                                    width: 18, height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: AppColors.obsidian),
+                                  )
+                                : const Icon(Icons.send_rounded, size: 20),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
             ],
           ),
         ],

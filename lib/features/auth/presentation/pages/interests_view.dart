@@ -4,6 +4,8 @@ import '../../../../core/constants/colors.dart';
 import '../../../../models/interest_model.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/widgets/deleted_user_avatar.dart';
 import 'its_a_match_overlay.dart';
 import 'match_profile_detail_page.dart';
 import 'chat_conversation_page.dart';
@@ -445,7 +447,11 @@ class _MatchRowState extends State<_MatchRow> {
       future: _profileFuture,
       builder: (context, snapshot) {
         final profile = snapshot.data ?? <String, dynamic>{};
-        final name = (profile['name'] ?? 'Member').toString();
+        final isDeletedUser = DeletedUserHelper.isDeleted(
+            snapshot.data == null ? null : profile);
+        final name = isDeletedUser
+            ? 'Deleted Account'
+            : (profile['name'] ?? 'Member').toString();
         final status = widget.interest.status.toLowerCase();
         final photoUrl = _getPhotoUrl(profile);
         final isNew = status == 'pending';
@@ -464,7 +470,32 @@ class _MatchRowState extends State<_MatchRow> {
 
         return GestureDetector(
           onTap: () {
-            if (profile.isEmpty) return;
+            if (profile.isEmpty && !isDeletedUser) return;
+            // Show dialog for deleted users instead of navigating
+            if (isDeletedUser) {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1A1A),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20)),
+                  title: const Text('Account Deleted',
+                      style: TextStyle(color: Colors.white)),
+                  content: const Text(
+                    'This user has deleted their account and is no longer available.',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('OK',
+                          style: TextStyle(color: AppColors.goldMedium)),
+                    ),
+                  ],
+                ),
+              );
+              return;
+            }
             if (isAccepted) {
               Navigator.push(
                 context,
@@ -549,35 +580,41 @@ class _MatchRowState extends State<_MatchRow> {
                         ),
                       ),
                       child: ClipOval(
-                        child: photoUrl.isNotEmpty
-                            ? Image.network(
-                                photoUrl,
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => _defaultAvatar(),
+                        child: isDeletedUser
+                            ? const DeletedUserAvatar(
+                                radius: 29,
+                                isDeleted: true,
                               )
-                            : _defaultAvatar(),
+                            : (photoUrl.isNotEmpty
+                                ? Image.network(
+                                    photoUrl,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => _defaultAvatar(),
+                                  )
+                                : _defaultAvatar()),
                       ),
                     ),
-                    // Online indicator
-                    Positioned(
-                      right: 2,
-                      bottom: 2,
-                      child: Container(
-                        width: 13,
-                        height: 13,
-                        decoration: BoxDecoration(
-                          color: (profile['isOnline'] == true ||
-                                  profile['online'] == true)
-                              ? const Color(0xFF2ECC71)
-                              : Colors.grey,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: const Color(0xFF0C0C0C),
-                            width: 2,
+                    // Online indicator — hide for deleted users
+                    if (!isDeletedUser)
+                      Positioned(
+                        right: 2,
+                        bottom: 2,
+                        child: Container(
+                          width: 13,
+                          height: 13,
+                          decoration: BoxDecoration(
+                            color: (profile['isOnline'] == true ||
+                                    profile['online'] == true)
+                                ? const Color(0xFF2ECC71)
+                                : Colors.grey,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0xFF0C0C0C),
+                              width: 2,
+                            ),
                           ),
                         ),
                       ),
-                    ),
                   ],
                 ),
 

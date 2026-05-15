@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/deleted_user_helper.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import 'chat_conversation_page.dart';
 import 'subscription_page.dart';
@@ -105,6 +106,57 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    // ── Guard: show a placeholder instead of crashing for deleted accounts ──
+    if (DeletedUserHelper.isDeleted(widget.profile)) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0A0A0A),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF0A0A0A),
+          iconTheme: const IconThemeData(color: AppColors.goldMedium),
+          elevation: 0,
+        ),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.person_off_outlined,
+                  color: Colors.white24, size: 80),
+              const SizedBox(height: 24),
+              const Text(
+                'Account Deleted',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'This user has deleted their account\nand is no longer available.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 15,
+                    height: 1.5),
+              ),
+              const SizedBox(height: 32),
+              OutlinedButton(
+                onPressed: () => Navigator.pop(context),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.goldMedium,
+                  side: const BorderSide(color: AppColors.goldMedium),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30)),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 32, vertical: 14),
+                ),
+                child: const Text('Go Back'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final uid = _read('uid');
     final name = _read('name', fallback: 'Member');
     final age = _age();
