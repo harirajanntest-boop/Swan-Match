@@ -309,77 +309,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
     }
   }
 
-  Future<void> _showChangePasswordDialog() async {
-    final currentController = TextEditingController();
-    final newController = TextEditingController();
-    final confirmController = TextEditingController();
-    bool isLoading = false;
-
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (dialogCtx, setDialogState) {
-          return AlertDialog(
-            backgroundColor: AppColors.onyx,
-            title: const Text('Change Password', style: TextStyle(color: Colors.white, )),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _PasswordTextField(controller: currentController, hint: 'Current Password'),
-                  const SizedBox(height: 12),
-                  _PasswordTextField(controller: newController, hint: 'New Password'),
-                  const SizedBox(height: 12),
-                  _PasswordTextField(controller: confirmController, hint: 'Confirm New Password'),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: isLoading ? null : () => Navigator.pop(dialogCtx),
-                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
-              ),
-              ElevatedButton(
-                onPressed: isLoading ? null : () async {
-                  final current = currentController.text.trim();
-                  final newPass = newController.text.trim();
-                  final confirm = confirmController.text.trim();
-
-                  if (current.isEmpty || newPass.isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all fields')));
-                    return;
-                  }
-                  if (newPass != confirm) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Passwords do not match')));
-                    return;
-                  }
-
-                  setDialogState(() => isLoading = true);
-                  try {
-                    await AuthService.instance.changePassword(current, newPass);
-                    if (!context.mounted) return;
-                    Navigator.pop(dialogCtx);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated successfully')));
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(AuthService.instance.readableAuthError(e))));
-                    }
-                  } finally {
-                    setDialogState(() => isLoading = false);
-                  }
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
-                child: isLoading 
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Update'),
-              ),
-            ],
-          );
-        }
-      ),
-    );
-  }
 
   Future<void> _linkGoogle() async {
     try {
@@ -525,12 +454,10 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
             stream: UserService.instance.watchCurrentUserProfile(),
             builder: (context, snapshot) {
               final profile = snapshot.data ?? <String, dynamic>{};
-              final showProfileToEveryone = profile['showProfileToEveryone'] != false;
+              final profileVisibility = (profile['profileVisibility'] ?? 'Public').toString();
+              final isPrivate = profileVisibility == 'Private';
               final showPhotosToEveryone = profile['showPhotosToEveryone'] != false;
-              
-              final user = FirebaseAuth.instance.currentUser;
-              final providers = user?.providerData.map((p) => p.providerId).toList() ?? [];
-              final isPasswordUser = providers.contains('password');
+
 
               return SingleChildScrollView(
                 controller: _scrollController,
@@ -538,19 +465,22 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                
+
                     // ─── Privacy Settings ───
                     _SettingsSection(
                       title: "Privacy Settings",
                       icon: Icons.lock_outline,
                       children: [
                         _SettingsToggleRow(
-                          label: "Show Profile to Everyone",
-                          subtitle: "Turn off to hide your profile from matches & recommendations.",
-                          value: showProfileToEveryone,
+                          label: "Private Profile",
+                          subtitle: isPrivate
+                              ? "Your profile is hidden from other users."
+                              : "Your profile is visible to everyone. Toggle to make it private.",
+                          value: isPrivate,
                           onChanged: (value) async {
                             await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-                              'showProfileToEveryone': value,
+                              'profileVisibility': value ? 'Private' : 'Public',
+                              'showProfileToEveryone': !value,
                             });
                           },
                         ),
@@ -663,12 +593,6 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                       title: "Account",
                       icon: Icons.manage_accounts_outlined,
                       children: [
-                        if (isPasswordUser)
-                          _SettingsActionRow(
-                            label: "Change Password",
-                            icon: Icons.key_outlined,
-                            onTap: () => _showChangePasswordDialog(),
-                          ),
                         _SettingsActionRow(
                           label: _isLoggingOut ? "Logging out..." : "Logout",
                           icon: Icons.logout,

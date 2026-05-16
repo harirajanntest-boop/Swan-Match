@@ -17,7 +17,8 @@ class EditProfilePage extends StatefulWidget {
   State<EditProfilePage> createState() => _EditProfilePageState();
 }
 
-class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProviderStateMixin {
+class _EditProfilePageState extends State<EditProfilePage>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _entryController;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
@@ -34,20 +35,32 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     "Socioeconomic": Icons.attach_money_outlined,
     "Lifestyle": Icons.fitness_center_outlined,
     "Cultural & Language": Icons.language_outlined,
-    "Values & Identity": Icons.psychology_outlined,
     "Personality": Icons.emoji_emotions_outlined,
     "Partner Preferences": Icons.tune_rounded,
     "Interests": Icons.interests_outlined,
-    "Visibility": Icons.visibility_outlined,
     "Bio": Icons.edit_note_outlined,
   };
 
   @override
   void initState() {
     super.initState();
-    _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
-    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.1, 1.0, curve: Curves.easeOut)));
-    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController, curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic)));
+    _entryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entryController,
+        curve: const Interval(0.1, 1.0, curve: Curves.easeOut),
+      ),
+    );
+    _slideAnim = Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero)
+        .animate(
+          CurvedAnimation(
+            parent: _entryController,
+            curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic),
+          ),
+        );
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
@@ -68,7 +81,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.goldMedium, size: 20),
+          icon: const Icon(
+            Icons.arrow_back_ios_new,
+            color: AppColors.goldMedium,
+            size: 20,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
@@ -98,6 +115,23 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                           _buildProgressHeader(profile),
                           _buildQuickActions(profile),
                           const SizedBox(height: 20),
+                          // ── Photo Manager is always second ──
+                          _PhotoManagerSection(
+                            profile: profile,
+                            isUploadingPhoto: _isUploadingPhoto,
+                            isOpen: _expandedSection == 'Photos',
+                            onTap: () => setState(() {
+                              _expandedSection = _expandedSection == 'Photos'
+                                  ? null
+                                  : 'Photos';
+                            }),
+                            onAdd: () => _uploadProfilePhoto(profile),
+                            onDelete: (index) =>
+                                _deletePhotoAtIndex(profile, index),
+                            onSetMain: (index) =>
+                                _setPhotoAsMain(profile, index),
+                          ),
+                          const SizedBox(height: 4),
                           ...profileData.keys.map((sectionName) {
                             return _PremiumAccordion(
                               title: sectionName,
@@ -112,22 +146,14 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                               ),
                               onTap: () {
                                 setState(() {
-                                  _expandedSection = _expandedSection == sectionName ? null : sectionName;
+                                  _expandedSection =
+                                      _expandedSection == sectionName
+                                      ? null
+                                      : sectionName;
                                 });
                               },
                             );
                           }),
-                          // ── Dedicated Photo Manager (replaces generic Photos accordion) ──
-                          _PhotoManagerSection(
-                            profile: profile,
-                            isUploadingPhoto: _isUploadingPhoto,
-                            isOpen: _expandedSection == 'Photos',
-                            onTap: () => setState(() {
-                              _expandedSection = _expandedSection == 'Photos' ? null : 'Photos';
-                            }),
-                            onAdd: () => _uploadProfilePhoto(profile),
-                            onDelete: (index) => _deletePhotoAtIndex(profile, index),
-                          ),
                           const SizedBox(height: 40),
                         ],
                       ),
@@ -143,9 +169,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Future<void> _editContact(Map<String, dynamic> profile) async {
-    final phoneController = TextEditingController(
-      text: (profile['phoneNumber'] ?? '').toString(),
-    );
     final emailController = TextEditingController(
       text: (profile['email'] ?? '').toString(),
     );
@@ -155,39 +178,33 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: AppColors.onyx,
-          title: const Text('Edit Contact', style: TextStyle(color: Colors.white)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: phoneController,
-                style: const TextStyle(color: Colors.white),
-                keyboardType: TextInputType.phone,
-                decoration: InputDecoration(
-                  labelText: 'Phone Number',
-                  labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: emailController,
-                style: const TextStyle(color: Colors.white),
-                keyboardType: TextInputType.emailAddress,
-                decoration: InputDecoration(
-                  labelText: 'Email',
-                  labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-                ),
-              ),
-            ],
+          title: const Text(
+            'Edit Contact',
+            style: TextStyle(color: Colors.white),
+          ),
+          content: TextField(
+            controller: emailController,
+            style: const TextStyle(color: Colors.white),
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: 'Email',
+              labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
+            ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Save', style: TextStyle(color: AppColors.goldMedium)),
+              child: const Text(
+                'Save',
+                style: TextStyle(color: AppColors.goldMedium),
+              ),
             ),
           ],
         );
@@ -196,14 +213,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
     if (confirmed != true) return;
 
-    final currentPhone = (profile['phoneNumber'] ?? '').toString();
     final currentEmail = (profile['email'] ?? '').toString();
-
-    final newPhoneRaw = phoneController.text.trim();
     final newEmailRaw = emailController.text.trim();
-
     final emailChanged = newEmailRaw.isNotEmpty && newEmailRaw != currentEmail;
-    final phoneChanged = newPhoneRaw.isNotEmpty && newPhoneRaw != currentPhone;
 
     try {
       if (emailChanged) {
@@ -220,7 +232,8 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         }
 
         final authEmail = FirebaseAuth.instance.currentUser?.email ?? '';
-        if (authEmail.isEmpty || authEmail.toLowerCase() != newEmailRaw.toLowerCase()) {
+        if (authEmail.isEmpty ||
+            authEmail.toLowerCase() != newEmailRaw.toLowerCase()) {
           showLinearMessage(
             context,
             'Email update pending verification. Please verify the email before it updates in your profile.',
@@ -232,35 +245,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
           'email': authEmail,
         });
-      }
-
-      if (phoneChanged) {
-        final formattedPhone = AuthService.instance.normalizePhoneE164(
-          newPhoneRaw,
-          defaultCountryCode: '+1',
-        );
-
-        await AuthService.instance.sendOtp(phoneNumber: formattedPhone);
-
         if (!mounted) return;
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => OtpVerificationPage(
-              flowType: OtpFlowType.updatePhone,
-              phoneNumber: formattedPhone,
-              otpDeliveryChannel: OtpDeliveryChannel.sms,
-              destination: formattedPhone,
-            ),
-          ),
-        );
-      }
-
-      if (!mounted) return;
-      if (!emailChanged && !phoneChanged) {
+        showLinearMessage(context, 'Email updated successfully.');
+      } else {
+        if (!mounted) return;
         showLinearMessage(context, 'No changes to update.');
-      } else if (!phoneChanged) {
-        showLinearMessage(context, 'Contact details updated.');
       }
     } catch (error) {
       if (!mounted) return;
@@ -272,7 +261,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     }
   }
 
-  Future<bool> _reauthenticateForEmailUpdate(Map<String, dynamic> profile) async {
+  Future<bool> _reauthenticateForEmailUpdate(
+    Map<String, dynamic> profile,
+  ) async {
     final linkedIds = AuthService.instance.getLinkedProviderIds();
 
     if (linkedIds.contains('password')) {
@@ -290,7 +281,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     if (linkedIds.contains('phone')) {
       final currentPhone = (profile['phoneNumber'] ?? '').toString();
       if (currentPhone.isEmpty) {
-        showLinearMessage(context, 'We could not find your phone number. Please contact support.', isError: true);
+        showLinearMessage(
+          context,
+          'We could not find your phone number. Please contact support.',
+          isError: true,
+        );
         return false;
       }
 
@@ -311,7 +306,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       return result == true;
     }
 
-    showLinearMessage(context, 'Please connect at least one login method (Google, Phone, or Email) before making changes.', isError: true);
+    showLinearMessage(
+      context,
+      'Please connect at least one login method (Google, Phone, or Email) before making changes.',
+      isError: true,
+    );
     return false;
   }
 
@@ -323,7 +322,10 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: AppColors.onyx,
-        title: const Text('Confirm Password', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Confirm Password',
+          style: TextStyle(color: Colors.white),
+        ),
         content: TextField(
           controller: controller,
           obscureText: true,
@@ -336,11 +338,17 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white70),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Confirm', style: TextStyle(color: AppColors.goldMedium)),
+            child: const Text(
+              'Confirm',
+              style: TextStyle(color: AppColors.goldMedium),
+            ),
           ),
         ],
       ),
@@ -351,16 +359,25 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   Future<void> _manageHoroscope(Map<String, dynamic> profile) async {
-    final starController = TextEditingController(text: (profile['star'] ?? '').toString());
-    final rassiController = TextEditingController(text: (profile['rassi'] ?? '').toString());
-    final doshamController = TextEditingController(text: (profile['dosham'] ?? '').toString());
+    final starController = TextEditingController(
+      text: (profile['star'] ?? '').toString(),
+    );
+    final rassiController = TextEditingController(
+      text: (profile['rassi'] ?? '').toString(),
+    );
+    final doshamController = TextEditingController(
+      text: (profile['dosham'] ?? '').toString(),
+    );
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           backgroundColor: AppColors.onyx,
-          title: const Text('Manage Horoscope', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Manage Horoscope',
+            style: TextStyle(color: Colors.white),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -395,11 +412,17 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              child: const Text(
+                'Cancel',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
             TextButton(
               onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('Save', style: TextStyle(color: AppColors.goldMedium)),
+              child: const Text(
+                'Save',
+                style: TextStyle(color: AppColors.goldMedium),
+              ),
             ),
           ],
         );
@@ -419,12 +442,45 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     showLinearMessage(context, 'Horoscope details updated.');
   }
 
+  /// Promotes [index] to position 0 in the photos array so it becomes the
+  /// profile picture visible to all other users.
+  Future<void> _setPhotoAsMain(Map<String, dynamic> profile, int index) async {
+    final existing = profile['photos'];
+    if (existing is! List || index <= 0 || index >= existing.length) return;
+
+    final photos = existing.map((e) => e.toString()).toList();
+    final chosen = photos.removeAt(index);
+    photos.insert(0, chosen);
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      await UserService.instance.updateCurrentUserProfile({
+        'photos': photos,
+        'profilePicture': chosen,
+        'photoUrl': chosen,
+      });
+      if (mounted) {
+        showLinearMessage(context, 'Profile picture updated!');
+      }
+    } catch (e) {
+      if (mounted) {
+        showLinearMessage(context, 'Failed to update: $e', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
+  }
+
   Future<void> _uploadProfilePhoto(Map<String, dynamic> profile) async {
     if (_isUploadingPhoto) return;
 
     final uid = (profile['uid'] ?? '').toString();
     if (uid.isEmpty) {
-      showLinearMessage(context, 'Your session has expired. Please log out and log back in.', isError: true);
+      showLinearMessage(
+        context,
+        'Your session has expired. Please log out and log back in.',
+        isError: true,
+      );
       return;
     }
 
@@ -440,14 +496,16 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     try {
       final photoUrl = await StorageService.instance.uploadProfilePhoto(
         uid: uid,
-        file: file.path.isEmpty ? throw Exception('Invalid selected file') : File(file.path),
+        file: file.path.isEmpty
+            ? throw Exception('Invalid selected file')
+            : File(file.path),
       );
 
       // Get existing photos array
-      final existingPhotos = profile['photos'] is List 
+      final existingPhotos = profile['photos'] is List
           ? List<String>.from(profile['photos'] as List)
           : <String>[];
-      
+
       // Add new photo at the beginning of the array
       existingPhotos.insert(0, photoUrl);
 
@@ -460,7 +518,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       showLinearMessage(context, 'Profile photo updated successfully.');
     } catch (_) {
       if (!mounted) return;
-      showLinearMessage(context, 'Failed to upload photo. Please try again.', isError: true);
+      showLinearMessage(
+        context,
+        'Failed to upload photo. Please try again.',
+        isError: true,
+      );
     } finally {
       if (mounted) {
         setState(() => _isUploadingPhoto = false);
@@ -469,21 +531,37 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
   }
 
   /// Delete a photo at a specific index in the photos array.
-  Future<void> _deletePhotoAtIndex(Map<String, dynamic> profile, int index) async {
+  Future<void> _deletePhotoAtIndex(
+    Map<String, dynamic> profile,
+    int index,
+  ) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.onyx,
-        title: const Text('Remove Photo?', style: TextStyle(color: Colors.white)),
-        content: const Text('Are you sure you want to remove this photo?',
-            style: TextStyle(color: Colors.white70)),
+        title: const Text(
+          'Remove Photo?',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: const Text(
+          'Are you sure you want to remove this photo?',
+          style: TextStyle(color: Colors.white70),
+        ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.white70))),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text(
+              'Cancel',
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
           TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Remove', style: TextStyle(color: Colors.redAccent))),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              'Remove',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+          ),
         ],
       ),
     );
@@ -498,7 +576,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     // If we removed the first photo, update profilePicture too
     final updates = <String, dynamic>{'photos': existingPhotos};
     if (index == 0) {
-      updates['profilePicture'] = existingPhotos.isNotEmpty ? existingPhotos.first : null;
+      updates['profilePicture'] = existingPhotos.isNotEmpty
+          ? existingPhotos.first
+          : null;
     }
 
     setState(() => _isUploadingPhoto = true);
@@ -519,13 +599,25 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.onyx,
-        title: const Text("Delete Photo?", style: TextStyle(color: Colors.white)),
-        content: const Text("Your profile will look better with a photo. Are you sure?", style: TextStyle(color: Colors.white70)),
+        title: const Text(
+          "Delete Photo?",
+          style: TextStyle(color: Colors.white),
+        ),
+        content: const Text(
+          "Your profile will look better with a photo. Are you sure?",
+          style: TextStyle(color: Colors.white70),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Cancel")),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Delete", style: TextStyle(color: Colors.red))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+          ),
         ],
-      )
+      ),
     );
 
     if (confirmed != true) return;
@@ -574,9 +666,20 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
     if (section == 'Education & Profession') {
       switch (label) {
         case 'Highest Qualification':
-          return const ['High School', 'Bachelor\'s Degree', 'Master\'s Degree', 'PhD', 'Other'];
+          return const [
+            'High School',
+            'Bachelor\'s Degree',
+            'Master\'s Degree',
+            'PhD',
+            'Other',
+          ];
         case 'What Are You Looking For?':
-          return const ['Serious Relationship', 'Casual Dating', 'Friendship', 'Marriage'];
+          return const [
+            'Serious Relationship',
+            'Casual Dating',
+            'Friendship',
+            'Marriage',
+          ];
       }
     }
 
@@ -587,7 +690,12 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         case 'Smoking':
           return const ['Never', 'Socially', 'Regularly'];
         case 'Workout':
-          return const ['Never', '1-2 times/week', '3-4 times/week', '5+ times/week'];
+          return const [
+            'Never',
+            '1-2 times/week',
+            '3-4 times/week',
+            '5+ times/week',
+          ];
       }
     }
 
@@ -596,11 +704,35 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         case 'Communication Style':
           return const ['Direct', 'Diplomatic', 'Reserved', 'Expressive'];
         case 'Love Language':
-          return const ['Words of Affirmation', 'Acts of Service', 'Receiving Gifts', 'Quality Time', 'Physical Touch'];
+          return const [
+            'Words of Affirmation',
+            'Acts of Service',
+            'Receiving Gifts',
+            'Quality Time',
+            'Physical Touch',
+          ];
         case 'Education Level':
-          return const ['High School', 'Undergraduate', 'Postgraduate', 'Doctorate'];
+          return const [
+            'High School',
+            'Undergraduate',
+            'Postgraduate',
+            'Doctorate',
+          ];
         case 'Zodiac':
-          return const ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
+          return const [
+            'Aries',
+            'Taurus',
+            'Gemini',
+            'Cancer',
+            'Leo',
+            'Virgo',
+            'Libra',
+            'Scorpio',
+            'Sagittarius',
+            'Capricorn',
+            'Aquarius',
+            'Pisces',
+          ];
       }
     }
 
@@ -631,7 +763,13 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (options.isNotEmpty) ...[
-                      Text('Quick options', style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 12)),
+                      Text(
+                        'Quick options',
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.7),
+                          fontSize: 12,
+                        ),
+                      ),
                       const SizedBox(height: 10),
                       Wrap(
                         spacing: 8,
@@ -643,7 +781,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                             selected: isSelected,
                             selectedColor: AppColors.goldMedium,
                             labelStyle: TextStyle(
-                              color: isSelected ? AppColors.obsidian : Colors.white,
+                              color: isSelected
+                                  ? AppColors.obsidian
+                                  : Colors.white,
                               fontWeight: FontWeight.w600,
                             ),
                             onSelected: (_) {
@@ -662,10 +802,16 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                       style: const TextStyle(color: Colors.white),
                       maxLines: multiLine ? 5 : 1,
                       decoration: InputDecoration(
-                        hintText: options.isNotEmpty ? 'Or enter custom value' : 'Enter value',
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.4)),
+                        hintText: options.isNotEmpty
+                            ? 'Or enter custom value'
+                            : 'Enter value',
+                        hintStyle: TextStyle(
+                          color: Colors.white.withOpacity(0.4),
+                        ),
                         enabledBorder: UnderlineInputBorder(
-                          borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
+                          borderSide: BorderSide(
+                            color: Colors.white.withOpacity(0.2),
+                          ),
                         ),
                         focusedBorder: const UnderlineInputBorder(
                           borderSide: BorderSide(color: AppColors.goldMedium),
@@ -683,11 +829,18 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Colors.white70),
+                  ),
                 ),
                 TextButton(
-                  onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
-                  child: const Text('Save', style: TextStyle(color: AppColors.goldMedium)),
+                  onPressed: () =>
+                      Navigator.pop(dialogContext, controller.text.trim()),
+                  child: const Text(
+                    'Save',
+                    style: TextStyle(color: AppColors.goldMedium),
+                  ),
                 ),
               ],
             );
@@ -725,8 +878,8 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       final nextNested = existing is Map<String, dynamic>
           ? Map<String, dynamic>.from(existing)
           : existing is Map
-              ? Map<String, dynamic>.from(existing)
-              : <String, dynamic>{};
+          ? Map<String, dynamic>.from(existing)
+          : <String, dynamic>{};
       nextNested[key] = updated;
       updates[nested] = nextNested;
     } else {
@@ -741,120 +894,167 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
     if (section == 'Basic Details') {
       switch (label) {
-        case 'First Name': return {'key': 'firstName'};
-        case 'Last Name': return {'key': 'lastName'};
-        case 'Gender': return {'key': 'gender'};
-        case 'Show Gender on Profile': return {'key': 'showGender'};
-        case 'Partner Preference': return {'key': 'partnerPreference'};
+        case 'First Name':
+          return {'key': 'firstName'};
+        case 'Last Name':
+          return {'key': 'lastName'};
+        case 'Gender':
+          return {'key': 'gender'};
+        case 'Show Gender on Profile':
+          return {'key': 'showGender'};
+        case 'Partner Preference':
+          return {'key': 'partnerPreference'};
       }
     }
 
     if (section == 'Status & Intent') {
       switch (label) {
-        case 'Looking For': return {'key': 'lookingFor'};
-        case 'Marital Status': return {'key': 'maritalStatus'};
-        case 'Has Children': return {'key': 'hasChildren'};
-        case 'Children Details': return {'key': 'childrenDetails'};
-        case 'Willing to Relocate': return {'key': 'willingToRelocate'};
+        case 'Looking For':
+          return {'key': 'lookingFor'};
+        case 'Marital Status':
+          return {'key': 'maritalStatus'};
+        case 'Has Children':
+          return {'key': 'hasChildren'};
+        case 'Children Details':
+          return {'key': 'childrenDetails'};
+        case 'Willing to Relocate':
+          return {'key': 'willingToRelocate'};
       }
     }
 
     if (section == 'Location') {
       switch (label) {
-        case 'City': return {'key': 'city'};
-        case 'State': return {'key': 'state'};
-        case 'Country': return {'key': 'country'};
-        case 'Distance Preference': return {'key': 'distanceKm'};
+        case 'City':
+          return {'key': 'city'};
+        case 'State':
+          return {'key': 'state'};
+        case 'Country':
+          return {'key': 'country'};
+        case 'Distance Preference':
+          return {'key': 'distanceKm'};
       }
     }
 
     if (section == 'Education & Profession') {
       switch (label) {
-        case 'Education Level': return {'key': 'educationLevel'};
-        case 'Highest Qualification': return {'key': 'highestQualification'};
-        case 'University': return {'key': 'university'};
-        case 'Profession': return {'key': 'profession'};
-        case 'Industry': return {'key': 'industry'};
+        case 'Education Level':
+          return {'key': 'educationLevel'};
+        case 'Highest Qualification':
+          return {'key': 'highestQualification'};
+        case 'University':
+          return {'key': 'university'};
+        case 'Profession':
+          return {'key': 'profession'};
+        case 'Industry':
+          return {'key': 'industry'};
       }
     }
 
     if (section == 'Socioeconomic') {
       switch (label) {
-        case 'Income Range': return {'key': 'incomeRange'};
-        case 'Net Worth Range': return {'key': 'netWorthRange'};
-        case 'Lifestyle Tags': return {'key': 'lifestyleTags'};
+        case 'Income Range':
+          return {'key': 'incomeRange'};
+        case 'Net Worth Range':
+          return {'key': 'netWorthRange'};
+        case 'Lifestyle Tags':
+          return {'key': 'lifestyleTags'};
       }
     }
 
     if (section == 'Lifestyle') {
       switch (label) {
-        case 'Drinking': return {'key': 'drinking'};
-        case 'Smoking': return {'key': 'smoking'};
-        case 'Workout': return {'key': 'workout'};
-        case 'Pets': return {'key': 'pets'};
+        case 'Drinking':
+          return {'key': 'drinking'};
+        case 'Smoking':
+          return {'key': 'smoking'};
+        case 'Workout':
+          return {'key': 'workout'};
+        case 'Pets':
+          return {'key': 'pets'};
       }
     }
 
     if (section == 'Cultural & Language') {
       switch (label) {
-        case 'Religion': return {'key': 'religion'};
-        case 'Spiritual Level': return {'key': 'spiritualLevel'};
-        case 'Ethnicity': return {'key': 'ethnicity'};
-        case 'Primary Language': return {'key': 'primaryLanguage'};
-        case 'Other Languages': return {'key': 'otherLanguages'};
-        case 'Family Values Importance': return {'key': 'familyValuesImportance'};
+        case 'Religion':
+          return {'key': 'religion'};
+        case 'Spiritual Level':
+          return {'key': 'spiritualLevel'};
+        case 'Ethnicity':
+          return {'key': 'ethnicity'};
+        case 'Primary Language':
+          return {'key': 'primaryLanguage'};
+        case 'Other Languages':
+          return {'key': 'otherLanguages'};
+        case 'Family Values Importance':
+          return {'key': 'familyValuesImportance'};
       }
     }
 
     if (section == 'Values & Identity') {
       switch (label) {
-        case 'Communication Style': return {'key': 'communicationStyle'};
-        case 'Love Language': return {'key': 'loveLanguage'};
-        case 'Zodiac': return {'key': 'zodiac'};
+        case 'Communication Style':
+          return {'key': 'communicationStyle'};
+        case 'Love Language':
+          return {'key': 'loveLanguage'};
+        case 'Zodiac':
+          return {'key': 'zodiac'};
       }
     }
 
     if (section == 'Personality') {
       switch (label) {
-        case 'Personality Traits': return {'key': 'personalityTraits'};
+        case 'Personality Traits':
+          return {'key': 'personalityTraits'};
       }
     }
 
     if (section == 'Partner Preferences') {
       switch (label) {
-        case 'Min Age Preference': return {'key': 'minAgePreference'};
-        case 'Max Age Preference': return {'key': 'maxAgePreference'};
-        case 'Preferred Location': return {'key': 'preferredLocation'};
-        case 'Preferred Education': return {'key': 'preferredEducation'};
-        case 'Preferred Profession': return {'key': 'preferredProfession'};
-        case 'Preferred Religion': return {'key': 'preferredReligion'};
-        case 'Preferred Lifestyle': return {'key': 'preferredLifestyle'};
+        case 'Min Age Preference':
+          return {'key': 'minAgePreference'};
+        case 'Max Age Preference':
+          return {'key': 'maxAgePreference'};
+        case 'Preferred Location':
+          return {'key': 'preferredLocation'};
+        case 'Preferred Education':
+          return {'key': 'preferredEducation'};
+        case 'Preferred Profession':
+          return {'key': 'preferredProfession'};
+        case 'Preferred Religion':
+          return {'key': 'preferredReligion'};
+        case 'Preferred Lifestyle':
+          return {'key': 'preferredLifestyle'};
       }
     }
 
     if (section == 'Interests') {
       switch (label) {
-        case 'Your Interests': return {'key': 'interests'};
+        case 'Your Interests':
+          return {'key': 'interests'};
       }
     }
 
     if (section == 'Visibility') {
       switch (label) {
-        case 'Profile Visibility': return {'key': 'profileVisibility'};
+        case 'Profile Visibility':
+          return {'key': 'profileVisibility'};
       }
     }
 
     if (section == 'Photos') {
       switch (label) {
-        case 'Profile Picture': return {'key': 'profilePicture'};
+        case 'Profile Picture':
+          return {'key': 'profilePicture'};
       }
     }
 
     return {'key': null};
   }
 
-
-  Map<String, Map<String, String>> _buildProfileData(Map<String, dynamic> profile) {
+  Map<String, Map<String, String>> _buildProfileData(
+    Map<String, dynamic> profile,
+  ) {
     String value(String key, {String fallback = '+ Add Details'}) {
       final raw = profile[key];
       if (raw == null) return fallback;
@@ -916,12 +1116,7 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         "Lifestyle Tags": listValue('lifestyleTags'),
       },
       // ── Step 5: Lifestyle ─────────────────────────────────────────────────────
-      "Lifestyle": {
-        "Drinking": value('drinking'),
-        "Smoking": value('smoking'),
-        "Workout": value('workout'),
-        "Pets": listValue('pets'),
-      },
+      "Lifestyle": {"Drinking": value('drinking'), "Smoking": value('smoking')},
       // ── Step 4: Cultural & Language ───────────────────────────────────────────
       "Cultural & Language": {
         "Religion": value('religion'),
@@ -929,18 +1124,11 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         "Ethnicity": value('ethnicity'),
         "Primary Language": value('primaryLanguage'),
         "Other Languages": listValue('otherLanguages'),
-        "Family Values Importance": '${value('familyValuesImportance', fallback: '3')} / 5',
-      },
-      // ── Step 5: Values & Identity ─────────────────────────────────────────────
-      "Values & Identity": {
-        "Communication Style": value('communicationStyle'),
-        "Love Language": value('loveLanguage'),
-        "Zodiac": value('zodiac'),
+        "Family Values Importance":
+            '${value('familyValuesImportance', fallback: '3')} / 5',
       },
       // ── Step 5: Personality ───────────────────────────────────────────────────
-      "Personality": {
-        "Personality Traits": listValue('personalityTraits'),
-      },
+      "Personality": {"Personality Traits": listValue('personalityTraits')},
       // ── Step 6: Partner Preferences ──────────────────────────────────────────
       "Partner Preferences": {
         "Min Age Preference": value('minAgePreference', fallback: '18'),
@@ -952,16 +1140,8 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         "Preferred Lifestyle": listValue('preferredLifestyle'),
       },
       // ── Interests ─────────────────────────────────────────────────────────────
-      "Interests": {
-        "Your Interests": listValue('interests'),
-      },
-      // ── Step 8: Visibility ────────────────────────────────────────────────────
-      "Visibility": {
-        "Profile Visibility": value('profileVisibility', fallback: 'Curated Matches Only'),
-      },
-      "Bio": {
-        "About You": value('bio', fallback: 'No bio yet'),
-      },
+      "Interests": {"Your Interests": listValue('interests')},
+      "Bio": {"About You": value('bio', fallback: 'No bio yet')},
     };
   }
 
@@ -984,7 +1164,8 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
 
     final now = DateTime.now();
     var age = now.year - dob.year;
-    if (now.month < dob.month || (now.month == dob.month && now.day < dob.day)) {
+    if (now.month < dob.month ||
+        (now.month == dob.month && now.day < dob.day)) {
       age--;
     }
     return '$age';
@@ -1009,8 +1190,22 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text("Profile Completeness", style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
-                Text(progressLabel, style: TextStyle(color: AppColors.goldMedium.withOpacity(0.9), fontSize: 14, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Profile Completeness",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  progressLabel,
+                  style: TextStyle(
+                    color: AppColors.goldMedium.withOpacity(0.9),
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -1019,7 +1214,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
               child: LinearProgressIndicator(
                 value: progressValue,
                 backgroundColor: Colors.white.withOpacity(0.05),
-                valueColor: const AlwaysStoppedAnimation<Color>(AppColors.goldMedium),
+                valueColor: const AlwaysStoppedAnimation<Color>(
+                  AppColors.goldMedium,
+                ),
                 minHeight: 6,
               ),
             ),
@@ -1039,10 +1236,14 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _QuickActionPill(
-            icon: _isUploadingPhoto ? Icons.hourglass_top : Icons.camera_alt_outlined,
+            icon: _isUploadingPhoto
+                ? Icons.hourglass_top
+                : Icons.camera_alt_outlined,
             label: _isUploadingPhoto ? "Uploading..." : "Add Photo",
             isHighlight: true,
-            onTap: _isUploadingPhoto ? null : () => _uploadProfilePhoto(profile),
+            onTap: _isUploadingPhoto
+                ? null
+                : () => _uploadProfilePhoto(profile),
           ),
           _QuickActionPill(
             icon: Icons.contact_phone_outlined,
@@ -1059,7 +1260,9 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                   height: 44,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: AppColors.goldMedium.withOpacity(0.6)),
+                    border: Border.all(
+                      color: AppColors.goldMedium.withOpacity(0.6),
+                    ),
                   ),
                   child: ClipOval(
                     child: Image.network(photoUrl, fit: BoxFit.cover),
@@ -1072,8 +1275,15 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
                     onTap: () => _deleteProfilePhoto(profile),
                     child: Container(
                       padding: const EdgeInsets.all(2),
-                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                      child: const Icon(Icons.close, color: Colors.white, size: 10),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 10,
+                      ),
                     ),
                   ),
                 ),
@@ -1083,7 +1293,6 @@ class _EditProfilePageState extends State<EditProfilePage> with SingleTickerProv
       ),
     );
   }
-
 }
 
 // ─── Photo Manager Section ───────────────────────────────────────────────────
@@ -1094,6 +1303,7 @@ class _PhotoManagerSection extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onAdd;
   final void Function(int index) onDelete;
+  final void Function(int index) onSetMain;
 
   const _PhotoManagerSection({
     required this.profile,
@@ -1102,6 +1312,7 @@ class _PhotoManagerSection extends StatelessWidget {
     required this.onTap,
     required this.onAdd,
     required this.onDelete,
+    required this.onSetMain,
   });
 
   List<String> get _photos {
@@ -1110,12 +1321,13 @@ class _PhotoManagerSection extends StatelessWidget {
       return raw.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
     }
     // Fall back to single profilePicture
-    final single = (profile['profilePicture'] ??
-            profile['photoUrl'] ??
-            profile['profileImageUrl'] ??
-            '')
-        .toString()
-        .trim();
+    final single =
+        (profile['profilePicture'] ??
+                profile['photoUrl'] ??
+                profile['profileImageUrl'] ??
+                '')
+            .toString()
+            .trim();
     return single.isNotEmpty ? [single] : [];
   }
 
@@ -1131,7 +1343,12 @@ class _PhotoManagerSection extends StatelessWidget {
             : Colors.white.withOpacity(0.02),
         borderRadius: BorderRadius.circular(20),
         boxShadow: isOpen
-            ? [BoxShadow(color: AppColors.goldMedium.withOpacity(0.05), blurRadius: 20)]
+            ? [
+                BoxShadow(
+                  color: AppColors.goldMedium.withOpacity(0.05),
+                  blurRadius: 20,
+                ),
+              ]
             : [],
       ),
       child: Column(
@@ -1144,9 +1361,11 @@ class _PhotoManagerSection extends StatelessWidget {
               padding: const EdgeInsets.all(20),
               child: Row(
                 children: [
-                  Icon(Icons.photo_library_outlined,
-                      color: isOpen ? AppColors.goldMedium : Colors.white54,
-                      size: 22),
+                  Icon(
+                    Icons.photo_library_outlined,
+                    color: isOpen ? AppColors.goldMedium : Colors.white54,
+                    size: 22,
+                  ),
                   const SizedBox(width: 16),
                   Expanded(
                     child: Text(
@@ -1160,7 +1379,10 @@ class _PhotoManagerSection extends StatelessWidget {
                   ),
                   // Badge showing photo count
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.goldMedium.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(12),
@@ -1168,17 +1390,20 @@ class _PhotoManagerSection extends StatelessWidget {
                     child: Text(
                       '${photos.length}',
                       style: const TextStyle(
-                          color: AppColors.goldMedium,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold),
+                        color: AppColors.goldMedium,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   AnimatedRotation(
                     turns: isOpen ? 0.5 : 0.0,
                     duration: const Duration(milliseconds: 300),
-                    child: Icon(Icons.keyboard_arrow_down,
-                        color: Colors.white.withOpacity(0.5)),
+                    child: Icon(
+                      Icons.keyboard_arrow_down,
+                      color: Colors.white.withOpacity(0.5),
+                    ),
                   ),
                 ],
               ),
@@ -1202,8 +1427,9 @@ class _PhotoManagerSection extends StatelessWidget {
                               child: Text(
                                 'No photos yet. Tap + to add your first photo.',
                                 style: TextStyle(
-                                    color: Colors.white.withOpacity(0.4),
-                                    fontSize: 13),
+                                  color: Colors.white.withOpacity(0.4),
+                                  fontSize: 13,
+                                ),
                               ),
                             ),
                           ),
@@ -1212,11 +1438,11 @@ class _PhotoManagerSection extends StatelessWidget {
                           physics: const NeverScrollableScrollPhysics(),
                           gridDelegate:
                               const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                            childAspectRatio: 0.75,
-                          ),
+                                crossAxisCount: 3,
+                                crossAxisSpacing: 8,
+                                mainAxisSpacing: 8,
+                                childAspectRatio: 0.75,
+                              ),
                           itemCount: photos.length + 1, // +1 for Add tile
                           itemBuilder: (ctx, i) {
                             // Last tile = "Add Photo" button
@@ -1225,11 +1451,16 @@ class _PhotoManagerSection extends StatelessWidget {
                                 onTap: isUploadingPhoto ? null : onAdd,
                                 child: Container(
                                   decoration: BoxDecoration(
-                                    color: AppColors.goldMedium.withOpacity(0.08),
+                                    color: AppColors.goldMedium.withOpacity(
+                                      0.08,
+                                    ),
                                     borderRadius: BorderRadius.circular(12),
                                     border: Border.all(
-                                        color: AppColors.goldMedium.withOpacity(0.35),
-                                        width: 1.5),
+                                      color: AppColors.goldMedium.withOpacity(
+                                        0.35,
+                                      ),
+                                      width: 1.5,
+                                    ),
                                   ),
                                   child: isUploadingPhoto
                                       ? const Center(
@@ -1237,104 +1468,167 @@ class _PhotoManagerSection extends StatelessWidget {
                                             width: 24,
                                             height: 24,
                                             child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                color: AppColors.goldMedium),
+                                              strokeWidth: 2,
+                                              color: AppColors.goldMedium,
+                                            ),
                                           ),
                                         )
                                       : const Column(
                                           mainAxisAlignment:
                                               MainAxisAlignment.center,
                                           children: [
-                                            Icon(Icons.add_photo_alternate_outlined,
-                                                color: AppColors.goldMedium,
-                                                size: 28),
+                                            Icon(
+                                              Icons
+                                                  .add_photo_alternate_outlined,
+                                              color: AppColors.goldMedium,
+                                              size: 28,
+                                            ),
                                             SizedBox(height: 6),
-                                            Text('Add Photo',
-                                                style: TextStyle(
-                                                    color: AppColors.goldMedium,
-                                                    fontSize: 11,
-                                                    fontWeight:
-                                                        FontWeight.w600)),
+                                            Text(
+                                              'Add Photo',
+                                              style: TextStyle(
+                                                color: AppColors.goldMedium,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
                                           ],
                                         ),
                                 ),
                               );
                             }
 
-                            // Photo tile with delete button
-                            return Stack(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Image.network(
-                                    photos[i],
-                                    width: double.infinity,
-                                    height: double.infinity,
-                                    fit: BoxFit.cover,
-                                    loadingBuilder: (_, child, progress) =>
-                                        progress == null
-                                            ? child
-                                            : Container(
-                                                color: const Color(0xFF1A1A1A),
-                                                child: const Center(
-                                                  child: CircularProgressIndicator(
+                            // Photo tile — tap to set as main, X to delete
+                            return GestureDetector(
+                              onTap: i == 0 ? null : () => onSetMain(i),
+                              child: Stack(
+                                children: [
+                                  // Photo
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.network(
+                                      photos[i],
+                                      width: double.infinity,
+                                      height: double.infinity,
+                                      fit: BoxFit.cover,
+                                      loadingBuilder: (_, child, progress) =>
+                                          progress == null
+                                          ? child
+                                          : Container(
+                                              color: const Color(0xFF1A1A1A),
+                                              child: const Center(
+                                                child:
+                                                    CircularProgressIndicator(
                                                       strokeWidth: 1.5,
-                                                      color: AppColors.goldMedium),
-                                                ),
+                                                      color:
+                                                          AppColors.goldMedium,
+                                                    ),
                                               ),
-                                    errorBuilder: (_, __, ___) => Container(
-                                      color: const Color(0xFF1A1A1A),
-                                      child: const Icon(Icons.broken_image,
-                                          color: Colors.white24),
+                                            ),
+                                      errorBuilder: (_, __, ___) => Container(
+                                        color: const Color(0xFF1A1A1A),
+                                        child: const Icon(
+                                          Icons.broken_image,
+                                          color: Colors.white24,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
-                                // "First" badge on main photo
-                                if (i == 0)
-                                  Positioned(
-                                    left: 6,
-                                    bottom: 6,
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.goldMedium,
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: const Text('Main',
+                                  // "Main" badge on first photo
+                                  if (i == 0)
+                                    Positioned(
+                                      left: 6,
+                                      bottom: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.goldMedium,
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          'Main',
                                           style: TextStyle(
-                                              color: Colors.black,
-                                              fontSize: 9,
-                                              fontWeight: FontWeight.bold)),
-                                    ),
-                                  ),
-                                // Delete button
-                                Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: GestureDetector(
-                                    onTap: () => onDelete(i),
-                                    child: Container(
-                                      padding: const EdgeInsets.all(4),
-                                      decoration: const BoxDecoration(
-                                        color: Colors.black87,
-                                        shape: BoxShape.circle,
+                                            color: Colors.black,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
                                       ),
-                                      child: const Icon(Icons.close,
-                                          color: Colors.white, size: 12),
+                                    ),
+                                  // "Tap to set main" hint on non-main photos
+                                  if (i != 0)
+                                    Positioned(
+                                      left: 6,
+                                      bottom: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 5,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.black54,
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                        child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.star_outline,
+                                              color: AppColors.goldMedium,
+                                              size: 9,
+                                            ),
+                                            SizedBox(width: 2),
+                                            Text(
+                                              'Set main',
+                                              style: TextStyle(
+                                                color: AppColors.goldMedium,
+                                                fontSize: 8,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  // Delete button
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: GestureDetector(
+                                      onTap: () => onDelete(i),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: const BoxDecoration(
+                                          color: Colors.black87,
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: const Icon(
+                                          Icons.close,
+                                          color: Colors.white,
+                                          size: 12,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             );
                           },
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'Tap a photo to remove it. The first photo is your main profile picture.',
+                          'Tap any photo to set it as your profile picture. Tap ✕ to remove.',
                           style: TextStyle(
-                              color: Colors.white.withOpacity(0.3),
-                              fontSize: 11),
+                            color: Colors.white.withOpacity(0.3),
+                            fontSize: 11,
+                          ),
                         ),
                       ],
                     ),
@@ -1370,9 +1664,18 @@ class _PremiumAccordion extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       decoration: BoxDecoration(
-        color: isOpen ? Colors.white.withOpacity(0.05) : Colors.white.withOpacity(0.02),
+        color: isOpen
+            ? Colors.white.withOpacity(0.05)
+            : Colors.white.withOpacity(0.02),
         borderRadius: BorderRadius.circular(20),
-        boxShadow: isOpen ? [BoxShadow(color: AppColors.goldMedium.withOpacity(0.05), blurRadius: 20)] : [],
+        boxShadow: isOpen
+            ? [
+                BoxShadow(
+                  color: AppColors.goldMedium.withOpacity(0.05),
+                  blurRadius: 20,
+                ),
+              ]
+            : [],
       ),
       child: Column(
         children: [
@@ -1384,7 +1687,11 @@ class _PremiumAccordion extends StatelessWidget {
               padding: const EdgeInsets.all(20),
               child: Row(
                 children: [
-                  Icon(icon, color: isOpen ? AppColors.goldMedium : Colors.white54, size: 22),
+                  Icon(
+                    icon,
+                    color: isOpen ? AppColors.goldMedium : Colors.white54,
+                    size: 22,
+                  ),
                   const SizedBox(width: 16),
                   Expanded(
                     child: Text(
@@ -1399,13 +1706,16 @@ class _PremiumAccordion extends StatelessWidget {
                   AnimatedRotation(
                     turns: isOpen ? 0.5 : 0.0, // Rotates the arrow
                     duration: const Duration(milliseconds: 300),
-                    child: Icon(Icons.keyboard_arrow_down, color: Colors.white.withOpacity(0.5)),
+                    child: Icon(
+                      Icons.keyboard_arrow_down,
+                      color: Colors.white.withOpacity(0.5),
+                    ),
                   ),
                 ],
               ),
             ),
           ),
-          
+
           // Expandable Content
           AnimatedSize(
             duration: const Duration(milliseconds: 400),
@@ -1436,11 +1746,16 @@ class _ProfileDataRow extends StatelessWidget {
   final String value;
   final VoidCallback onTap;
 
-  const _ProfileDataRow({required this.label, required this.value, required this.onTap});
+  const _ProfileDataRow({
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    bool isMissing = value.contains("+ Add Details") || value.contains("Not Specified");
+    bool isMissing =
+        value.contains("+ Add Details") || value.contains("Not Specified");
 
     return Material(
       color: Colors.transparent,
@@ -1455,7 +1770,10 @@ class _ProfileDataRow extends StatelessWidget {
                 flex: 2,
                 child: Text(
                   label,
-                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 13),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.4),
+                    fontSize: 13,
+                  ),
                 ),
               ),
               const Text(" :  ", style: TextStyle(color: Colors.white24)),
@@ -1468,13 +1786,21 @@ class _ProfileDataRow extends StatelessWidget {
                       child: Text(
                         value,
                         style: TextStyle(
-                          color: isMissing ? AppColors.goldMedium : Colors.white,
+                          color: isMissing
+                              ? AppColors.goldMedium
+                              : Colors.white,
                           fontSize: 13,
-                          fontWeight: isMissing ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: isMissing
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                     ),
-                    Icon(Icons.edit, color: Colors.white.withOpacity(0.15), size: 14),
+                    Icon(
+                      Icons.edit,
+                      color: Colors.white.withOpacity(0.15),
+                      size: 14,
+                    ),
                   ],
                 ),
               ),
@@ -1493,7 +1819,12 @@ class _QuickActionPill extends StatelessWidget {
   final bool isHighlight;
   final VoidCallback? onTap;
 
-  const _QuickActionPill({required this.icon, required this.label, this.isHighlight = false, this.onTap});
+  const _QuickActionPill({
+    required this.icon,
+    required this.label,
+    this.isHighlight = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1504,13 +1835,23 @@ class _QuickActionPill extends StatelessWidget {
         margin: const EdgeInsets.only(right: 12),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: isHighlight ? AppColors.goldMedium.withOpacity(0.1) : Colors.white.withOpacity(0.05),
+          color: isHighlight
+              ? AppColors.goldMedium.withOpacity(0.1)
+              : Colors.white.withOpacity(0.05),
           borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: isHighlight ? AppColors.goldMedium : Colors.white.withOpacity(0.1)),
+          border: Border.all(
+            color: isHighlight
+                ? AppColors.goldMedium
+                : Colors.white.withOpacity(0.1),
+          ),
         ),
         child: Row(
           children: [
-            Icon(icon, color: isHighlight ? AppColors.goldMedium : Colors.white70, size: 16),
+            Icon(
+              icon,
+              color: isHighlight ? AppColors.goldMedium : Colors.white70,
+              size: 16,
+            ),
             const SizedBox(width: 8),
             Text(
               label,

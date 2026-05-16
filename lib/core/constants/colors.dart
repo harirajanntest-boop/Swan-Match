@@ -19,6 +19,25 @@ class AppColors {
   static const Color deepMaroon = goldDark;
   static const Color charcoal = Colors.white; // Text turns white against black
 
+  // ─── Text Colors ─────────────────────────────────────────────────────────
+  static const Color textPrimary = Color(0xFFFFFFFF);
+  static const Color textSecondary = Color(0xB3FFFFFF); // 70%
+  static const Color textMuted = Color(0x8AFFFFFF); // 54%
+  static const Color textFaint = Color(0x61FFFFFF); // 38%
+  static const Color textSubtle = Color(0x4DFFFFFF); // 30%
+
+  // ─── Status / Banner Colors ─────────────────────────────────────────────
+  static const Color warningRed = Color(0xFFB84A4A);
+  static const Color warningRedDark = Color(0xFF8A2E2E);
+  static const Color warningBg = Color(0x1FB84A4A);
+  static const Color warningBorder = Color(0x66B84A4A);
+
+  static const Color infoBg = Color(0x14FFFFFF);
+  static const Color infoBorder = Color(0x33FFFFFF);
+
+  static const Color successGreen = Color(0xFF1F8A4C);
+  static const Color errorRed = Color(0xFFB03535);
+
   // ─── Gradients ─────────────────────────────────────────────────────────────
   
   // A subtle, dark glowing background gradient

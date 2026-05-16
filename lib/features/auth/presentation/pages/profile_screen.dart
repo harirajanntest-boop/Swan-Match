@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:async';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../services/trial_service.dart';
 import 'settings_page.dart';
 import 'custom_login_page.dart';
 import 'edit_profile_page.dart';
@@ -24,6 +26,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
   // Stream reuses the active Firestore listener so opens after the first are instant.
 
   bool _isLoggingOut = false;
+  Timer? _trialCheckTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Periodically check if trial has expired so we update UI immediately
+    _trialCheckTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) async {
+        final uid = AuthService.instance.currentUser?.uid;
+        if (uid != null && mounted) {
+          await TrialService.checkTrialStatus(uid);
+          // The stream will automatically update when Firestore changes
+        }
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _trialCheckTimer?.cancel();
+    super.dispose();
+  }
 
   // ─── Helpers (take profile as parameter so they work with stream data) ───
   String _name(Map<String, dynamic> p) =>
@@ -60,11 +85,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return (photos is List) ? photos.length : 0;
   }
 
+  /// A user is considered verified ONLY when an admin has approved their ID.
+  /// Checking `isVerified` (admin field), `profileVerified`, or `verificationStatus == 'approved'`.
   bool _isVerified(Map<String, dynamic> p) =>
       p['isVerified'] == true ||
+      p['profileVerified'] == true ||
       (p['verificationStatus']?.toString().toLowerCase() == 'approved');
 
   bool _isPremium(Map<String, dynamic> p) => UserService.instance.isPremium(p);
+
+  int? _trialDaysLeft(Map<String, dynamic> p) {
+    final t = p['freeTrialEndsAt'];
+    if (t == null) return null;
+    try {
+      final end = (t as dynamic).toDate() as DateTime;
+      final now = DateTime.now();
+      final diff = end.difference(now);
+      if (diff.inSeconds < 0) return 0;
+      return diff.inDays + 1;
+    } catch (_) {
+      return null;
+    }
+  }
 
   // ─── Logout ───
   Future<void> _logout() async {
@@ -243,44 +285,80 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         size: 20,
                       ),
                     ],
-                    if (_isPremium(profile)) ...[
-                      const SizedBox(width: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFFE2B859), Color(0xFFC79836)],
-                          ),
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.goldMedium.withOpacity(0.3),
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: const Row(
+                    // Show exactly one account badge: trial takes precedence over premium
+                    Builder(builder: (_) {
+                      final days = _trialDaysLeft(profile) ?? 0;
+                      if (days > 0) {
+                        return Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.star, color: Colors.black87, size: 10),
-                            SizedBox(width: 2),
-                            Text(
-                              'PREMIUM',
-                              style: TextStyle(
-                                color: Colors.black87,
-                                fontSize: 10,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 0.5,
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: Colors.grey[600],
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                'TRIAL ${days}d',
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.4,
+                                ),
                               ),
                             ),
                           ],
-                        ),
-                      ),
-                    ],
+                        );
+                      }
+
+                      if (_isPremium(profile)) {
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Color(0xFFE2B859), Color(0xFFC79836)],
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.goldMedium.withOpacity(0.3),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.star, color: Colors.black87, size: 10),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'PREMIUM',
+                                    style: TextStyle(
+                                      color: Colors.black87,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+
+                      return const SizedBox.shrink();
+                    }),
                   ],
                 ),
 
@@ -304,26 +382,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     padding: EdgeInsets.zero,
                     children: [
                       _MenuItem(
-                        icon: Icons.photo_library_outlined,
-                        label: 'Photos',
-                        trailing: _photoCount(profile) > 0
-                            ? '${_photoCount(profile)}'
-                            : null,
-                        trailingColor: Colors.white54,
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const EditProfilePage(),
-                          ),
-                        ),
-                      ),
-                      _MenuItem(
                         icon: Icons.person_outline_rounded,
                         label: 'About Me',
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (_) => const AboutMeScreen(),
+                          ),
+                        ),
+                      ),
+                      _MenuItem(
+                        icon: Icons.edit_outlined,
+                        label: 'Edit Profile',
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const EditProfilePage(),
                           ),
                         ),
                       ),
@@ -351,11 +425,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         icon: Icons.verified_outlined,
                         label: 'Verification',
                         trailing: _isVerified(profile)
-                            ? 'Verified'
-                            : 'Get Verified',
+                            ? 'Verified ✓'
+                            : (profile['verificationStatus']?.toString().toLowerCase() == 'pending'
+                                ? 'Pending Review'
+                                : 'Get Verified'),
                         trailingColor: _isVerified(profile)
                             ? AppColors.goldMedium
-                            : Colors.white38,
+                            : (profile['verificationStatus']?.toString().toLowerCase() == 'pending'
+                                ? Colors.orangeAccent
+                                : Colors.white38),
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
@@ -378,8 +456,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         label: 'Subscription',
                         trailing: _isPremium(profile) ? 'Premium' : 'Upgrade',
                         trailingColor: AppColors.goldMedium,
-                        // Always open SubscriptionPage — it will check premium
-                        // status after the user selects a plan and taps Continue.
                         onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(

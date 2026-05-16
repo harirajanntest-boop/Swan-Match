@@ -83,5 +83,12 @@ service cloud.firestore {
         allow delete: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
       }
     }
+
+    // Reports: any signed-in user can submit a report (create only).
+    // Reading and deleting reports is restricted to backend/admin operations.
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && request.resource.data.reportedBy == request.auth.uid;
+      allow read, update, delete: if false;
+    }
   }
 }

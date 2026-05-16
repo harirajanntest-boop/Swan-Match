@@ -25,8 +25,6 @@ class _OnboardingStep7VerificationState
     extends State<OnboardingStep7Verification> {
   File? _selfieFile;
   File? _idFile;
-  bool _incomeVerify = false;
-  bool _professionalVerify = false;
   final ImagePicker _picker = ImagePicker();
 
   @override
@@ -38,8 +36,6 @@ class _OnboardingStep7VerificationState
     if (widget.data.idVerificationUrl.isNotEmpty) {
       _idFile = File(widget.data.idVerificationUrl);
     }
-    _incomeVerify = widget.data.incomeVerified;
-    _professionalVerify = widget.data.professionalVerified;
   }
 
   Future<void> _takeSelfie() async {
@@ -68,21 +64,31 @@ class _OnboardingStep7VerificationState
       _showError('Please take a selfie for face verification');
       return;
     }
+    if (_idFile == null) {
+      _showError('Please upload a government ID for verification');
+      return;
+    }
 
+    // Store local file paths; actual upload happens in onboarding completion.
     widget.data.verificationPhotoUrl = _selfieFile!.path;
-    widget.data.isVerified = true; // Will be pending until admin approval
-    widget.data.idVerificationUrl = _idFile?.path ?? '';
-    widget.data.idVerified = _idFile != null;
-    widget.data.incomeVerified = _incomeVerify;
-    widget.data.professionalVerified = _professionalVerify;
+    widget.data.idVerificationUrl = _idFile!.path;
+
+    // Never auto-verify — admin must approve from the dashboard.
+    widget.data.isVerified = false;
+    widget.data.idVerified = false; // stays false until admin approves
     widget.data.profileApprovalStatus = 'pending';
 
-    widget.onNext();
-  }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text(
+          '✅ Documents submitted! Your ID will be verified within 24 hours. '
+          'Once approved by our team, you will receive the verified badge.',
+        ),
+        backgroundColor: Colors.green[700],
+        duration: const Duration(seconds: 5),
+      ),
+    );
 
-  void _handleSkip() {
-    widget.data.isVerified = false;
-    widget.data.profileApprovalStatus = 'skipped';
     widget.onNext();
   }
 
@@ -299,9 +305,9 @@ class _OnboardingStep7VerificationState
                   ),
                   const SizedBox(height: 24),
 
-                  // ID Verification (optional)
+                  // ID Verification
                   const SectionTitle(
-                    title: 'ID Verification (Optional)',
+                    title: 'ID Verification',
                     subtitle:
                         'Upload a government-issued ID for enhanced trust',
                   ),
@@ -370,28 +376,37 @@ class _OnboardingStep7VerificationState
                           : Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(
+                                const Icon(
                                   Icons.badge_outlined,
                                   color: Colors.white24,
                                   size: 32,
                                 ),
                                 const SizedBox(width: 12),
-                                const Column(
+                                Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
+                                    const Text(
                                       'Upload Government ID',
                                       style: TextStyle(
                                         color: Colors.white54,
                                         fontSize: 14,
                                       ),
                                     ),
-                                    SizedBox(height: 2),
-                                    Text(
+                                    const SizedBox(height: 2),
+                                    const Text(
                                       'Passport, Driver\'s License, etc.',
                                       style: TextStyle(
                                         color: Colors.white24,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Required',
+                                      style: TextStyle(
+                                        color: OnboardingColors.primaryGold
+                                            .withOpacity(0.6),
                                         fontSize: 11,
                                       ),
                                     ),
@@ -401,105 +416,12 @@ class _OnboardingStep7VerificationState
                             ),
                     ),
                   ),
-                  const SizedBox(height: 24),
-
-                  // Additional Verification Options
-                  const SectionTitle(title: 'Additional Verification'),
-                  const SizedBox(height: 12),
-                  _buildVerificationOption(
-                    'Income Verification',
-                    'Verify your income bracket for trust',
-                    Icons.account_balance,
-                    _incomeVerify,
-                    (v) => setState(() => _incomeVerify = v),
-                  ),
-                  const SizedBox(height: 10),
-                  _buildVerificationOption(
-                    'Professional Verification',
-                    'Verify employment via LinkedIn or credentials',
-                    Icons.business_center,
-                    _professionalVerify,
-                    (v) => setState(() => _professionalVerify = v),
-                  ),
-                  const SizedBox(height: 32),
                 ],
               ),
             ),
           ),
           NextButton(label: 'Next', onPressed: _handleNext),
-          const SizedBox(height: 12),
-          Center(
-            child: TextButton(
-              onPressed: _handleSkip,
-              child: const Text(
-                'Skip for now',
-                style: TextStyle(
-                  color: Colors.white38,
-                  fontSize: 14,
-                  decoration: TextDecoration.underline,
-                  decorationColor: Colors.white38,
-                ),
-              ),
-            ),
-          ),
           const SizedBox(height: 16),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVerificationOption(
-    String title,
-    String subtitle,
-    IconData icon,
-    bool value,
-    ValueChanged<bool> onChanged,
-  ) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: OnboardingColors.fieldBackground,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: value
-              ? OnboardingColors.primaryGold.withOpacity(0.3)
-              : Colors.white12,
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            icon,
-            color: value ? OnboardingColors.primaryGold : Colors.white38,
-            size: 22,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                Text(
-                  subtitle,
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeColor: OnboardingColors.primaryGold,
-            inactiveThumbColor: Colors.white24,
-            inactiveTrackColor: Colors.white12,
-          ),
         ],
       ),
     );

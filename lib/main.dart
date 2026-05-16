@@ -12,6 +12,7 @@ import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart
 import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:swam_match_app/services/user_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -145,7 +146,7 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
               ? const {}
               : {
                   '/profile': (context) => const ProfileScreen(),
-                  '/payment-success': (context) => const PaymentStatusPage(isSuccess: true),
+                  '/payment-success': (context) => const _PaymentSuccessGate(),
                   '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
                 },
         );
@@ -213,6 +214,60 @@ class FirebaseSetupRequiredPage extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Guards the payment success page so it only shows once per subscription.
+/// If the user has already seen it, they are redirected to MainDashboard.
+class _PaymentSuccessGate extends StatefulWidget {
+  const _PaymentSuccessGate();
+
+  @override
+  State<_PaymentSuccessGate> createState() => _PaymentSuccessGateState();
+}
+
+class _PaymentSuccessGateState extends State<_PaymentSuccessGate> {
+  static const _prefKey = 'payment_success_shown';
+
+  @override
+  void initState() {
+    super.initState();
+    _checkAndRoute();
+  }
+
+  Future<void> _checkAndRoute() async {
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyShown = prefs.getBool(_prefKey) ?? false;
+
+    if (!mounted) return;
+
+    if (alreadyShown) {
+      // Already shown once — go straight to dashboard
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const MainDashboard()),
+        (r) => false,
+      );
+    } else {
+      // Mark as shown, then show the success page
+      await prefs.setBool(_prefKey, true);
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const PaymentStatusPage(isSuccess: true),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Show a blank loading screen while checking prefs
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
     );
   }
 }

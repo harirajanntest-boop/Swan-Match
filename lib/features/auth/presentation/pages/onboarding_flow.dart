@@ -15,6 +15,7 @@ import 'onboarding_step6_preferences.dart';
 import 'onboarding_step7_verification.dart';
 import 'onboarding_step8_exclusivity.dart';
 import 'main_dashboard.dart';
+import 'free_trial_page.dart';
 
 class OnboardingFlow extends StatefulWidget {
   const OnboardingFlow({super.key});
@@ -240,13 +241,21 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data['onboardingStep'] = _totalSteps;
       data['subscriptionPlan'] = 'free';
 
+      // ── Verification is ALWAYS pending on registration.
+      //    Only the Admin Dashboard can promote this to 'approved'.
+      data['isVerified'] = false;
+      data['idVerified'] = false;
+      data['profileVerified'] = false;
+      data['profileApprovalStatus'] = 'pending';
+      data['verificationStatus'] = 'pending'; // admin sets to 'approved'
+
       // Save to Firestore
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
 
-      // Navigate to dashboard
+      // Navigate to the free trial offer page instead of directly to dashboard
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const MainDashboard()),
+          MaterialPageRoute(builder: (_) => const FreeTrialPage()),
           (route) => false,
         );
       }

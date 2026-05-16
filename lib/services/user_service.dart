@@ -358,11 +358,64 @@ class UserService {
     await _userRef(currentUser.uid).update({
       'blockedUids': FieldValue.arrayUnion([uid]),
     });
+    // Remove from connections (interests) immediately
+    await _removeFromConnections(currentUser.uid, uid);
+  }
+
+  /// Reports a user: creates a document in the /reports collection (writable
+  /// by any signed-in user) and permanently blocks them in the reporter's doc.
+  Future<void> reportUser(String targetUid) async {
+    final currentUser = _auth.currentUser;
+    if (currentUser == null) return;
+
+    // Write report to a dedicated /reports collection (no permission issue)
+    await _firestore.collection('reports').add({
+      'reportedUid': targetUid,
+      'reportedBy': currentUser.uid,
+      'reportedAt': FieldValue.serverTimestamp(),
+      'isReported': true,
+    });
+
+    // Only update the current user's OWN document — this is always allowed
+    await _userRef(currentUser.uid).update({
+      'blockedUids': FieldValue.arrayUnion([targetUid]),
+      'reportedUids': FieldValue.arrayUnion([targetUid]),
+    });
+
+    // Remove from connections (interests) immediately
+    await _removeFromConnections(currentUser.uid, targetUid);
+  }
+
+  /// Marks all interest documents between [myUid] and [otherUid] as 'blocked'
+  /// so they disappear from the Connections / Matches tab immediately.
+  Future<void> _removeFromConnections(String myUid, String otherUid) async {
+    // Interests I sent to them
+    final sent = await _firestore
+        .collection('interests')
+        .where('fromUserId', isEqualTo: myUid)
+        .where('toUserId', isEqualTo: otherUid)
+        .get();
+    // Interests they sent to me
+    final received = await _firestore
+        .collection('interests')
+        .where('fromUserId', isEqualTo: otherUid)
+        .where('toUserId', isEqualTo: myUid)
+        .get();
+
+    final batch = _firestore.batch();
+    for (final doc in [...sent.docs, ...received.docs]) {
+      batch.update(doc.reference, {
+        'status': 'blocked',
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
   }
 
   Future<void> unblockUser(String uid) async {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;
+    // Only remove from blockedUids — reportedUids stays forever
     await _userRef(currentUser.uid).update({
       'blockedUids': FieldValue.arrayRemove([uid]),
     });

@@ -1,6 +1,5 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Holds price details fetched from the Stripe API via the
@@ -125,7 +124,6 @@ class StripeService {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
-        debugPrint('[verifyAndActivatePremium] User is null, cannot verify.');
         return false;
       }
       await user.getIdToken(true);
@@ -173,8 +171,6 @@ class StripeService {
         <String, dynamic>{'priceIds': priceIds},
       );
 
-      debugPrint('[fetchPrices] raw response: ${result.data}');
-
       final dynamic pricesRaw = result.data['prices'];
       final Map<String, dynamic> rawPrices = _toStringMap(pricesRaw);
 
@@ -184,13 +180,10 @@ class StripeService {
         parsed[key] = StripePriceInfo.fromMap(map);
       });
 
-      debugPrint('[fetchPrices] parsed ${parsed.length} prices: ${parsed.keys.toList()}');
       return parsed;
     } on FirebaseFunctionsException catch (e) {
-      debugPrint('[fetchPrices] Firebase error (${e.code}): ${e.message}');
       throw 'Price fetch error (${e.code}): ${e.message}';
-    } catch (e, st) {
-      debugPrint('[fetchPrices] Error: $e\n$st');
+    } catch (e) {
       rethrow;
     }
   }

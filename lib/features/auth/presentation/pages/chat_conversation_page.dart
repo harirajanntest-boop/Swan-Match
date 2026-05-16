@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 import '../../../../core/constants/colors.dart';
 import '../../../../models/message_model.dart';
@@ -117,6 +118,94 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     );
   }
 
+  void _showBlockReportSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF111111),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            // ── Block option ──
+            ListTile(
+              leading: const Icon(Icons.block, color: Colors.orangeAccent),
+              title: const Text('Block User', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              subtitle: const Text('Remove from chat & connections', style: TextStyle(color: Colors.white54, fontSize: 12)),
+              onTap: () async {
+                Navigator.pop(context);
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: AppColors.onyx,
+                    title: const Text('Block User?', style: TextStyle(color: Colors.white)),
+                    content: const Text('This user will be removed from your connections and chat. You can unblock them later.', style: TextStyle(color: Colors.white70)),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
+                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Block', style: TextStyle(color: Colors.orangeAccent))),
+                    ],
+                  ),
+                );
+                if (confirm == true && mounted) {
+                  await UserService.instance.blockUser(widget.otherUserId);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('User blocked.')),
+                    );
+                  }
+                }
+              },
+            ),
+            const Divider(color: Colors.white12),
+            // ── Report option ──
+            ListTile(
+              leading: const FaIcon(FontAwesomeIcons.flag, color: Colors.redAccent, size: 20),
+              title: const Text('Report User', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600)),
+              subtitle: const Text('Report abuse — user is permanently blocked', style: TextStyle(color: Colors.white54, fontSize: 12)),
+              onTap: () async {
+                Navigator.pop(context);
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: AppColors.onyx,
+                    title: const Text('Report User?', style: TextStyle(color: Colors.white)),
+                    content: const Text('This user will be reported and permanently blocked. They will never appear in your connections or chat again, even if you try to unblock.', style: TextStyle(color: Colors.white70)),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
+                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Report', style: TextStyle(color: Colors.redAccent))),
+                    ],
+                  ),
+                );
+                if (confirm == true && mounted) {
+                  await UserService.instance.reportUser(widget.otherUserId);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('User reported and permanently blocked.')),
+                    );
+                  }
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showUpgradeSheet() {
     showModalBottomSheet(
       context: context,
@@ -201,46 +290,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
         iconTheme: const IconThemeData(color: AppColors.goldMedium),
         actions: [
           IconButton(
-        icon: const Icon(Icons.flag_rounded, size: 20),
-            tooltip: 'Report User',
-            onPressed: () {
-              showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  backgroundColor: AppColors.onyx,
-                  title: const Text('Report User', style: TextStyle(color: Colors.white)),
-                  content: const Text('Are you sure you want to report and block this user? They will no longer be able to message you.', style: TextStyle(color: Colors.white70)),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
-                    ),
-                    TextButton(
-                      onPressed: () async {
-                        // Show loading indicator in dialog (optional, but good for UX)
-                        showDialog(
-                          context: ctx,
-                          barrierDismissible: false,
-                          builder: (_) => const Center(child: CircularProgressIndicator(color: AppColors.goldMedium)),
-                        );
-                        
-                        await UserService.instance.blockUser(widget.otherUserId);
-                        
-                        if (context.mounted) {
-                          Navigator.pop(ctx); // pop loading
-                          Navigator.pop(ctx); // pop confirmation
-                          Navigator.pop(context); // pop chat page
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('User reported and blocked.')),
-                          );
-                        }
-                      },
-                      child: const Text('Report & Block', style: TextStyle(color: Colors.redAccent)),
-                    ),
-                  ],
-                ),
-              );
-            },
+            icon: const FaIcon(FontAwesomeIcons.commentSlash, size: 18),
+            tooltip: 'Block / Report',
+            onPressed: () => _showBlockReportSheet(),
           ),
         ],
         // ── Tapping the header navigates to the partner's profile ──
@@ -274,7 +326,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        if (_otherUserProfile?['profileVerified'] == true || _otherUserProfile?['idVerified'] == true) ...[
+                        // Verified badge — admin must have approved the ID
+                        if (_otherUserProfile?['isVerified'] == true || _otherUserProfile?['profileVerified'] == true || _otherUserProfile?['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
                           const SizedBox(width: 4),
                           const Icon(Icons.verified, color: AppColors.goldMedium, size: 14),
                         ],

@@ -70,6 +70,85 @@ class TrialService {
     return UserService.instance.isPremium(profile);
   }
 
+  // ─── Trial Status (Free Trial) ──────────────────────────────────────────
+
+  static Future<TrialStatus> checkTrialStatus(String uid) async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
+
+    if (!doc.exists) return TrialStatus.free;
+
+    final data = doc.data() ?? <String, dynamic>{};
+    final plan = (data['subscriptionPlan'] ?? 'free').toString().toLowerCase();
+    final status =
+        (data['subscriptionStatus'] ?? 'free').toString().toLowerCase();
+
+    // Paid Premium subscriber
+    if ((plan == 'premium' || plan == 'gold') && status == 'active') {
+      return TrialStatus.premium;
+    }
+
+    // Check if trial is active
+    if (plan == 'trial' && status == 'trialing') {
+      final endsAt = data['freeTrialEndsAt'] as Timestamp?;
+      if (endsAt == null) return TrialStatus.free;
+
+      final now = DateTime.now();
+      final trialEnd = endsAt.toDate();
+      final daysLeft = trialEnd.difference(now).inDays;
+
+      if (trialEnd.isAfter(now)) {
+        if (daysLeft <= 1) {
+          return TrialStatus.trialExpiringSoon;
+        }
+        return TrialStatus.trial;
+      } else {
+        // Trial expired — update Firestore
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .update({
+          'subscriptionStatus': 'expired',
+          'subscriptionPlan': 'free',
+        });
+        return TrialStatus.trialExpired;
+      }
+    }
+
+    return TrialStatus.free;
+  }
+
+  static Future<int?> getTrialDaysLeft(String uid) async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
+
+    if (!doc.exists) return null;
+    final data = doc.data() ?? <String, dynamic>{};
+    final plan = (data['subscriptionPlan'] ?? 'free').toString().toLowerCase();
+    final status =
+        (data['subscriptionStatus'] ?? 'free').toString().toLowerCase();
+
+    if (plan != 'trial' || status != 'trialing') return null;
+
+    final endsAt = data['freeTrialEndsAt'] as Timestamp?;
+    if (endsAt == null) return null;
+
+    final now = DateTime.now();
+    final trialEnd = endsAt.toDate();
+    if (!trialEnd.isAfter(now)) return 0;
+    return trialEnd.difference(now).inDays;
+  }
+
+  static bool isPremiumAccess(TrialStatus status) {
+    return status == TrialStatus.trial ||
+        status == TrialStatus.trialExpiringSoon ||
+        status == TrialStatus.premium;
+  }
+
   /// Check whether the user can view one more profile.
   /// Returns a [TrialCheck] with `allowed` and remaining count.
   Future<TrialCheck> canViewProfile() async {
@@ -160,6 +239,14 @@ class TrialService {
       interestsSent: (usage['interestsSent'] as int?) ?? 0,
     );
   }
+}
+
+enum TrialStatus {
+  free,
+  trial,
+  trialExpiringSoon,
+  trialExpired,
+  premium,
 }
 
 // ─── Value objects ────────────────────────────────────────────────────────────

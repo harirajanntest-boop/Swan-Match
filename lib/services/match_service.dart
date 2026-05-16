@@ -196,7 +196,10 @@ class MatchService {
 
   bool _isVisibleToEveryone(Map<String, dynamic> profile) {
     if (profile['isDeleted'] == true) return false;
-    return profile['showProfileToEveryone'] != false;
+    if (profile['showProfileToEveryone'] == false) return false;
+    final visibility = (profile['profileVisibility'] ?? 'Public').toString();
+    if (visibility == 'Private') return false;
+    return true;
   }
 
   double _calculateMatchScore(

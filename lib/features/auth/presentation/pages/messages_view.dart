@@ -31,6 +31,7 @@ class _MessagesViewState extends State<MessagesView>
   late final Stream<List<Map<String, dynamic>>> _myChatsStream;
   late final Stream<List<dynamic>> _mySentInterestsStream;
   late final Stream<List<dynamic>> _interestsForMeStream;
+  late final Stream<Map<String, dynamic>?> _myProfileStream;
 
   @override
   void initState() {
@@ -50,6 +51,7 @@ class _MessagesViewState extends State<MessagesView>
     _myChatsStream = ChatService.instance.watchMyChats();
     _mySentInterestsStream = InterestService.instance.watchMySentInterests();
     _interestsForMeStream = InterestService.instance.watchInterestsForMe();
+    _myProfileStream = UserService.instance.watchCurrentUserProfile();
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
@@ -113,16 +115,25 @@ class _MessagesViewState extends State<MessagesView>
                           }
                           final sent = sentSnapshot.data ?? const <dynamic>[];
                           final received = receivedSnapshot.data ?? const <dynamic>[];
-                          final mergedChats = _mergeAcceptedInterests(chats, sent, received);
 
-                          return _buildMessageContent(
-                            context,
-                            title: "Incoming messages",
-                            emptyMessage: "No messages received yet.",
-                            emptySub: "When someone messages you, it will appear here.",
-                            icon: Icons.chat_bubble_outline,
-                            chats: mergedChats,
-                            incomingOnly: true,
+                          return StreamBuilder<Map<String, dynamic>?>(
+                            stream: _myProfileStream,
+                            builder: (context, profileSnap) {
+                              final myProfile = profileSnap.data ?? const <String, dynamic>{};
+                              final blockedUids = Set<String>.from(myProfile['blockedUids'] ?? []);
+                              final reportedUids = Set<String>.from(myProfile['reportedUids'] ?? []);
+                              final hiddenUids = {...blockedUids, ...reportedUids};
+                              final mergedChats = _mergeAcceptedInterests(chats, sent, received, hiddenUids);
+
+                              return _buildMessageContent(
+                                context,
+                                title: "Messages",
+                                emptyMessage: "No conversations yet.",
+                                emptySub: "Accept an interest or get connected to start chatting.",
+                                icon: Icons.chat_bubble_outline,
+                                chats: mergedChats,
+                              );
+                            },
                           );
                         },
                       );
@@ -141,6 +152,7 @@ class _MessagesViewState extends State<MessagesView>
     List<Map<String, dynamic>> chats,
     List<dynamic> sent,
     List<dynamic> received,
+    Set<String> hiddenUids,
   ) {
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     if (currentUid.isEmpty) return chats;
@@ -162,14 +174,18 @@ class _MessagesViewState extends State<MessagesView>
       final status = (item.status ?? '').toString().toLowerCase();
       if (status == 'accepted' || status == 'replied') {
         final toUserId = (item.toUserId ?? '').toString();
-        if (toUserId.isNotEmpty) acceptedUserIds.add(toUserId);
+        if (toUserId.isNotEmpty && !hiddenUids.contains(toUserId)) {
+          acceptedUserIds.add(toUserId);
+        }
       }
     }
     for (final item in received) {
       final status = (item.status ?? '').toString().toLowerCase();
       if (status == 'accepted' || status == 'replied') {
         final fromUserId = (item.fromUserId ?? '').toString();
-        if (fromUserId.isNotEmpty) acceptedUserIds.add(fromUserId);
+        if (fromUserId.isNotEmpty && !hiddenUids.contains(fromUserId)) {
+          acceptedUserIds.add(fromUserId);
+        }
       }
     }
 
@@ -193,21 +209,26 @@ class _MessagesViewState extends State<MessagesView>
     required String emptySub,
     required IconData icon,
     required List<Map<String, dynamic>> chats,
-    required bool incomingOnly,
   }) {
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     final filteredChats = chats.where((chat) {
-      final lastSender = (chat['lastMessageSenderId'] ?? '').toString();
-      if (currentUid.isEmpty || lastSender.isEmpty) return true;
-      final directionMatches = incomingOnly ? lastSender != currentUid : lastSender == currentUid;
-      if (!directionMatches) return false;
-
       if (_searchQuery.isEmpty) return true;
       final lastMessage = (chat['lastMessage'] ?? '').toString().toLowerCase();
       final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
           .map((item) => item.toString().toLowerCase())
           .join(' ');
       return lastMessage.contains(_searchQuery) || participants.contains(_searchQuery);
+    }).toList();
+
+    // De-duplicate by other user ID (in case chat doc + synthetic entry both exist)
+    final seen = <String>{};
+    final deduped = filteredChats.where((chat) {
+      final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
+          .map((e) => e.toString())
+          .toList();
+      final otherId = participants.firstWhere((uid) => uid != currentUid, orElse: () => '');
+      if (otherId.isEmpty) return true;
+      return seen.add(otherId);
     }).toList();
 
     return Column(
@@ -245,7 +266,7 @@ class _MessagesViewState extends State<MessagesView>
         const SizedBox(height: 10),
 
         Expanded(
-          child: filteredChats.isEmpty
+          child: deduped.isEmpty
               ? Center(
                   child: _MessageEmptyState(
                     icon: icon,
@@ -255,9 +276,9 @@ class _MessagesViewState extends State<MessagesView>
                 )
               : ListView.builder(
                   padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                  itemCount: filteredChats.length,
+                  itemCount: deduped.length,
                   itemBuilder: (context, index) {
-                    final chat = filteredChats[index];
+                    final chat = deduped[index];
                     final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
                         .map((item) => item.toString())
                         .toList();
@@ -403,7 +424,8 @@ class _ChatThreadTile extends StatelessWidget {
                           Flexible(
                             child: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis),
                           ),
-                          if (profile['profileVerified'] == true || profile['idVerified'] == true) ...[
+                          // Verified badge — admin must have approved the ID
+                          if (profile['isVerified'] == true || profile['profileVerified'] == true || profile['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
                             const SizedBox(width: 4),
                             const Icon(Icons.verified, color: AppColors.goldMedium, size: 14),
                           ],

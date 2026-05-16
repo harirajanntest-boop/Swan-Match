@@ -139,6 +139,7 @@ class _MatchTabBarState extends State<_MatchTabBar> {
   @override
   Widget build(BuildContext context) {
     return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
         _TabPill(
           label: 'New',
@@ -641,9 +642,10 @@ class _MatchRowState extends State<_MatchRow> {
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          // Verified badge
-                          if (profile['profileVerified'] == true ||
-                              profile['idVerified'] == true) ...[
+                          // Verified badge — admin must have approved the ID
+                          if (profile['isVerified'] == true ||
+                              profile['profileVerified'] == true ||
+                              profile['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
                             const SizedBox(width: 5),
                             const Icon(
                               Icons.verified,

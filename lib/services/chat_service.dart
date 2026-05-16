@@ -53,6 +53,9 @@ class ChatService {
 		final check = await TrialService.instance.canSendMessage();
 		if (!check.allowed) return false; // caller should show upgrade dialog
 
+		// ── Block gate: don't deliver if receiver has blocked this sender ──
+		if (await _isBlockedByReceiver(sender.uid, receiverId)) return false;
+
 		final chatId = chatIdFor(sender.uid, receiverId);
 		final id = _messagesRef(chatId).doc().id;
 		final now = DateTime.now();
@@ -96,17 +99,46 @@ class ChatService {
 				return Stream.value(<Map<String, dynamic>>[]);
 			}
 
-			return _firestore
-					.collection('chats')
-					.where('participants', arrayContains: uid)
-					.orderBy('lastMessageAt', descending: true)
+			// Watch current user's blocked/reported lists reactively
+			final profileStream = _firestore
+					.collection('users')
+					.doc(uid)
 					.snapshots()
-					.map(
-						(snapshot) => snapshot.docs
+					.map((snap) => snap.data() ?? <String, dynamic>{});
+
+			return switchMap(profileStream, (myProfile) {
+				final blockedUids = Set<String>.from(myProfile['blockedUids'] ?? []);
+				final reportedUids = Set<String>.from(myProfile['reportedUids'] ?? []);
+				final hiddenUids = {...blockedUids, ...reportedUids};
+
+				return _firestore
+						.collection('chats')
+						.where('participants', arrayContains: uid)
+						.orderBy('lastMessageAt', descending: true)
+						.snapshots()
+						.map((snapshot) => snapshot.docs
 								.map((doc) => <String, dynamic>{...doc.data(), 'id': doc.id})
-								.toList(),
-					);
+								.where((chat) {
+									final participants =
+											(chat['participants'] as List<dynamic>? ?? [])
+													.map((e) => e.toString())
+													.toList();
+									final otherUid = participants.firstWhere(
+										(p) => p != uid,
+										orElse: () => '',
+									);
+									return otherUid.isNotEmpty && !hiddenUids.contains(otherUid);
+								})
+								.toList());
+			});
 		});
+	}
+
+	/// Blocks message delivery if the receiver has blocked the sender.
+	Future<bool> _isBlockedByReceiver(String senderId, String receiverId) async {
+		final receiverDoc = await _firestore.collection('users').doc(receiverId).get();
+		final blockedUids = List<String>.from(receiverDoc.data()?['blockedUids'] ?? []);
+		return blockedUids.contains(senderId);
 	}
 
 	Stream<List<MessageModel>> watchMessages(String otherUserId) {

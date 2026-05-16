@@ -1,13 +1,12 @@
 import 'dart:ui';
 
-import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
-import 'main_dashboard.dart';
 import '../../../../services/stripe_service.dart';
 import '../../../../services/user_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class SubscriptionPage extends StatefulWidget {
   const SubscriptionPage({super.key});
@@ -211,6 +210,69 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                         ),
                       ),
                     ],
+                  ),
+                ),
+                // Cancel subscription link
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () async {
+                        try {
+                          final profile = await UserService.instance.getCurrentUserProfile();
+                          final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
+                          final status = (sub?['status'] ?? '').toString().toLowerCase();
+                          final isActive = status == 'active' || status == 'trialing';
+
+                          if (!isActive) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('No active subscription to cancel.')),
+                              );
+                            }
+                            return;
+                          }
+
+                          if (!mounted) return;
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              backgroundColor: const Color(0xFF111111),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              title: const Text('Cancel Subscription', style: TextStyle(color: Colors.white)),
+                              content: const Text(
+                                'You will be taken to the Stripe Customer Portal where you can cancel or manage your subscription. Continue?',
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+                                TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Open Portal')),
+                              ],
+                            ),
+                          );
+
+                          if (confirm != true) return;
+
+                          try {
+                            await StripeService.instance.createPortalSession();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Error opening portal: $e'), backgroundColor: Colors.red),
+                              );
+                            }
+                          }
+                        } catch (_) {}
+                      },
+                      child: const Text(
+                        'Cancel subscription',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
                   ),
                 ),
 
@@ -516,15 +578,11 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   Map<String, StripePriceInfo> _prices = {};
   bool _pricesLoading = true;
 
-  // ─── Deep-link listener (app_links) ────────────────────────────────────────
-  // Imported at top of file. Handles swanmatch://payment-success and
-  // swanmatch://payment-cancel returned by Stripe checkout.
-  late final _appLinks = AppLinks();
-
   @override
   void initState() {
     super.initState();
-    _appLinks.uriLinkStream.listen(_onDeepLink);
+    // NOTE: Deep-link handling for payment-success/cancel is done in
+    // main.dart via the _PaymentSuccessGate route. No listener needed here.
     _checkCurrentPremiumStatus();
     _loadPrices();
   }
@@ -543,8 +601,6 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
           _pricesLoading = false;
         });
     } catch (e) {
-      // Log the real error so we can diagnose Stripe/Firebase issues.
-      debugPrint('[_loadPrices] ERROR: $e');
       if (mounted) setState(() => _pricesLoading = false);
     }
   }
@@ -608,55 +664,6 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
     }
   }
 
-  void _onDeepLink(Uri uri) {
-    if (!mounted) return;
-    if (_isLoading) setState(() => _isLoading = false);
-
-    if (uri.host == 'payment-success') {
-      // Verify with Stripe & update Firestore before showing success UI
-      _verifyAfterPayment();
-    } else if (uri.host == 'payment-cancel') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Payment cancelled. You can upgrade any time.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-    }
-  }
-
-  /// Called after payment-success deep link — syncs Stripe → Firestore.
-  Future<void> _verifyAfterPayment() async {
-    setState(() => _isLoading = true);
-    try {
-      final isPremium = await StripeService.instance.verifyAndActivatePremium();
-      // Also write the top-level fields so every isPremium() check passes
-      // immediately (Cloud Function may only write the nested 'subscription' map).
-      await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-        'subscriptionStatus': 'active',
-        'subscriptionPlan': 'premium',
-      });
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _isPremium = true; // reflect in UI
-      });
-    } catch (_) {
-      if (!mounted) return;
-      // Even if verify failed, the payment likely succeeded. Optimistically
-      // write the status so the user can use premium features immediately.
-      try {
-        await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-          'subscriptionStatus': 'active',
-          'subscriptionPlan': 'premium',
-        });
-      } catch (_) {}
-      setState(() {
-        _isLoading = false;
-        _isPremium = true;
-      });
-    }
-  }
 
   /// Returns the correct Stripe price ID for the currently selected plan.
   String get _selectedPriceId {
@@ -749,6 +756,10 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
       }
 
       // Not premium — proceed with Stripe checkout.
+      // Clear flag so success page shows once for this new payment.
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('payment_success_shown');
+
       await StripeService.instance.startSubscription(priceId: _selectedPriceId);
       // Deep link fires when user returns from Stripe (handled by _onDeepLink).
       // If launchUrl returns without a deep link (browser closed on Android),
@@ -798,16 +809,10 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
 
   @override
   Widget build(BuildContext context) {
-    // ── Full-screen success page when premium is confirmed ─────────────────
-    if (_isPremium) {
-      return _SuccessScreen(
-        onHome: () => Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const MainDashboard()),
-          (r) => false,
-        ),
-      );
-    }
+    // NOTE: When the user is already premium, we no longer show the success
+    // screen here. Instead we show the normal subscription page — the
+    // _startPayment method already detects active subscriptions and shows
+    // the "Premium Active / Manage" dialog if they try to pay again.
 
     return Scaffold(
       body: Container(
@@ -879,36 +884,42 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                 ),
                 const SizedBox(height: 22),
 
-                // ── Feature list (single column, centered) ────────────────
-                ...[
-                  'Unlimited Connections',
-                  'Advanced Filters',
-                  'See Who Liked You',
-                  'Priority Visibility',
-                  'Read Receipts',
-                ].map(
-                  (f) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 6),
-                    child: Center(
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.check,
-                            color: AppColors.goldMedium,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            f,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w500,
+                // ── Feature list (centered block, left-aligned items) ─────
+                Center(
+                  child: SizedBox(
+                    width: 240,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        'Unlimited Send Interest',
+                        'See Who Liked You',
+                        'Advanced Filters',
+                        'Priority Profile Boost',
+                        'Ad-Free Experience',
+                        'Chat & Video Call Unlock',
+                      ].map((f) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 7),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.check,
+                              color: AppColors.goldMedium,
+                              size: 18,
                             ),
-                          ),
-                        ],
-                      ),
+                            const SizedBox(width: 14),
+                            Text(
+                              f,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w400,
+                                letterSpacing: 0.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )).toList(),
                     ),
                   ),
                 ),
@@ -984,6 +995,74 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                       color: AppColors.goldMedium,
                     ),
                   )
+                else if (_isPremium) ...[
+                  // User already has premium — show manage subscription button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 54,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: AppColors.goldMedium),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
+                      child: ElevatedButton(
+                        onPressed: _isLoading
+                            ? null
+                            : () async {
+                                setState(() => _isLoading = true);
+                                try {
+                                  await StripeService.instance.createPortalSession();
+                                } catch (e) {
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                                    );
+                                  }
+                                } finally {
+                                  if (mounted) setState(() => _isLoading = false);
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.transparent,
+                          shadowColor: Colors.transparent,
+                          foregroundColor: AppColors.goldMedium,
+                          disabledBackgroundColor: Colors.transparent,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          textStyle: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
+                            fontSize: 16,
+                          ),
+                        ),
+                        child: _isLoading
+                            ? const SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.goldMedium,
+                                ),
+                              )
+                            : const Text('Manage Subscription'),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  GestureDetector(
+                    onTap: _isLoading ? null : _restorePurchase,
+                    child: Text(
+                      'Restore Purchase',
+                      style: TextStyle(
+                        color: AppColors.goldMedium.withOpacity(0.7),
+                        decoration: TextDecoration.underline,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ]
                 else ...[
                   SizedBox(
                     width: double.infinity,
@@ -1036,30 +1115,6 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                     ),
                   ),
                 ],
-                const SizedBox(height: 10),
-                GestureDetector(
-                  onTap: () async {
-                    await UserService.instance.updateCurrentUserProfile(
-                      <String, dynamic>{'registrationCompleted': true},
-                    );
-                    if (!context.mounted) return;
-                    Navigator.pushAndRemoveUntil(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const MainDashboard(),
-                      ),
-                      (route) => false,
-                    );
-                  },
-                  child: Text(
-                    "I'll do it later",
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.4),
-                      decoration: TextDecoration.underline,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
                 const SizedBox(height: 16),
               ],
             ),

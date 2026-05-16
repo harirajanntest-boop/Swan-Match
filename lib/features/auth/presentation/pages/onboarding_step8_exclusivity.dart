@@ -20,19 +20,14 @@ class _OnboardingStep8ExclusivityState extends State<OnboardingStep8Exclusivity>
 
   final List<Map<String, dynamic>> _visibilityOptions = [
     {
-      'label': 'Curated Matches Only',
-      'subtitle': 'Only appear in curated, hand-picked match suggestions',
-      'icon': Icons.diamond,
-    },
-    {
-      'label': 'Private',
-      'subtitle': 'Only visible to people you explicitly connect with',
-      'icon': Icons.lock_outline,
-    },
-    {
       'label': 'Public',
       'subtitle': 'Visible to all verified members on the platform',
       'icon': Icons.public,
+    },
+    {
+      'label': 'Private',
+      'subtitle': 'Hidden from other users — only you control who connects with you',
+      'icon': Icons.lock_outline,
     },
   ];
 
@@ -40,7 +35,9 @@ class _OnboardingStep8ExclusivityState extends State<OnboardingStep8Exclusivity>
   void initState() {
     super.initState();
     _inviteCodeCtrl = TextEditingController(text: widget.data.inviteCode);
-    _visibility = widget.data.profileVisibility.isNotEmpty ? widget.data.profileVisibility : null;
+    // Default to Public if no prior selection, or if it was the removed 'Curated Matches Only'
+    final prev = widget.data.profileVisibility;
+    _visibility = (prev == 'Public' || prev == 'Private') ? prev : 'Public';
   }
 
   @override
@@ -77,7 +74,7 @@ class _OnboardingStep8ExclusivityState extends State<OnboardingStep8Exclusivity>
           const SizedBox(height: 8),
           const Text('Exclusivity', style: TextStyle(color: Colors.white, fontSize: 26, fontFamily: 'PlayfairDisplay', fontWeight: FontWeight.bold)),
           const SizedBox(height: 6),
-          const Text('Final settings for your profile', style: TextStyle(color: Colors.white54, fontSize: 15)),
+          const Text('Choose how others discover your profile', style: TextStyle(color: Colors.white54, fontSize: 15)),
           const SizedBox(height: 20),
           Expanded(
             child: SingleChildScrollView(
@@ -132,7 +129,10 @@ class _OnboardingStep8ExclusivityState extends State<OnboardingStep8Exclusivity>
                   const SizedBox(height: 28),
 
                   // Profile Visibility
-                  const SectionTitle(title: 'Profile Visibility', subtitle: 'How do you want to be discovered?'),
+                  const SectionTitle(
+                    title: 'Profile Visibility',
+                    subtitle: 'Public — visible to everyone. Private — hidden from discovery.',
+                  ),
                   const SizedBox(height: 14),
                   ..._visibilityOptions.map((opt) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
@@ -193,7 +193,7 @@ class _OnboardingStep8ExclusivityState extends State<OnboardingStep8Exclusivity>
           _summaryRow('Religion', d.religion),
           _summaryRow('Photos', '${d.photos.length} uploaded'),
           _summaryRow('Bio', d.bio.isNotEmpty ? '${d.bio.split(' ').take(10).join(' ')}...' : '–'),
-          _summaryRow('Verified', d.isVerified ? '✓ Selfie taken' : '✗ Not yet'),
+          _summaryRow('Verification', d.idVerified ? 'Pending Admin Approval' : '✗ Not yet'),
         ],
       ),
     );

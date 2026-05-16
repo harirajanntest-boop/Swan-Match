@@ -136,7 +136,7 @@ class OnboardingData {
     this.professionalVerified = false,
     this.profileApprovalStatus = 'pending',
     this.inviteCode = '',
-    this.profileVisibility = 'Curated Matches Only',
+    this.profileVisibility = 'Public',
     this.partnerPreference = '',
     this.state = '',
     this.distanceKm = 50,

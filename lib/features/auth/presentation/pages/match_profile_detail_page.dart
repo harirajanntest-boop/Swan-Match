@@ -99,8 +99,10 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
     return out;
   }
 
+  /// Verified only when admin has approved the ID.
   bool get _isVerified =>
       widget.profile['isVerified'] == true ||
+      widget.profile['profileVerified'] == true ||
       widget.profile['verificationStatus']?.toString().toLowerCase() ==
           'approved';
 
@@ -376,6 +378,39 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                           Navigator.pop(context);
                           showLinearMessage(context, 'Profile blocked');
                         }
+                      } else if (val == 'report') {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            backgroundColor: const Color(0xFF1A1A1A),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20)),
+                            title: const Text('Report Profile',
+                                style: TextStyle(color: Colors.white)),
+                            content: const Text(
+                                'Report this profile for abuse? They will be permanently blocked and will never appear in your feed or connections again.',
+                                style: TextStyle(color: Colors.white70)),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: Text('Cancel',
+                                    style: TextStyle(
+                                        color: Colors.white.withOpacity(0.5))),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Report',
+                                    style: TextStyle(color: Colors.redAccent)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm == true) {
+                          await UserService.instance.reportUser(uid);
+                          if (!context.mounted) return;
+                          Navigator.pop(context);
+                          showLinearMessage(context, 'Profile reported and permanently blocked');
+                        }
                       }
                     },
                     itemBuilder: (_) => [
@@ -392,9 +427,18 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                       const PopupMenuItem(
                         value: 'block',
                         child: Row(children: [
-                          Icon(Icons.block, color: Colors.redAccent, size: 18),
+                          Icon(Icons.block, color: Colors.orangeAccent, size: 18),
                           SizedBox(width: 10),
                           Text('Block Match',
+                              style: TextStyle(color: Colors.orangeAccent)),
+                        ]),
+                      ),
+                      const PopupMenuItem(
+                        value: 'report',
+                        child: Row(children: [
+                          Icon(Icons.flag_rounded, color: Colors.redAccent, size: 18),
+                          SizedBox(width: 10),
+                          Text('Report Profile',
                               style: TextStyle(color: Colors.redAccent)),
                         ]),
                       ),
@@ -432,7 +476,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                             const Icon(Icons.verified,
                                 color: Color(0xFF4A90E2), size: 22),
                           ],
-                          if (UserService.instance.isPremium(widget.profile)) ...[
+                          if ((widget.profile['uid'] == UserService.instance.currentUid) && UserService.instance.isPremium(widget.profile)) ...[
                             const SizedBox(width: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(

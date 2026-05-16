@@ -1,8 +1,12 @@
 import 'dart:ui';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
+import '../../../../services/trial_service.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
@@ -17,6 +21,7 @@ import '../../../../services/auth_service.dart';
 import 'settings_page.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'profile_screen.dart';
+import 'subscription_page.dart';
 
 
 class MainDashboard extends StatefulWidget {
@@ -37,6 +42,7 @@ class _MainDashboardState extends State<MainDashboard> {
   // Opening on the Home page (Index 0)
   late int _currentIndex;
   Map<String, dynamic>? _pendingProfileToOpen;
+  Timer? _trialCheckTimer;
 
   @override
   void initState() {
@@ -49,8 +55,26 @@ class _MainDashboardState extends State<MainDashboard> {
         UserService.instance.updateOnlineStatus(true);
         _checkAndShowLinkingPopup();
         _syncSubscriptionStatus();
+        _checkAndShowTrialExpiryBanner();
       }
     });
+
+    // Periodically check trial status every 10 seconds
+    _trialCheckTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) async {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null && mounted) {
+          await TrialService.checkTrialStatus(user.uid);
+        }
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _trialCheckTimer?.cancel();
+    super.dispose();
   }
 
   /// Silently syncs subscription status with Stripe on startup.
@@ -60,6 +84,51 @@ class _MainDashboardState extends State<MainDashboard> {
       await StripeService.instance.verifyAndActivatePremium();
     } catch (_) {
       // Non-critical — don't show errors to the user at startup.
+    }
+  }
+
+  /// Shows a one-time expiring-trial banner when the trial is on its final day.
+  Future<void> _checkAndShowTrialExpiryBanner() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final daysLeft = await TrialService.getTrialDaysLeft(user.uid);
+      if (daysLeft == null) return;
+
+      // Only show on final day or less
+      if (daysLeft <= 1) {
+        final prefs = await SharedPreferences.getInstance();
+        const key = 'trial_expiring_shown';
+        final alreadyShown = prefs.getBool(key) ?? false;
+        if (alreadyShown) return;
+
+        // Mark as shown so it never appears again
+        await prefs.setBool(key, true);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              "Your Premium trial ends soon — upgrade to keep access.",
+            ),
+            backgroundColor: AppColors.warningRedDark,
+            action: SnackBarAction(
+              label: 'Upgrade',
+              textColor: Colors.white,
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                );
+              },
+            ),
+            duration: const Duration(seconds: 8),
+          ),
+        );
+      }
+    } catch (e) {
+      // Non-critical — ignore errors silently
     }
   }
 
@@ -191,7 +260,7 @@ class _SwanBottomNav extends StatelessWidget {
     final items = [
       _NavItem(icon: Icons.search_rounded, activeIcon: Icons.search_rounded, label: 'Discover'),
       _NavItem(icon: Icons.favorite_border_rounded, activeIcon: Icons.favorite_rounded, label: 'Matches'),
-      _NavItem(icon: Icons.chat_bubble_outline_rounded, activeIcon: Icons.chat_bubble_rounded, label: 'Chat'),
+      _NavItem(icon: Icons.chat_bubble_outline_rounded, activeIcon: Icons.chat_bubble_rounded, label: 'Chat', useFaIcon: true),
       _NavItem(icon: Icons.person_outline_rounded, activeIcon: Icons.person_rounded, label: 'Profile'),
     ];
 
@@ -222,12 +291,19 @@ class _SwanBottomNav extends StatelessWidget {
                       children: [
                         AnimatedSwitcher(
                           duration: const Duration(milliseconds: 200),
-                          child: Icon(
-                            isSelected ? item.activeIcon : item.icon,
-                            key: ValueKey(isSelected),
-                            color: isSelected ? AppColors.goldMedium : Colors.white.withOpacity(0.35),
-                            size: 24,
-                          ),
+                          child: item.useFaIcon
+                              ? FaIcon(
+                                  isSelected ? FontAwesomeIcons.solidComment : FontAwesomeIcons.comment,
+                                  key: ValueKey(isSelected),
+                                  color: isSelected ? AppColors.goldMedium : Colors.white.withOpacity(0.35),
+                                  size: 20,
+                                )
+                              : Icon(
+                                  isSelected ? item.activeIcon : item.icon,
+                                  key: ValueKey(isSelected),
+                                  color: isSelected ? AppColors.goldMedium : Colors.white.withOpacity(0.35),
+                                  size: 24,
+                                ),
                         ),
                         const SizedBox(height: 4),
                         AnimatedDefaultTextStyle(
@@ -257,7 +333,13 @@ class _NavItem {
   final IconData icon;
   final IconData activeIcon;
   final String label;
-  const _NavItem({required this.icon, required this.activeIcon, required this.label});
+  final bool useFaIcon;
+  const _NavItem({
+    required this.icon,
+    required this.activeIcon,
+    required this.label,
+    this.useFaIcon = false,
+  });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1512,6 +1594,10 @@ class _UpgradePlansPageState extends State<_UpgradePlansPage> {
   Future<void> _onSubscribe() async {
     setState(() => _isLoading = true);
     try {
+      // Clear the flag so the success screen shows again for this new purchase
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('payment_success_shown');
+
       const successUrl = 'https://swanmatch.page.link/payment-success';
       const cancelUrl  = 'https://swanmatch.page.link/payment-cancel';
       await StripeService.instance.startSubscription(

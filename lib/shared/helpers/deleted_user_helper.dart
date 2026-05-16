@@ -22,11 +22,20 @@ class DeletedUserHelper {
   /// Returns null for deleted users so no photo is shown.
   static String? getAvatarUrl(Map<String, dynamic>? userData) {
     if (isDeleted(userData)) return null;
+    // Check dedicated photo fields first, then fall back to photos array
     final url = (userData?['profilePhotoUrl'] ??
             userData?['photoUrl'] ??
+            userData?['profilePicture'] ??
             '')
         .toString();
-    return url.isEmpty ? null : url;
+    if (url.isNotEmpty) return url;
+    // Fall back to first item in photos array
+    final photos = userData?['photos'];
+    if (photos is List && photos.isNotEmpty) {
+      final first = photos.first?.toString() ?? '';
+      if (first.isNotEmpty) return first;
+    }
+    return null;
   }
 
   /// Returns false for deleted users — prevents sending messages.

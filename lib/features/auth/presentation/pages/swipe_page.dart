@@ -1039,6 +1039,13 @@ class _ReelCardState extends State<_ReelCard>
     } catch (_) { return null; }
   }
 
+  bool _isVerifiedMatch() {
+    final p = widget.match;
+    return p['isVerified'] == true ||
+        p['profileVerified'] == true ||
+        (p['verificationStatus']?.toString().toLowerCase() == 'approved');
+  }
+
   List<String> _traits() {
     final tags = widget.match['lifestyleTags'] ??
         widget.match['personalityTraits'] ?? widget.match['interests'];
@@ -1068,7 +1075,9 @@ class _ReelCardState extends State<_ReelCard>
     final location = [city, country].where((s) => s.isNotEmpty).join(', ');
     final bio  = (widget.match['bio'] ?? widget.match['shortBio'] ?? '').toString().trim();
     final traits = _traits();
+    // Verified only when admin has explicitly approved the user's ID.
     final isVerified = widget.match['isVerified'] == true ||
+        widget.match['profileVerified'] == true ||
         widget.match['verificationStatus']?.toString().toLowerCase() == 'approved';
     final hasLiked = ['pending', 'sent'].contains(widget.interestStatus.toLowerCase());
 
@@ -1189,25 +1198,9 @@ class _ReelCardState extends State<_ReelCard>
                                 shadows: [Shadow(blurRadius: 8, color: Colors.black54)]),
                           ),
                         ),
-                        if (UserService.instance.isPremium(widget.match)) ...[
+                        if (_isVerifiedMatch()) ...[
                           const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                colors: [Color(0xFFD4A017), Color(0xFFC8960C)],
-                              ),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: const Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.star_rounded, color: Colors.black, size: 14),
-                                SizedBox(width: 2),
-                                Text('PREMIUM', style: TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
-                              ],
-                            ),
-                          ),
+                          const Icon(Icons.verified, color: Color(0xFF4A90E2), size: 20),
                         ],
                       ],
                     ),
@@ -1265,7 +1258,7 @@ class _ReelCardState extends State<_ReelCard>
                                 : Icons.favorite_border_rounded,
                             iconColor: Colors.white,
                             bgColor: AppColors.goldMedium,
-                            size: 68, iconSize: 32, glowing: true,
+                            size: 58, iconSize: 26, glowing: true,
                             onTap: () {
                               if (hasLiked) return;
                               _heartController.forward(from: 0);
