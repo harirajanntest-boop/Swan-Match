@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'custom_login_page.dart';
 import 'help_center_page.dart';
 import 'blocked_profiles_page.dart';
@@ -142,12 +143,17 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
       return;
     }
 
+    await _deleteAccount();
+  }
+
+  Future<void> _deleteAccount() async {
     setState(() => _isDeletingAccount = true);
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final user = FirebaseAuth.instance.currentUser;
+      final uid = user?.uid;
       if (uid == null) throw Exception('No authenticated user found.');
 
-      // ── Soft delete: mark user document as deleted and clear personal data ──
+      // Step 1: Soft delete in Firestore - clear personal data
       final now = DateTime.now();
       final scheduledHardDelete = now.add(const Duration(days: 30));
       await FirebaseFirestore.instance.collection('users').doc(uid).update({
@@ -173,8 +179,15 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
         'fcmTokens': <String>[],
       });
 
-      // Sign the user out — Cloud Function handles hard deletion after 30 days
+      // Step 2: Delete Firebase Auth account IMMEDIATELY
+      // This prevents re-login via Google or any provider
+      await user?.delete();
+
+      // Step 3: Sign out (cleanup)
       await AuthService.instance.signOut();
+      try {
+        await GoogleSignIn().signOut();
+      } catch (_) {}
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -186,18 +199,112 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
       );
     } on FirebaseAuthException catch (error) {
       if (!mounted) return;
-      final message = error.code == 'requires-recent-login'
-          ? 'Please log in again, then retry deleting your account.'
-          : AuthService.instance.readableAuthError(error);
+      if (error.code == 'requires-recent-login') {
+        _handleReauthentication();
+        return;
+      }
+      
+      // If the cloud function already deleted the auth account, treat it as a success!
+      if (error.code == 'user-not-found') {
+        await AuthService.instance.signOut();
+        try {
+          await GoogleSignIn().signOut();
+        } catch (_) {}
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Your account has been successfully deleted.')),
+        );
+        Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const CustomLoginPage()),
+          (route) => false,
+        );
+        return;
+      }
+
+      final message = AuthService.instance.readableAuthError(error);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to delete account right now. Please try again.')),
+        SnackBar(content: Text('Error deleting account: $e')),
       );
     } finally {
       if (mounted) {
         setState(() => _isDeletingAccount = false);
+      }
+    }
+  }
+
+  Future<void> _handleReauthentication() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final providers = user.providerData.map((p) => p.providerId).toList();
+    final isPasswordUser = providers.contains('password');
+
+    try {
+      if (isPasswordUser) {
+        // Prompt for password
+        final passwordController = TextEditingController();
+        final confirmed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogCtx) => AlertDialog(
+            backgroundColor: AppColors.onyx,
+            title: const Text('Re-authenticate', style: TextStyle(color: Colors.white)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Please enter your password to confirm account deletion.', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                const SizedBox(height: 16),
+                _PasswordTextField(controller: passwordController, hint: 'Password'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(dialogCtx, true),
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.goldMedium),
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        );
+
+        if (confirmed != true || passwordController.text.isEmpty) return;
+
+        final credential = EmailAuthProvider.credential(
+          email: user.email!,
+          password: passwordController.text,
+        );
+        await user.reauthenticateWithCredential(credential);
+      } else {
+        // Re-authenticate with Google
+        final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+        if (googleUser == null) return;
+
+        final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+        final credential = GoogleAuthProvider.credential(
+          accessToken: googleAuth.accessToken,
+          idToken: googleAuth.idToken,
+        );
+        await user.reauthenticateWithCredential(credential);
+      }
+
+      // Now retry delete
+      await _deleteAccount();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(AuthService.instance.readableAuthError(e)),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -393,11 +500,13 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.obsidian,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
+    return Stack(
+      children: [
+        Scaffold(
+          backgroundColor: AppColors.obsidian,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new, color: AppColors.goldMedium, size: 20),
           onPressed: () => Navigator.pop(context),
@@ -602,6 +711,26 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
                         ),
                       ],
                     ),
+
+                    const SizedBox(height: 32),
+                    // Footer Links
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                            onPressed: () {},
+                            child: const Text('Terms of Service', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
+                          ),
+                          TextButton(
+                            onPressed: () {},
+                            child: const Text('Privacy Policy', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
                   ],
                 ),
               );
@@ -609,6 +738,66 @@ class _SettingsPageState extends State<SettingsPage> with SingleTickerProviderSt
           ),
         ),
       ),
+    ),
+    if (_isDeletingAccount)
+        Positioned.fill(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              color: AppColors.obsidian.withValues(alpha: 0.7),
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+                  margin: const EdgeInsets.symmetric(horizontal: 40),
+                  decoration: BoxDecoration(
+                    color: AppColors.onyx,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: AppColors.goldMedium.withValues(alpha: 0.3), width: 1),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.goldMedium.withValues(alpha: 0.1),
+                        blurRadius: 24,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(
+                        color: AppColors.goldMedium,
+                        strokeWidth: 3,
+                      ),
+                      const SizedBox(height: 24),
+                      const Text(
+                        "Deleting Account",
+                        style: TextStyle(
+                          color: AppColors.goldLight,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        "We are securely erasing your data.\nPlease do not close the app.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: 14,
+                          height: 1.5,
+                          decoration: TextDecoration.none,
+                          fontWeight: FontWeight.normal,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

@@ -394,7 +394,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         labelColor: Colors.redAccent.withOpacity(0.9),
                         onTap: _logout,
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 32),
+                      
+                      // Footer Links
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            TextButton(
+                              onPressed: () {},
+                              child: const Text('Terms of Service', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
+                            ),
+                            TextButton(
+                              onPressed: () {},
+                              child: const Text('Privacy Policy', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 32),
                     ],
                   ),
                 ),

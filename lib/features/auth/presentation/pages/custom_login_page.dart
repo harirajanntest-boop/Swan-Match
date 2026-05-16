@@ -8,6 +8,7 @@ import 'package:swam_match_app/services/user_service.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/custom_signup_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
+import 'forgot_password_page.dart';
 
 class CustomLoginPage extends StatefulWidget {
   const CustomLoginPage({super.key});
@@ -23,6 +24,17 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
   bool _isLoading = false;
   bool _isGoogleLoading = false;
   bool _isAppleLoading = false;
+  DateTime? _selectedDob;
+
+  int _calculateAge(DateTime birthDate) {
+    final today = DateTime.now();
+    int age = today.year - birthDate.year;
+    if (today.month < birthDate.month ||
+        (today.month == birthDate.month && today.day < birthDate.day)) {
+      age--;
+    }
+    return age;
+  }
 
   @override
   void dispose() {
@@ -123,34 +135,30 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     setState(() => _isGoogleLoading = true);
 
     try {
-      // Step 1: Open Google account picker & store credential temporarily
-      final directResult = await AuthService.instance.signInWithGoogle();
-
-      if (directResult != null) {
-        // Existing user was already signed in (linked account case)
-        final user = directResult.user;
-        if (user != null) {
-          await _routeUser(user);
-          return;
-        }
-      }
-
-      // Step 2: Check if temporary credential was stored
-      if (!AuthService.instance.hasPendingCredentials) {
-        // User cancelled the picker
+      // Step 1: Complete Google Auth Directly
+      final userCredential = await AuthService.instance.signInWithGoogle(delayedAuth: false);
+      if (userCredential == null) {
+        setState(() => _isGoogleLoading = false);
         return;
       }
 
-      // Step 3: Complete Firebase sign-in
-      final userCredential = await AuthService.instance.completeDelayedSignIn();
       final user = userCredential.user;
       if (user == null) {
-        _showError('Failed to sign in with Google.');
+        _showError('Failed to get user from Google.');
         return;
       }
 
-      // Step 4: Check profile and route
-      await _routeUser(user);
+      // Step 2: Check if user already has a profile
+      final profile = await UserService.instance.getUserProfile(user.uid);
+
+      if (profile != null) {
+        // Existing User
+        await _routeUser(user);
+      } else {
+        // New Google User -> Immediately show DOB dialog
+        if (!mounted) return;
+        await _showGoogleDobDialog(user);
+      }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       _showError(AuthService.instance.readableAuthError(e));
@@ -159,6 +167,120 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       _showError('Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isGoogleLoading = false);
+    }
+  }
+
+  Future<void> _showGoogleDobDialog(User user) async {
+    DateTime? tempDob = DateTime.now().subtract(const Duration(days: 365 * 18));
+    
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.onyx,
+              title: const Text("Date of Birth", style: TextStyle(color: Colors.white)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "You must be 18 or older to use this app.",
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.obsidian,
+                      foregroundColor: AppColors.goldMedium,
+                    ),
+                    icon: const Icon(Icons.calendar_today),
+                    label: Text(
+                      "${tempDob!.day}/${tempDob!.month}/${tempDob!.year}",
+                    ),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: tempDob!,
+                        firstDate: DateTime(1900),
+                        lastDate: DateTime.now(),
+                        builder: (context, child) {
+                          return Theme(
+                            data: Theme.of(context).copyWith(
+                              colorScheme: const ColorScheme.dark(
+                                primary: AppColors.goldMedium,
+                                onPrimary: Colors.black,
+                                surface: AppColors.onyx,
+                                onSurface: Colors.white,
+                              ),
+                              dialogBackgroundColor: AppColors.obsidian,
+                            ),
+                            child: child!,
+                          );
+                        },
+                      );
+                      if (picked != null) {
+                        setDialogState(() => tempDob = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final age = _calculateAge(tempDob!);
+                    if (age < 18) {
+                      Navigator.pop(context, false);
+                      _showError("You must be 18 or older to use this app.");
+                    } else {
+                      _selectedDob = tempDob;
+                      Navigator.pop(context, true);
+                    }
+                  },
+                  child: const Text("Continue", style: TextStyle(color: AppColors.goldMedium)),
+                ),
+              ],
+            );
+          }
+        );
+      }
+    );
+
+    if (result == true && _selectedDob != null) {
+      // Valid Age -> Create profile and route
+      final age = _calculateAge(_selectedDob!);
+      final googlePhoto = user.photoURL ?? '';
+      await UserService.instance.upsertUserProfile(
+        uid: user.uid,
+        data: {
+          'uid': user.uid,
+          'name': user.displayName ?? '',
+          'email': user.email ?? '',
+          'dob': _selectedDob!.toIso8601String(),
+          'age': age,
+          'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
+          'registrationCompleted': false,
+          'createdAt': DateTime.now(),
+          'updatedAt': DateTime.now(),
+        },
+      );
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+          (route) => false,
+        );
+      }
+    } else {
+      // Underage or Cancelled -> Delete newly created Firebase user and block access
+      await user.delete();
+      await AuthService.instance.signOut();
     }
   }
 
@@ -279,7 +401,14 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(
-                  onTap: _handleForgotPassword,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const ForgotPasswordPage(),
+                      ),
+                    );
+                  },
                   child: Text(
                     "Forgot password?",
                     style: TextStyle(

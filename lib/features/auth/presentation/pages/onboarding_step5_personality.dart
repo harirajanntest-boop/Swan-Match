@@ -104,12 +104,20 @@ class _OnboardingStep5PersonalityState extends State<OnboardingStep5Personality>
       _showError('Please select at least 3 interests');
       return;
     }
+    if (_smoking == null || _smoking!.isEmpty) {
+      _showError('Please select your smoking habit');
+      return;
+    }
+    if (_drinking == null || _drinking!.isEmpty) {
+      _showError('Please select your drinking habit');
+      return;
+    }
 
     widget.data.bio = bio;
     widget.data.personalityTraits = _selectedTraits;
     widget.data.interests = _selectedInterests;
-    widget.data.smoking = _smoking ?? '';
-    widget.data.drinking = _drinking ?? '';
+    widget.data.smoking = _smoking!;
+    widget.data.drinking = _drinking!;
 
     widget.onNext();
   }

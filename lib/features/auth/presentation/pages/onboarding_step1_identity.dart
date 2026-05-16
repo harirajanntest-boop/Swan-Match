@@ -8,10 +8,15 @@ class OnboardingStep1Identity extends StatefulWidget {
   final OnboardingData data;
   final VoidCallback onNext;
 
-  const OnboardingStep1Identity({super.key, required this.data, required this.onNext});
+  const OnboardingStep1Identity({
+    super.key,
+    required this.data,
+    required this.onNext,
+  });
 
   @override
-  State<OnboardingStep1Identity> createState() => _OnboardingStep1IdentityState();
+  State<OnboardingStep1Identity> createState() =>
+      _OnboardingStep1IdentityState();
 }
 
 class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
@@ -23,8 +28,14 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
   String? _gender;
   final ImagePicker _picker = ImagePicker();
   List<File> _localPhotos = [];
+  bool _termsAccepted = false;
 
-  final List<String> _genders = ['Man', 'Woman', 'Non-binary', 'Prefer not to say'];
+  final List<String> _genders = [
+    'Man',
+    'Woman',
+    'Non-binary',
+    'Prefer not to say',
+  ];
 
   @override
   void initState() {
@@ -33,6 +44,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     _lastNameCtrl = TextEditingController(text: widget.data.lastName);
     _cityCtrl = TextEditingController(text: widget.data.city);
     _countryCtrl = TextEditingController(text: widget.data.country);
+    _termsAccepted = widget.data.termsAccepted;
     _dateOfBirth = widget.data.dateOfBirth;
     _gender = widget.data.gender.isNotEmpty ? widget.data.gender : null;
     if (widget.data.photos.isNotEmpty) {
@@ -54,16 +66,25 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     final now = DateTime.now();
     int age = now.year - _dateOfBirth!.year;
     if (now.month < _dateOfBirth!.month ||
-        (now.month == _dateOfBirth!.month && now.day < _dateOfBirth!.day)) age--;
+        (now.month == _dateOfBirth!.month && now.day < _dateOfBirth!.day))
+      age--;
     return age;
   }
 
   Future<void> _pickDOB() async {
+    // If DOB is already set from the sign-up flow, prevent changing it
+    if (widget.data.dateOfBirth != null) {
+      _showError('Date of birth cannot be changed after registration.');
+      return;
+    }
+
     final picked = await showDatePicker(
       context: context,
       initialDate: _dateOfBirth ?? DateTime(2000, 1, 1),
       firstDate: DateTime(1940),
-      lastDate: DateTime.now().subtract(const Duration(days: 6570)), // ~18 years
+      lastDate: DateTime.now().subtract(
+        const Duration(days: 6570),
+      ), // ~18 years
       builder: (context, child) {
         return Theme(
           data: ThemeData.dark().copyWith(
@@ -82,7 +103,10 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
   Future<void> _pickImage() async {
     if (_localPhotos.length >= 6) return;
     try {
-      final XFile? image = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+      final XFile? image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
+      );
       if (image != null) setState(() => _localPhotos.add(File(image.path)));
     } catch (_) {}
   }
@@ -116,6 +140,10 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
       _showError('Please upload at least 3 photos');
       return;
     }
+    if (!_termsAccepted) {
+      _showError('You must accept the Terms of Service and Privacy Policy');
+      return;
+    }
 
     // Save to data
     widget.data.firstName = firstName;
@@ -125,8 +153,11 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     widget.data.gender = _gender!;
     widget.data.city = city;
     widget.data.country = country;
+    widget.data.termsAccepted = _termsAccepted;
     widget.data.photos = _localPhotos.map((f) => f.path).toList();
-    widget.data.profilePicture = _localPhotos.isNotEmpty ? _localPhotos.first.path : '';
+    widget.data.profilePicture = _localPhotos.isNotEmpty
+        ? _localPhotos.first.path
+        : '';
 
     widget.onNext();
   }
@@ -147,9 +178,20 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 8),
-          const Text('Basic Identity', style: TextStyle(color: Colors.white, fontSize: 26, fontFamily: 'PlayfairDisplay', fontWeight: FontWeight.bold)),
+          const Text(
+            'Basic Identity',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontFamily: 'PlayfairDisplay',
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           const SizedBox(height: 6),
-          const Text('Tell us about yourself', style: TextStyle(color: Colors.white54, fontSize: 15)),
+          const Text(
+            'Tell us about yourself',
+            style: TextStyle(color: Colors.white54, fontSize: 15),
+          ),
           const SizedBox(height: 20),
           Expanded(
             child: SingleChildScrollView(
@@ -159,9 +201,21 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                   // Name fields
                   Row(
                     children: [
-                      Expanded(child: PremiumTextField(label: 'FIRST NAME', hint: 'First name', controller: _firstNameCtrl)),
+                      Expanded(
+                        child: PremiumTextField(
+                          label: 'FIRST NAME',
+                          hint: 'First name',
+                          controller: _firstNameCtrl,
+                        ),
+                      ),
                       const SizedBox(width: 12),
-                      Expanded(child: PremiumTextField(label: 'LAST NAME', hint: 'Last name', controller: _lastNameCtrl)),
+                      Expanded(
+                        child: PremiumTextField(
+                          label: 'LAST NAME',
+                          hint: 'Last name',
+                          controller: _lastNameCtrl,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -170,7 +224,10 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                   GestureDetector(
                     onTap: _pickDOB,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
                       decoration: BoxDecoration(
                         color: OnboardingColors.fieldBackground,
                         borderRadius: BorderRadius.circular(16),
@@ -182,28 +239,57 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('DATE OF BIRTH', style: TextStyle(color: OnboardingColors.primaryGold, fontSize: 12, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+                                const Text(
+                                  'DATE OF BIRTH',
+                                  style: TextStyle(
+                                    color: OnboardingColors.primaryGold,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
                                 const SizedBox(height: 6),
                                 Text(
                                   _dateOfBirth != null
                                       ? '${_dateOfBirth!.day}/${_dateOfBirth!.month}/${_dateOfBirth!.year}'
                                       : 'Select your date of birth',
-                                  style: TextStyle(color: _dateOfBirth != null ? Colors.white : Colors.white38, fontSize: 15),
+                                  style: TextStyle(
+                                    color: _dateOfBirth != null
+                                        ? Colors.white
+                                        : Colors.white38,
+                                    fontSize: 15,
+                                  ),
                                 ),
                               ],
                             ),
                           ),
                           if (age != null)
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
                               decoration: BoxDecoration(
-                                color: OnboardingColors.primaryGold.withOpacity(0.15),
+                                color: OnboardingColors.primaryGold.withOpacity(
+                                  0.15,
+                                ),
                                 borderRadius: BorderRadius.circular(10),
                               ),
-                              child: Text('Age $age', style: const TextStyle(color: OnboardingColors.primaryGold, fontWeight: FontWeight.bold, fontSize: 13)),
+                              child: Text(
+                                'Age $age',
+                                style: const TextStyle(
+                                  color: OnboardingColors.primaryGold,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              ),
                             ),
                           const SizedBox(width: 8),
-                          const Icon(Icons.calendar_today, color: Colors.white38, size: 20),
+                          const Icon(
+                            Icons.calendar_today,
+                            color: Colors.white38,
+                            size: 20,
+                          ),
                         ],
                       ),
                     ),
@@ -214,21 +300,38 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                   const SectionTitle(title: 'Gender'),
                   const SizedBox(height: 10),
                   Wrap(
-                    spacing: 10, runSpacing: 10,
-                    children: _genders.map((g) => GoldChip(
-                      label: g,
-                      selected: _gender == g,
-                      onTap: () => setState(() => _gender = g),
-                    )).toList(),
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: _genders
+                        .map(
+                          (g) => GoldChip(
+                            label: g,
+                            selected: _gender == g,
+                            onTap: () => setState(() => _gender = g),
+                          ),
+                        )
+                        .toList(),
                   ),
                   const SizedBox(height: 18),
 
                   // Location
                   Row(
                     children: [
-                      Expanded(child: PremiumTextField(label: 'CITY', hint: 'Your city', controller: _cityCtrl)),
+                      Expanded(
+                        child: PremiumTextField(
+                          label: 'CITY',
+                          hint: 'Your city',
+                          controller: _cityCtrl,
+                        ),
+                      ),
                       const SizedBox(width: 12),
-                      Expanded(child: PremiumTextField(label: 'COUNTRY', hint: 'Your country', controller: _countryCtrl)),
+                      Expanded(
+                        child: PremiumTextField(
+                          label: 'COUNTRY',
+                          hint: 'Your country',
+                          controller: _countryCtrl,
+                        ),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -238,7 +341,9 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                     PremiumTextField(
                       label: 'PHONE',
                       hint: '',
-                      controller: TextEditingController(text: widget.data.phone),
+                      controller: TextEditingController(
+                        text: widget.data.phone,
+                      ),
                       readOnly: true,
                       suffix: const VerifiedBadge(),
                     ),
@@ -247,21 +352,31 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                     PremiumTextField(
                       label: 'EMAIL',
                       hint: '',
-                      controller: TextEditingController(text: widget.data.email),
+                      controller: TextEditingController(
+                        text: widget.data.email,
+                      ),
                       readOnly: true,
                       suffix: const VerifiedBadge(),
                     ),
                   if (widget.data.email.isNotEmpty) const SizedBox(height: 18),
 
                   // Photos
-                  SectionTitle(title: 'Profile Photos', subtitle: 'Upload at least 3 high-quality photos (${_localPhotos.length}/6)'),
+                  SectionTitle(
+                    title: 'Profile Photos',
+                    subtitle:
+                        'Upload at least 3 high-quality photos (${_localPhotos.length}/6)',
+                  ),
                   const SizedBox(height: 12),
                   GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3, crossAxisSpacing: 10, mainAxisSpacing: 10, childAspectRatio: 0.75,
-                    ),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 10,
+                          mainAxisSpacing: 10,
+                          childAspectRatio: 0.75,
+                        ),
                     itemCount: 6,
                     itemBuilder: (context, index) {
                       if (index < _localPhotos.length) {
@@ -269,26 +384,53 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.file(_localPhotos[index], fit: BoxFit.cover, width: double.infinity, height: double.infinity),
+                              child: Image.file(
+                                _localPhotos[index],
+                                fit: BoxFit.cover,
+                                width: double.infinity,
+                                height: double.infinity,
+                              ),
                             ),
                             Positioned(
-                              top: 4, right: 4,
+                              top: 4,
+                              right: 4,
                               child: GestureDetector(
                                 onTap: () => _removePhoto(index),
                                 child: Container(
                                   padding: const EdgeInsets.all(4),
-                                  decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                                  child: const Icon(Icons.close, size: 14, color: Colors.white),
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black54,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.close,
+                                    size: 14,
+                                    color: Colors.white,
+                                  ),
                                 ),
                               ),
                             ),
                             if (index == 0)
                               Positioned(
-                                bottom: 4, left: 4,
+                                bottom: 4,
+                                left: 4,
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                  decoration: BoxDecoration(color: OnboardingColors.primaryGold, borderRadius: BorderRadius.circular(6)),
-                                  child: const Text('Profile', style: TextStyle(color: Colors.black, fontSize: 9, fontWeight: FontWeight.bold)),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: OnboardingColors.primaryGold,
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Text(
+                                    'Profile',
+                                    style: TextStyle(
+                                      color: Colors.black,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
                                 ),
                               ),
                           ],
@@ -301,23 +443,82 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                             color: OnboardingColors.fieldBackground,
                             borderRadius: BorderRadius.circular(12),
                             border: Border.all(
-                              color: index < 3 ? OnboardingColors.primaryGold.withOpacity(0.3) : Colors.white12,
+                              color: index < 3
+                                  ? OnboardingColors.primaryGold.withOpacity(
+                                      0.3,
+                                    )
+                                  : Colors.white12,
                               style: BorderStyle.solid,
                             ),
                           ),
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.add_photo_alternate_outlined, color: index < 3 ? OnboardingColors.primaryGold.withOpacity(0.5) : Colors.white24, size: 28),
+                              Icon(
+                                Icons.add_photo_alternate_outlined,
+                                color: index < 3
+                                    ? OnboardingColors.primaryGold.withOpacity(
+                                        0.5,
+                                      )
+                                    : Colors.white24,
+                                size: 28,
+                              ),
                               if (index < 3) ...[
                                 const SizedBox(height: 4),
-                                Text('Required', style: TextStyle(color: OnboardingColors.primaryGold.withOpacity(0.5), fontSize: 9)),
+                                Text(
+                                  'Required',
+                                  style: TextStyle(
+                                    color: OnboardingColors.primaryGold
+                                        .withOpacity(0.5),
+                                    fontSize: 9,
+                                  ),
+                                ),
                               ],
                             ],
                           ),
                         ),
                       );
                     },
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Terms & Conditions Checkbox
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: Checkbox(
+                          value: _termsAccepted,
+                          onChanged: (val) => setState(() => _termsAccepted = val ?? false),
+                          activeColor: OnboardingColors.primaryGold,
+                          checkColor: Colors.black,
+                          side: const BorderSide(color: Colors.white54, width: 1.5),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text.rich(
+                          TextSpan(
+                            text: 'I agree to the ',
+                            style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                            children: [
+                              TextSpan(
+                                text: 'Terms of Service',
+                                style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
+                              ),
+                              const TextSpan(text: ' and '),
+                              TextSpan(
+                                text: 'Privacy Policy',
+                                style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
+                              ),
+                              const TextSpan(text: '.'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 32),
                 ],

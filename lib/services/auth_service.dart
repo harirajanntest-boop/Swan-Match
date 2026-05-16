@@ -133,12 +133,14 @@ class AuthService {
       final result = await _auth.signInWithCredential(
         _temporaryGoogleCredential!,
       );
+      await UserService.instance.syncAuthProviders();
       clearTemporaryCredentials();
       return result;
     } else if (_temporaryPhoneCredential != null) {
       final result = await _auth.signInWithCredential(
         _temporaryPhoneCredential!,
       );
+      await UserService.instance.syncAuthProviders();
       clearTemporaryCredentials();
       return result;
     } else {
@@ -184,6 +186,7 @@ class AuthService {
         'updatedAt': DateTime.now(),
       },
     );
+    await UserService.instance.syncAuthProviders();
   }
 
   Future<void> loginWithEmailAndVerifiedPhoneOtp({
@@ -265,10 +268,12 @@ class AuthService {
     required String email,
     required String password,
   }) async {
-    return await _auth.signInWithEmailAndPassword(
+    final result = await _auth.signInWithEmailAndPassword(
       email: email.trim(),
       password: password,
     );
+    await UserService.instance.syncAuthProviders();
+    return result;
   }
 
   Future<void> validateEmailPassword({
@@ -310,7 +315,7 @@ class AuthService {
 
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
-  Future<UserCredential?> signInWithGoogle() async {
+  Future<UserCredential?> signInWithGoogle({bool delayedAuth = false}) async {
     final account = await _googleSignIn.signIn();
     if (account == null) return null;
 
@@ -323,18 +328,26 @@ class AuthService {
     // If a user is already logged in, link the Google credential
     final current = _auth.currentUser;
     if (current != null) {
-      return await current.linkWithCredential(googleCredential);
+      final result = await current.linkWithCredential(googleCredential);
+      await UserService.instance.syncAuthProviders();
+      return result;
     }
 
-    // ── NEW FLOW: Store credential temporarily, don't sign in yet ──
-    // Store the Google credential and user info for delayed sign-in
-    _temporaryGoogleCredential = googleCredential;
-    _temporaryGoogleEmail = (account.email ?? '').trim();
-    _temporaryGoogleDisplayName = account.displayName;
-    _temporaryGooglePhotoUrl = account.photoUrl;
+    if (delayedAuth) {
+      // Store the Google credential and user info for delayed sign-in
+      _temporaryGoogleCredential = googleCredential;
+      _temporaryGoogleEmail = (account.email ?? '').trim();
+      _temporaryGoogleDisplayName = account.displayName;
+      _temporaryGooglePhotoUrl = account.photoUrl;
 
-    // Return null to indicate delayed sign-in
-    return null;
+      // Return null to indicate delayed sign-in
+      return null;
+    } else {
+      // Direct Sign In
+      final result = await _auth.signInWithCredential(googleCredential);
+      await UserService.instance.syncAuthProviders();
+      return result;
+    }
   }
 
   Future<UserCredential> linkPendingGoogleCredential() async {
@@ -347,6 +360,7 @@ class AuthService {
     }
 
     final result = await current.linkWithCredential(pendingGoogleCredential!);
+    await UserService.instance.syncAuthProviders();
     pendingGoogleCredential = null;
     pendingGoogleEmail = null;
     return result;

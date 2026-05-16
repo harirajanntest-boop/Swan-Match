@@ -195,6 +195,7 @@ class MatchService {
   }
 
   bool _isVisibleToEveryone(Map<String, dynamic> profile) {
+    if (profile['isDeleted'] == true) return false;
     return profile['showProfileToEveryone'] != false;
   }
 

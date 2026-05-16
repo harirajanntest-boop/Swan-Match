@@ -78,6 +78,9 @@ class OnboardingData {
   String loveLanguage;
   String zodiac;
 
+  // ─── Legal ───────────────────────────────────────────────────────────────
+  bool termsAccepted;
+
   // ─── Metadata ────────────────────────────────────────────────────────────
   int onboardingStep; // Current step for resume
   DateTime createdAt;
@@ -144,6 +147,7 @@ class OnboardingData {
     this.communicationStyle = '',
     this.loveLanguage = '',
     this.zodiac = '',
+    this.termsAccepted = false,
     this.onboardingStep = 0,
   }) : createdAt = DateTime.now();
 
@@ -268,6 +272,7 @@ class OnboardingData {
       'communicationStyle': communicationStyle,
       'loveLanguage': loveLanguage,
       'zodiac': zodiac,
+      'termsAccepted': termsAccepted,
       'onboardingStep': onboardingStep,
       'createdAt': createdAt.toIso8601String(),
     };
@@ -277,9 +282,11 @@ class OnboardingData {
     return OnboardingData(
       firstName: map['firstName'] ?? map['name'] ?? '',
       lastName: map['lastName'] ?? '',
-      dateOfBirth: map['dateOfBirth'] != null
-          ? DateTime.tryParse(map['dateOfBirth'].toString())
-          : null,
+      dateOfBirth: map['dob'] != null 
+          ? DateTime.tryParse(map['dob'].toString())
+          : map['dateOfBirth'] != null
+              ? DateTime.tryParse(map['dateOfBirth'].toString())
+              : null,
       selectedAge: map['selectedAge'] ?? map['age'],
       gender: map['gender'] ?? '',
       showGender: map['showGender'] ?? true,
@@ -338,6 +345,7 @@ class OnboardingData {
       communicationStyle: map['communicationStyle'] ?? '',
       loveLanguage: map['loveLanguage'] ?? '',
       zodiac: map['zodiac'] ?? '',
+      termsAccepted: map['termsAccepted'] ?? false,
       onboardingStep: map['onboardingStep'] ?? 0,
     );
   }
@@ -404,6 +412,7 @@ class OnboardingData {
     String? communicationStyle,
     String? loveLanguage,
     String? zodiac,
+    bool? termsAccepted,
     int? onboardingStep,
   }) {
     return OnboardingData(
@@ -468,6 +477,7 @@ class OnboardingData {
       communicationStyle: communicationStyle ?? this.communicationStyle,
       loveLanguage: loveLanguage ?? this.loveLanguage,
       zodiac: zodiac ?? this.zodiac,
+      termsAccepted: termsAccepted ?? this.termsAccepted,
       onboardingStep: onboardingStep ?? this.onboardingStep,
     );
   }

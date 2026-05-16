@@ -195,7 +195,8 @@ class _SwipePageState extends State<SwipePage> {
       final uid = (item['uid'] ?? '').toString();
       final itemGender = (item['gender'] ?? '').toString();
 
-      if (uid.isEmpty || blocked.contains(uid)) {
+      // Skip profiles that are deleted, missing uid, or blocked
+      if (uid.isEmpty || blocked.contains(uid) || item['isDeleted'] == true) {
         return false;
       }
 

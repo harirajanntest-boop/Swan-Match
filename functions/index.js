@@ -1,4 +1,4 @@
-const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 
@@ -782,3 +782,64 @@ exports.hardDeleteExpiredAccounts = onSchedule(
     console.log('[hardDelete] Run complete.');
   }
 );
+
+/**
+ * Securely lookup authentication providers by email.
+ * This is used for the Forgot Password flow to bypass Email Enumeration 
+ * restrictions securely without opening up the users collection in Firestore.
+ */
+exports.checkAuthProviders = onCall(async (request) => {
+  const email = request.data.email;
+
+  if (!email || typeof email !== 'string') {
+    throw new HttpsError('invalid-argument', 'The function must be called with a valid "email".');
+  }
+
+  try {
+    const userRecord = await admin.auth().getUserByEmail(email);
+    
+    // Extract provider IDs from userRecord
+    const providers = userRecord.providerData.map(info => info.providerId);
+    
+    return {
+      exists: true,
+      providers: providers
+    };
+  } catch (error) {
+    if (error.code === 'auth/user-not-found') {
+      return {
+        exists: false,
+        providers: []
+      };
+    }
+    // For other errors, throw an internal error to obscure details
+    console.error('[checkAuthProviders] Error fetching user by email:', error);
+    throw new HttpsError('internal', 'An error occurred while checking account status.');
+  }
+});
+
+/**
+ * Ensures Firebase Auth account is deleted even if the user force closes
+ * the app during the deletion process. Triggered when `isDeleted: true`.
+ */
+exports.onUserSoftDeleted = onDocumentUpdated('users/{uid}', async (event) => {
+  const before = event.data.before.data();
+  const after = event.data.after.data();
+  const uid = event.params.uid;
+
+  // Only trigger if isDeleted changes from false to true
+  if (!before.isDeleted && after.isDeleted === true) {
+    console.log(`[onUserSoftDeleted] Triggered for user ${uid}. Deleting Firebase Auth account.`);
+    try {
+      await admin.auth().deleteUser(uid);
+      console.log(`[onUserSoftDeleted] Successfully deleted Firebase Auth for ${uid}.`);
+    } catch (error) {
+      if (error.code === 'auth/user-not-found') {
+        console.log(`[onUserSoftDeleted] Auth account for ${uid} was already deleted.`);
+      } else {
+        console.error(`[onUserSoftDeleted] Error deleting Auth for ${uid}:`, error);
+      }
+    }
+  }
+});
+

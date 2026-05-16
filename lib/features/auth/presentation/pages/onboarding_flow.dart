@@ -23,7 +23,8 @@ class OnboardingFlow extends StatefulWidget {
   State<OnboardingFlow> createState() => _OnboardingFlowState();
 }
 
-class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProviderStateMixin {
+class _OnboardingFlowState extends State<OnboardingFlow>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final PageController _pageController = PageController();
   int _currentStep = 0;
   bool _isLoading = false;
@@ -46,17 +47,31 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
   @override
   void initState() {
     super.initState();
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-    ));
+    WidgetsBinding.instance.addObserver(this);
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+      ),
+    );
     _loadSavedProgress();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      // Save progress automatically when the app goes to the background or is killed
+      _saveProgress();
+    }
   }
 
   // ─── Load saved progress from Firestore ─────────────────────────────────
@@ -121,7 +136,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
   void _goToNext() {
     if (_currentStep < _totalSteps - 1) {
       setState(() => _currentStep++);
-      _pageController.nextPage(duration: const Duration(milliseconds: 350), curve: Curves.easeInOut);
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+      );
       _saveProgress();
     }
   }
@@ -129,7 +147,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
   void _goBack() {
     if (_currentStep > 0) {
       setState(() => _currentStep--);
-      _pageController.previousPage(duration: const Duration(milliseconds: 350), curve: Curves.easeInOut);
+      _pageController.previousPage(
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+      );
     }
   }
 
@@ -267,14 +288,46 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
                 controller: _pageController,
                 physics: const NeverScrollableScrollPhysics(),
                 children: [
-                  OnboardingStep1Identity(data: _onboardingData, onNext: _goToNext),
-                  OnboardingStep2Status(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep3Lifestyle(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep4Cultural(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep5Personality(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep6Preferences(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep7Verification(data: _onboardingData, onNext: _goToNext, onBack: _goBack),
-                  OnboardingStep8Exclusivity(data: _onboardingData, onComplete: _completeOnboarding, onBack: _goBack, isLoading: _isCompleting),
+                  OnboardingStep1Identity(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                  ),
+                  OnboardingStep2Status(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep3Lifestyle(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep4Cultural(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep5Personality(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep6Preferences(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep7Verification(
+                    data: _onboardingData,
+                    onNext: _goToNext,
+                    onBack: _goBack,
+                  ),
+                  OnboardingStep8Exclusivity(
+                    data: _onboardingData,
+                    onComplete: _completeOnboarding,
+                    onBack: _goBack,
+                    isLoading: _isCompleting,
+                  ),
                 ],
               ),
             ),
@@ -294,14 +347,21 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
             children: [
               if (_currentStep > 0)
                 IconButton(
-                  icon: const Icon(Icons.arrow_back_ios, color: Colors.white, size: 20),
+                  icon: const Icon(
+                    Icons.arrow_back_ios,
+                    color: Colors.white,
+                    size: 20,
+                  ),
                   onPressed: _goBack,
                 )
               else
                 const SizedBox(width: 48),
               const Spacer(),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 5,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.06),
                   borderRadius: BorderRadius.circular(12),
@@ -335,8 +395,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> with SingleTickerProvid
                       color: isCompleted
                           ? OnboardingColors.primaryGold
                           : isCurrent
-                              ? OnboardingColors.primaryGold.withOpacity(0.5)
-                              : Colors.white.withOpacity(0.1),
+                          ? OnboardingColors.primaryGold.withOpacity(0.5)
+                          : Colors.white.withOpacity(0.1),
                     ),
                   ),
                 );

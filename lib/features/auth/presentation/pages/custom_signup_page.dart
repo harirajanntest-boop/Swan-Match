@@ -8,6 +8,7 @@ import 'package:swam_match_app/services/user_service.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/custom_login_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
+import 'package:swam_match_app/features/auth/presentation/pages/dob_verification_screen.dart';
 
 class CustomSignupPage extends StatefulWidget {
   const CustomSignupPage({super.key});
@@ -24,6 +25,44 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   bool _isLoading = false;
   bool _isGoogleLoading = false;
   bool _isAppleLoading = false;
+  DateTime? _selectedDob;
+
+  int _calculateAge(DateTime birthDate) {
+    final today = DateTime.now();
+    int age = today.year - birthDate.year;
+    if (today.month < birthDate.month ||
+        (today.month == birthDate.month && today.day < birthDate.day)) {
+      age--;
+    }
+    return age;
+  }
+
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now().subtract(const Duration(days: 365 * 18)),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: AppColors.goldMedium,
+              onPrimary: Colors.black,
+              surface: AppColors.onyx,
+              onSurface: Colors.white,
+            ),
+            dialogBackgroundColor: AppColors.obsidian,
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null && mounted) {
+      setState(() => _selectedDob = picked);
+    }
+  }
 
   @override
   void dispose() {
@@ -81,52 +120,60 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       return;
     }
 
+    if (_selectedDob == null) {
+      _showError('Please select your Date of Birth.');
+      return;
+    }
+
+    final age = _calculateAge(_selectedDob!);
+    if (age < 18) {
+      _showError('You must be 18 or older to use this app.');
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
-      // Create the account in Firebase Auth
-      final credential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(email: email, password: password);
-
+      // Direct Firebase Auth Creation
+      final credential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
       final user = credential.user;
-      if (user == null) {
-        _showError('Account creation failed. Please try again.');
-        return;
+
+      if (user != null) {
+        // Create Firestore Profile
+        await UserService.instance.upsertUserProfile(
+          uid: user.uid,
+          data: {
+            'uid': user.uid,
+            'name': name,
+            'email': email,
+            'dob': _selectedDob!.toIso8601String(),
+            'age': age,
+            'registrationCompleted': false,
+            'createdAt': DateTime.now(),
+            'updatedAt': DateTime.now(),
+          },
+        );
+
+        if (!mounted) return;
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+          (route) => false,
+        );
       }
-
-      // Save name and initial profile to Firestore
-      await UserService.instance.upsertUserProfile(
-        uid: user.uid,
-        data: {
-          'uid': user.uid,
-          'name': name,
-          'email': email,
-          'registrationCompleted': false,
-          'createdAt': DateTime.now(),
-          'updatedAt': DateTime.now(),
-        },
-      );
-
-      if (!mounted) return;
-
-      // Navigate to details filling screen
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const OnboardingFlow()),
-        (route) => false,
-      );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       if (e.code == 'email-already-in-use') {
-        _showError(
-          'An account already exists with this email. Please login instead.',
-        );
+        _showError('An account already exists with this email. Please login instead.');
       } else {
         _showError(AuthService.instance.readableAuthError(e));
       }
     } catch (e) {
       if (!mounted) return;
-      _showError(AuthService.instance.readableAuthError(e));
+      _showError('Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -138,62 +185,29 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     setState(() => _isGoogleLoading = true);
 
     try {
-      // Step 1: Open Google account picker & store credential temporarily
-      final directResult = await AuthService.instance.signInWithGoogle();
-
-      if (directResult != null) {
-        // Existing user was already signed in (linked account case)
-        final user = directResult.user;
-        if (user != null) {
-          await _routeUser(user);
-          return;
-        }
-      }
-
-      // Step 2: Check if temporary credential was stored
-      if (!AuthService.instance.hasPendingCredentials) {
-        // User cancelled the picker
+      // Step 1: Complete Google Auth Directly
+      final userCredential = await AuthService.instance.signInWithGoogle(delayedAuth: false);
+      if (userCredential == null) {
+        setState(() => _isGoogleLoading = false);
         return;
       }
 
-      // Step 3: Complete Firebase sign-in
-      final userCredential = await AuthService.instance.completeDelayedSignIn();
       final user = userCredential.user;
       if (user == null) {
-        _showError('Failed to sign in with Google.');
+        _showError('Failed to get user from Google.');
         return;
       }
 
-      // Step 4: Check if user profile exists in Firestore
+      // Step 2: Check if user already has a profile
       final profile = await UserService.instance.getUserProfile(user.uid);
 
-      if (profile == null) {
-        // New user — create initial profile with Google info
-        final googlePhoto = user.photoURL ?? '';
-        await UserService.instance.upsertUserProfile(
-          uid: user.uid,
-          data: {
-            'uid': user.uid,
-            'name': user.displayName ?? '',
-            'email': user.email ?? '',
-            'phoneNumber': user.phoneNumber ?? '',
-            'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
-            'registrationCompleted': false,
-            'createdAt': DateTime.now(),
-            'updatedAt': DateTime.now(),
-          },
-        );
-
-        if (!mounted) return;
-        // Navigate to details filling screen
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const OnboardingFlow()),
-          (route) => false,
-        );
-      } else {
-        // Existing user — route based on registration status
+      if (profile != null) {
+        // Existing User
         await _routeUser(user);
+      } else {
+        // New Google User -> Immediately show DOB dialog
+        if (!mounted) return;
+        await _showGoogleDobDialog(user);
       }
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -203,6 +217,120 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       _showError('Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isGoogleLoading = false);
+    }
+  }
+
+  Future<void> _showGoogleDobDialog(User user) async {
+    DateTime? tempDob = DateTime.now().subtract(const Duration(days: 365 * 18));
+    
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.onyx,
+              title: const Text("Date of Birth", style: TextStyle(color: Colors.white)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "You must be 18 or older to use this app.",
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.obsidian,
+                      foregroundColor: AppColors.goldMedium,
+                    ),
+                    icon: const Icon(Icons.calendar_today),
+                    label: Text(
+                      "${tempDob!.day}/${tempDob!.month}/${tempDob!.year}",
+                    ),
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: tempDob!,
+                        firstDate: DateTime(1900),
+                        lastDate: DateTime.now(),
+                        builder: (context, child) {
+                          return Theme(
+                            data: Theme.of(context).copyWith(
+                              colorScheme: const ColorScheme.dark(
+                                primary: AppColors.goldMedium,
+                                onPrimary: Colors.black,
+                                surface: AppColors.onyx,
+                                onSurface: Colors.white,
+                              ),
+                              dialogBackgroundColor: AppColors.obsidian,
+                            ),
+                            child: child!,
+                          );
+                        },
+                      );
+                      if (picked != null) {
+                        setDialogState(() => tempDob = picked);
+                      }
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final age = _calculateAge(tempDob!);
+                    if (age < 18) {
+                      Navigator.pop(context, false);
+                      _showError("You must be 18 or older to use this app.");
+                    } else {
+                      _selectedDob = tempDob;
+                      Navigator.pop(context, true);
+                    }
+                  },
+                  child: const Text("Continue", style: TextStyle(color: AppColors.goldMedium)),
+                ),
+              ],
+            );
+          }
+        );
+      }
+    );
+
+    if (result == true && _selectedDob != null) {
+      // Valid Age -> Create profile and route
+      final age = _calculateAge(_selectedDob!);
+      final googlePhoto = user.photoURL ?? '';
+      await UserService.instance.upsertUserProfile(
+        uid: user.uid,
+        data: {
+          'uid': user.uid,
+          'name': user.displayName ?? '',
+          'email': user.email ?? '',
+          'dob': _selectedDob!.toIso8601String(),
+          'age': age,
+          'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
+          'registrationCompleted': false,
+          'createdAt': DateTime.now(),
+          'updatedAt': DateTime.now(),
+        },
+      );
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+          (route) => false,
+        );
+      }
+    } else {
+      // Underage or Cancelled -> Delete newly created Firebase user and block access
+      await user.delete();
+      await AuthService.instance.signOut();
     }
   }
 
@@ -301,6 +429,36 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
                       _obscurePassword = !_obscurePassword;
                     });
                   },
+                ),
+              ),
+              const SizedBox(height: 10),
+
+              // DOB Field
+              GestureDetector(
+                onTap: () => _selectDate(context),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  decoration: BoxDecoration(
+                    color: AppColors.onyx,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: Colors.white12),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _selectedDob == null
+                            ? "Date of Birth"
+                            : "${_selectedDob!.day}/${_selectedDob!.month}/${_selectedDob!.year}",
+                        style: TextStyle(
+                          color: _selectedDob == null ? Colors.white54 : Colors.white,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const Icon(Icons.calendar_today, color: Colors.white54, size: 20),
+                    ],
+                  ),
                 ),
               ),
 

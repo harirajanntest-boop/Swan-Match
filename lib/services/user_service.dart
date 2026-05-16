@@ -64,6 +64,24 @@ class UserService {
     }
   }
 
+  Future<void> syncAuthProviders() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return;
+      
+      final providers = user.providerData.map((info) => info.providerId).toList();
+      // Ensure 'password' is added if the user has an email and didn't exclusively use OAuth
+      // (providerData might contain 'password' automatically, but it's good to just sync what Firebase reports)
+      
+      await _userRef(user.uid).set({
+        'providers': providers,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      print('Error syncing auth providers: $e');
+    }
+  }
+
+
   /// In-memory cache: uid → profile data.
   /// Eliminates redundant Firestore reads for the same profile within a session.
   final Map<String, Map<String, dynamic>> _profileCache = {};
