@@ -334,7 +334,7 @@ class OnboardingData {
       professionalVerified: map['professionalVerified'] ?? false,
       profileApprovalStatus: map['profileApprovalStatus'] ?? 'pending',
       inviteCode: map['inviteCode'] ?? '',
-      profileVisibility: map['profileVisibility'] ?? 'Curated Matches Only',
+      profileVisibility: map['profileVisibility'] ?? 'Public',
       partnerPreference: map['partnerPreference'] ?? '',
       state: map['state'] ?? '',
       distanceKm: map['distanceKm'] ?? 50,

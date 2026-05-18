@@ -1,12 +1,13 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
+import '../../../../services/payment_flow_service.dart';
 import '../../../../services/stripe_service.dart';
 import '../../../../services/user_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class SubscriptionPage extends StatefulWidget {
   const SubscriptionPage({super.key});
@@ -568,11 +569,18 @@ class _SwanProSubscriptionBody extends StatefulWidget {
       _SwanProSubscriptionBodyState();
 }
 
-class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
+class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
+    with WidgetsBindingObserver {
   bool _isLoading = false;
   bool _checkingStatus = true; // true while we check if user is already premium
-  bool _isPremium = false;
+  bool _isPaidPremium = false;
+  bool _isOnFreeTrial = false;
+  String _currentPriceId = ''; // The Stripe price ID of the user's active plan
+  String _currentPlanTitle = '';
   int _selectedPlanIndex = 2; // Default to 12 Months
+  StreamSubscription<Map<String, dynamic>?>? _profileSubscription;
+  String _lastProfileSignature = '';
+  bool _handlingCheckoutReturn = false;
 
   // Stripe prices keyed by price ID. Populated on init.
   Map<String, StripePriceInfo> _prices = {};
@@ -581,10 +589,39 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   @override
   void initState() {
     super.initState();
-    // NOTE: Deep-link handling for payment-success/cancel is done in
-    // main.dart via the _PaymentSuccessGate route. No listener needed here.
+    WidgetsBinding.instance.addObserver(this);
+    _profileSubscription = UserService.instance
+        .watchCurrentUserProfile()
+        .listen(_syncPremiumFromProfile);
     _checkCurrentPremiumStatus();
     _loadPrices();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _profileSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _handleReturnFromCheckout();
+    }
+  }
+
+  Future<void> _handleReturnFromCheckout() async {
+    if (_handlingCheckoutReturn) return;
+    final pending = await PaymentFlowService.isCheckoutPending();
+    if (!pending) return;
+
+    _handlingCheckoutReturn = true;
+    try {
+      await PaymentFlowService.presentCongratulationsIfPaid();
+    } finally {
+      _handlingCheckoutReturn = false;
+    }
   }
 
   /// Fetches the real price amounts from Stripe via Cloud Function.
@@ -617,6 +654,164 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
     return info != null ? info.formattedPerMonth : fallback;
   }
 
+  void _syncPremiumFromProfile(Map<String, dynamic>? profile) {
+    final signature = _profileSignature(profile);
+    if (signature == _lastProfileSignature) return;
+    _lastProfileSignature = signature;
+
+    final status = _subscriptionStatus(profile);
+    final priceId = _subscriptionPriceId(profile);
+    final currentPlanTitle = _inferCurrentPlanTitle(profile);
+    final isPaid = UserService.instance.isPaidPremium(profile);
+    final isOnTrial = UserService.instance.isOnFreeTrial(profile);
+
+    int? selectedIndex;
+    if (isPaid) {
+      if (priceId == StripeService.premiumMonthlyPriceId ||
+          currentPlanTitle == '1 Month') {
+        selectedIndex = 0;
+      } else if (priceId == StripeService.premium6MonthPriceId ||
+          currentPlanTitle == '6 Months') {
+        selectedIndex = 1;
+      } else if (priceId == StripeService.premium1YearPriceId ||
+          currentPlanTitle == '12 Months') {
+        selectedIndex = 2;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isPaidPremium = isPaid;
+      _isOnFreeTrial = isOnTrial;
+      _currentPriceId = isPaid ? priceId : '';
+      _currentPlanTitle = isPaid ? currentPlanTitle : '';
+      if (selectedIndex != null) _selectedPlanIndex = selectedIndex;
+      _checkingStatus = false;
+    });
+  }
+
+  String _profileSignature(Map<String, dynamic>? profile) {
+    if (profile == null) return '';
+    final sub = (profile['subscription'] as Map?)?.cast<String, dynamic>();
+    return [
+      (sub?['status'] ?? '').toString(),
+      (sub?['priceId'] ?? '').toString(),
+      (profile['subscriptionStatus'] ?? '').toString(),
+      (profile['subscriptionPriceId'] ?? '').toString(),
+      (profile['subscriptionPlan'] ?? '').toString(),
+      (profile['subscriptionType'] ?? '').toString(),
+      (profile['plan'] ?? '').toString(),
+      (profile['freeTrialEndsAt'] ?? '').toString(),
+    ].join('|');
+  }
+
+  String _subscriptionStatus(Map<String, dynamic>? profile) {
+    if (profile == null) return '';
+    final sub = (profile['subscription'] as Map?)?.cast<String, dynamic>();
+    final candidates = <String>[
+      profile['subscriptionStatus']?.toString() ?? '',
+      sub?['status']?.toString() ?? '',
+      profile['status']?.toString() ?? '',
+    ].map((s) => s.toLowerCase()).where((s) => s.isNotEmpty);
+
+    for (final status in candidates) {
+      if (status == 'active' || status == 'trialing') return status;
+    }
+    return candidates.isNotEmpty ? candidates.first : '';
+  }
+
+  String _subscriptionPriceId(Map<String, dynamic>? profile) {
+    if (profile == null) return '';
+    final sub = (profile['subscription'] as Map?)?.cast<String, dynamic>();
+    return (
+      sub?['priceId'] ??
+      profile['subscriptionPriceId'] ??
+      profile['stripePriceId'] ??
+      profile['priceId'] ??
+      ''
+    ).toString();
+  }
+
+  int? _planIndexForPriceId(String priceId) {
+    if (priceId == StripeService.premiumMonthlyPriceId) return 0;
+    if (priceId == StripeService.premium6MonthPriceId) return 1;
+    if (priceId == StripeService.premium1YearPriceId) return 2;
+    return null;
+  }
+
+  int? _planIndexForTitle(String title) {
+    switch (title) {
+      case '1 Month':
+        return 0;
+      case '6 Months':
+        return 1;
+      case '12 Months':
+        return 2;
+      default:
+        return null;
+    }
+  }
+
+  bool _isPlanCurrent(int planIndex) {
+    if (!_isPaidPremium || _isOnFreeTrial) return false;
+    final byPrice = _planIndexForPriceId(_currentPriceId);
+    if (byPrice != null) return byPrice == planIndex;
+    final byTitle = _planIndexForTitle(_currentPlanTitle);
+    if (byTitle != null) return byTitle == planIndex;
+    return _selectedPlanIndex == planIndex;
+  }
+
+  String _planTitleForPriceId(String priceId) {
+    if (priceId == StripeService.premiumMonthlyPriceId) return '1 Month';
+    if (priceId == StripeService.premium6MonthPriceId) return '6 Months';
+    if (priceId == StripeService.premium1YearPriceId) return '12 Months';
+    return '';
+  }
+
+  String _inferCurrentPlanTitle(Map<String, dynamic>? profile) {
+    if (profile == null) return '';
+
+    final priceId = _subscriptionPriceId(profile);
+    final directPlan = _planTitleForPriceId(priceId);
+    if (directPlan.isNotEmpty) return directPlan;
+
+    final sub = (profile['subscription'] as Map?)?.cast<String, dynamic>();
+
+    final candidates = [
+      profile['subscriptionPlan'],
+      profile['subscriptionType'],
+      profile['plan'],
+      sub?['plan'],
+      sub?['subscriptionPlan'],
+      sub?['duration'],
+      sub?['interval'],
+      sub?['billingCycle'],
+      sub?['name'],
+    ].where((value) => value != null).map((value) => value.toString().toLowerCase()).join(' ');
+
+    if (candidates.contains('1 month') ||
+        candidates.contains('monthly') ||
+        candidates.contains('month')) {
+      return '1 Month';
+    }
+    if (candidates.contains('6 month') ||
+        candidates.contains('6months') ||
+        candidates.contains('6 months') ||
+        candidates.contains('semi') ||
+        candidates.contains('half year')) {
+      return '6 Months';
+    }
+    if (candidates.contains('12 month') ||
+        candidates.contains('yearly') ||
+        candidates.contains('annual') ||
+        candidates.contains('1 year') ||
+        candidates.contains('12 months')) {
+      return '12 Months';
+    }
+
+    return '';
+  }
+
   /// Dynamically calculates savings % by comparing the monthly plan cost
   /// against a multi-month plan cost. Returns e.g. "Save 40%" or empty string.
   String _calculateSavings(
@@ -638,24 +833,54 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   Future<void> _checkCurrentPremiumStatus() async {
     try {
       final profile = await UserService.instance.getCurrentUserProfile();
-      final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
-      final status = (sub?['status'] ?? '').toString().toLowerCase();
-      if (status == 'active' || status == 'trialing') {
-        if (mounted)
+      final status = _subscriptionStatus(profile);
+      final priceId = _subscriptionPriceId(profile);
+      final currentPlanTitle = _inferCurrentPlanTitle(profile);
+      final isPaid = UserService.instance.isPaidPremium(profile);
+      final isOnTrial = UserService.instance.isOnFreeTrial(profile);
+      if (isPaid || isOnTrial) {
+        if (mounted) {
           setState(() {
-            _isPremium = true;
+            _isPaidPremium = isPaid;
+            _isOnFreeTrial = isOnTrial;
+            _currentPriceId = isPaid ? priceId : '';
+            _currentPlanTitle = isPaid ? currentPlanTitle : '';
             _checkingStatus = false;
+            if (isPaid) {
+              final idx = _planIndexForPriceId(priceId) ??
+                  _planIndexForTitle(currentPlanTitle);
+              if (idx != null) _selectedPlanIndex = idx;
+            }
           });
-        return;
+        }
+        if (isPaid) return;
+        // On free trial — do not call Stripe verify (it can overwrite trial fields).
+        if (isOnTrial) return;
       }
-      // Also try a direct Stripe verify
+      // Free users only: check if they already paid via Stripe outside the app.
       final stripeConfirm = await StripeService.instance
           .verifyAndActivatePremium();
-      if (mounted)
-        setState(() {
-          _isPremium = stripeConfirm;
-          _checkingStatus = false;
-        });
+      UserService.instance.invalidateCurrentUserCache();
+      if (stripeConfirm) {
+        await UserService.instance.endTrialAfterPaidUpgrade();
+        final refreshed = await UserService.instance.getCurrentUserProfile();
+        final refreshedPriceId = _subscriptionPriceId(refreshed);
+        final refreshedPlanTitle = _inferCurrentPlanTitle(refreshed);
+        if (mounted) {
+          setState(() {
+            _isPaidPremium = UserService.instance.isPaidPremium(refreshed);
+            _isOnFreeTrial = UserService.instance.isOnFreeTrial(refreshed);
+            _currentPriceId = refreshedPriceId;
+            _currentPlanTitle = refreshedPlanTitle;
+            _checkingStatus = false;
+          });
+        }
+      } else {
+        if (mounted)
+          setState(() {
+            _checkingStatus = false;
+          });
+      }
     } catch (_) {
       if (mounted)
         setState(() {
@@ -681,14 +906,11 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   Future<void> _startPayment() async {
     setState(() => _isLoading = true);
     try {
-      // Check current premium status before charging the user again.
+      // Check current paid premium before charging again.
       final profile = await UserService.instance.getCurrentUserProfile();
-      final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
-      final status = (sub?['status'] ?? '').toString().toLowerCase();
-      final alreadyPremium =
-          status == 'active' || status == 'trialing' || _isPremium;
+      final alreadyPaid = UserService.instance.isPaidPremium(profile);
 
-      if (alreadyPremium) {
+      if (alreadyPaid) {
         // User already has an active plan — show management dialog.
         if (!mounted) return;
         setState(() => _isLoading = false);
@@ -755,10 +977,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
         return;
       }
 
-      // Not premium — proceed with Stripe checkout.
-      // Clear flag so success page shows once for this new payment.
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('payment_success_shown');
+      await PaymentFlowService.markCheckoutStarted();
 
       await StripeService.instance.startSubscription(priceId: _selectedPriceId);
       // Deep link fires when user returns from Stripe (handled by _onDeepLink).
@@ -781,11 +1000,18 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   Future<void> _restorePurchase() async {
     setState(() => _isLoading = true);
     try {
-      final isPremium = await StripeService.instance.verifyAndActivatePremium();
+      await StripeService.instance.verifyAndActivatePremium();
+      UserService.instance.invalidateCurrentUserCache();
+      await UserService.instance.endTrialAfterPaidUpgrade();
       if (!mounted) return;
-      if (isPremium) {
+      final refreshed = await UserService.instance.getCurrentUserProfile();
+      final isPaid = UserService.instance.isPaidPremium(refreshed);
+      if (isPaid) {
         setState(() {
-          _isPremium = true;
+          _isPaidPremium = true;
+          _isOnFreeTrial = UserService.instance.isOnFreeTrial(refreshed);
+          _currentPriceId = _subscriptionPriceId(refreshed);
+          _currentPlanTitle = _inferCurrentPlanTitle(refreshed);
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -925,6 +1151,34 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                 ),
                 const SizedBox(height: 24),
 
+                if (_isOnFreeTrial && !_isPaidPremium) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.goldMedium.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.goldMedium.withOpacity(0.35),
+                      ),
+                    ),
+                    child: const Text(
+                      'You\'re on a free trial. Choose a plan below to '
+                      'upgrade — your trial will end when payment completes.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+
                 // ── Plan cards (vertical stack) ────────────────────────
                 if (_pricesLoading) ...[
                   // Shimmer-style skeleton placeholders while loading
@@ -947,6 +1201,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                             ?.formattedAmount ??
                         'Loading...',
                     isSelected: _selectedPlanIndex == 0,
+                    isCurrentPlan: _isPlanCurrent(0),
                     onTap: () => setState(() => _selectedPlanIndex = 0),
                   ),
                   const SizedBox(height: 10),
@@ -964,6 +1219,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                       6,
                     ),
                     isSelected: _selectedPlanIndex == 1,
+                    isCurrentPlan: _isPlanCurrent(1),
                     onTap: () => setState(() => _selectedPlanIndex = 1),
                   ),
                   const SizedBox(height: 10),
@@ -982,6 +1238,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                     ),
                     isSelected: _selectedPlanIndex == 2,
                     isMostPopular: true,
+                    isCurrentPlan: _isPlanCurrent(2),
                     onTap: () => setState(() => _selectedPlanIndex = 2),
                   ),
                 ],
@@ -995,8 +1252,8 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                       color: AppColors.goldMedium,
                     ),
                   )
-                else if (_isPremium) ...[
-                  // User already has premium — show manage subscription button
+                else if (_isPaidPremium) ...[
+                  // User already has paid premium — show manage subscription button
                   SizedBox(
                     width: double.infinity,
                     height: 54,
@@ -1324,6 +1581,7 @@ class _VerticalPlanCard extends StatelessWidget {
   final String? subtitle;
   final bool isSelected;
   final bool isMostPopular;
+  final bool isCurrentPlan;
   final VoidCallback onTap;
 
   const _VerticalPlanCard({
@@ -1332,6 +1590,7 @@ class _VerticalPlanCard extends StatelessWidget {
     this.subtitle,
     required this.isSelected,
     this.isMostPopular = false,
+    this.isCurrentPlan = false,
     required this.onTap,
   });
 
@@ -1362,13 +1621,39 @@ class _VerticalPlanCard extends StatelessWidget {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (isCurrentPlan) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                'Current Plan',
+                                style: TextStyle(
+                                  color: Colors.grey.shade400,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.3,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                       if (subtitle != null) ...[
                         const SizedBox(height: 4),

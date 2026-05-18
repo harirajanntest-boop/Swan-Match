@@ -10,9 +10,12 @@ import '../../../../core/constants/colors.dart';
 import '../../../../models/message_model.dart';
 import '../../../../services/chat_service.dart';
 import '../../../../services/chat_presence_service.dart';
+import '../../../../services/subscription_limits_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/widgets/linear_message.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
 import '../../../../shared/widgets/deleted_user_avatar.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import 'match_profile_detail_page.dart';
 import 'subscription_page.dart';
 
@@ -33,6 +36,8 @@ class ChatConversationPage extends StatefulWidget {
 class _ChatConversationPageState extends State<ChatConversationPage> {
   final TextEditingController _messageController = TextEditingController();
   bool _isSending = false;
+  bool _chatRestricted = false;
+  String? _chatRestrictionReason;
   Map<String, dynamic>? _otherUserProfile;
 
   // ─── STREAM CACHED IN STATE ───
@@ -52,10 +57,24 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
         .doc(widget.otherUserId)
         .snapshots();
     _loadOtherUserProfile();
+    _loadChatAccess();
+  }
+
+  Future<void> _loadChatAccess() async {
+    final check = await SubscriptionLimitsService.instance.canOpenChat(
+      widget.otherUserId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _chatRestricted = !check.allowed;
+      _chatRestrictionReason = check.reason;
+    });
   }
 
   Future<void> _loadOtherUserProfile() async {
-    final profile = await UserService.instance.getUserProfile(widget.otherUserId);
+    final profile = await UserService.instance.getUserProfile(
+      widget.otherUserId,
+    );
     if (mounted) {
       setState(() {
         _otherUserProfile = profile;
@@ -67,6 +86,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     if (_otherUserProfile == null) return null;
     // Return null for deleted users so placeholder is shown
     if (DeletedUserHelper.isDeleted(_otherUserProfile)) return null;
+    if (ProfileVisibilityHelper.shouldHidePhotos(_otherUserProfile!)) {
+      return null;
+    }
     String photoUrl = (_otherUserProfile!['photoUrl'] ?? '').toString();
     if (photoUrl.isEmpty &&
         _otherUserProfile!['photos'] is List &&
@@ -94,12 +116,24 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     _messageController.clear();
 
     try {
-      final sent = await ChatService.instance
-          .sendMessage(receiverId: widget.otherUserId, text: text);
+      final sent = await ChatService.instance.sendMessage(
+        receiverId: widget.otherUserId,
+        text: text,
+      );
 
       if (!sent && mounted) {
-        // Premium gate — show upgrade bottom sheet
-        _showUpgradeSheet();
+        final check = await SubscriptionLimitsService.instance.canSendMessageTo(
+          widget.otherUserId,
+        );
+        if (!check.allowed) {
+          showLinearMessage(
+            context,
+            check.reason ?? 'Messaging is not available on your plan.',
+            isError: true,
+          );
+        } else {
+          _showUpgradeSheet();
+        }
       }
     } finally {
       if (mounted) setState(() => _isSending = false);
@@ -132,7 +166,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.white24,
                 borderRadius: BorderRadius.circular(2),
@@ -142,19 +177,46 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
             // ── Block option ──
             ListTile(
               leading: const Icon(Icons.block, color: Colors.orangeAccent),
-              title: const Text('Block User', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-              subtitle: const Text('Remove from chat & connections', style: TextStyle(color: Colors.white54, fontSize: 12)),
+              title: const Text(
+                'Block User',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              subtitle: const Text(
+                'Remove from chat & connections',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
               onTap: () async {
                 Navigator.pop(context);
                 final confirm = await showDialog<bool>(
                   context: context,
                   builder: (ctx) => AlertDialog(
                     backgroundColor: AppColors.onyx,
-                    title: const Text('Block User?', style: TextStyle(color: Colors.white)),
-                    content: const Text('This user will be removed from your connections and chat. You can unblock them later.', style: TextStyle(color: Colors.white70)),
+                    title: const Text(
+                      'Block User?',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    content: const Text(
+                      'This user will be removed from your connections and chat. You can unblock them later.',
+                      style: TextStyle(color: Colors.white70),
+                    ),
                     actions: [
-                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
-                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Block', style: TextStyle(color: Colors.orangeAccent))),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text(
+                          'Block',
+                          style: TextStyle(color: Colors.orangeAccent),
+                        ),
+                      ),
                     ],
                   ),
                 );
@@ -172,29 +234,132 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
             const Divider(color: Colors.white12),
             // ── Report option ──
             ListTile(
-              leading: const FaIcon(FontAwesomeIcons.flag, color: Colors.redAccent, size: 20),
-              title: const Text('Report User', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600)),
-              subtitle: const Text('Report abuse — user is permanently blocked', style: TextStyle(color: Colors.white54, fontSize: 12)),
+              leading: const FaIcon(
+                FontAwesomeIcons.flag,
+                color: Colors.redAccent,
+                size: 20,
+              ),
+              title: const Text(
+                'Report User',
+                style: TextStyle(
+                  color: Colors.redAccent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              subtitle: const Text(
+                'Report abuse — user is permanently blocked',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
               onTap: () async {
                 Navigator.pop(context);
+                final reasonController = TextEditingController();
                 final confirm = await showDialog<bool>(
                   context: context,
                   builder: (ctx) => AlertDialog(
                     backgroundColor: AppColors.onyx,
-                    title: const Text('Report User?', style: TextStyle(color: Colors.white)),
-                    content: const Text('This user will be reported and permanently blocked. They will never appear in your connections or chat again, even if you try to unblock.', style: TextStyle(color: Colors.white70)),
+                    title: const Text(
+                      'Report User?',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                    content: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'This user will be reported and permanently blocked. They will never appear in your connections or chat again, even if you try to unblock.',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Reason for reporting:',
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: reasonController,
+                          maxLines: 3,
+                          style: const TextStyle(color: Colors.white, fontSize: 14),
+                          decoration: InputDecoration(
+                            hintText: 'Please describe the issue...',
+                            hintStyle: TextStyle(
+                              color: Colors.white.withOpacity(0.3),
+                              fontSize: 14,
+                            ),
+                            filled: true,
+                            fillColor: Colors.white.withOpacity(0.06),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: Colors.white.withOpacity(0.1),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: Colors.white.withOpacity(0.1),
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                            contentPadding: const EdgeInsets.all(12),
+                          ),
+                        ),
+                      ],
+                    ),
                     actions: [
-                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.white54))),
-                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Report', style: TextStyle(color: Colors.redAccent))),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text(
+                          'Report',
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
+                      ),
                     ],
                   ),
                 );
-                if (confirm == true && mounted) {
-                  await UserService.instance.reportUser(widget.otherUserId);
-                  if (mounted) {
+                final reason = reasonController.text.trim();
+                final shouldReport = confirm == true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  reasonController.dispose();
+                });
+                if (shouldReport && mounted) {
+                  try {
+                    await UserService.instance.reportUser(
+                      widget.otherUserId,
+                      reason: reason,
+                    );
+                    if (!mounted) return;
                     Navigator.pop(context);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('User reported and permanently blocked.')),
+                      const SnackBar(
+                        content: Text(
+                          'User reported and permanently blocked.',
+                        ),
+                      ),
+                    );
+                  } catch (_) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Could not submit report. Please try again.',
+                        ),
+                      ),
                     );
                   }
                 }
@@ -220,20 +385,27 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.white24,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
             const SizedBox(height: 24),
-            const Icon(Icons.workspace_premium_rounded,
-                color: AppColors.goldMedium, size: 48),
+            const Icon(
+              Icons.workspace_premium_rounded,
+              color: AppColors.goldMedium,
+              size: 48,
+            ),
             const SizedBox(height: 16),
             const Text(
               'Premium Feature',
-              style: TextStyle(color: Colors.white, fontSize: 22,
-                  fontWeight: FontWeight.bold),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
@@ -241,8 +413,10 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
               'Upgrade to start meaningful conversations.',
               textAlign: TextAlign.center,
               style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.6),
-                  fontSize: 15, height: 1.5),
+                color: Colors.white.withValues(alpha: 0.6),
+                fontSize: 15,
+                height: 1.5,
+              ),
             ),
             const SizedBox(height: 28),
             SizedBox(
@@ -250,26 +424,35 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
               child: ElevatedButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const SubscriptionPage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  );
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.goldMedium,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30)),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
                 ),
-                child: const Text('Upgrade to Premium',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Upgrade to Premium',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(height: 12),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text('Maybe later',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.4), fontSize: 14)),
+              child: Text(
+                'Maybe later',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.4),
+                  fontSize: 14,
+                ),
+              ),
             ),
           ],
         ),
@@ -307,6 +490,10 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                   photoUrl: _getProfileImageUrl(),
                   radius: 18,
                   isDeleted: _isOtherUserDeleted,
+                  photosHidden: _otherUserProfile != null &&
+                      ProfileVisibilityHelper.shouldHidePhotos(
+                        _otherUserProfile!,
+                      ),
                 ),
               ),
               const SizedBox(width: 10),
@@ -320,16 +507,26 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                           child: Text(
                             widget.otherUserName,
                             style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 16),
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                            ),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         // Verified badge — admin must have approved the ID
-                        if (_otherUserProfile?['isVerified'] == true || _otherUserProfile?['profileVerified'] == true || _otherUserProfile?['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
+                        if (_otherUserProfile?['isVerified'] == true ||
+                            _otherUserProfile?['profileVerified'] == true ||
+                            _otherUserProfile?['verificationStatus']
+                                    ?.toString()
+                                    .toLowerCase() ==
+                                'approved') ...[
                           const SizedBox(width: 4),
-                          const Icon(Icons.verified, color: AppColors.goldMedium, size: 14),
+                          const Icon(
+                            Icons.verified,
+                            color: AppColors.goldMedium,
+                            size: 14,
+                          ),
                         ],
                       ],
                     ),
@@ -338,7 +535,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                       stream: _presenceStream,
                       builder: (context, presSnap) {
                         final data = presSnap.data?.data() ?? _otherUserProfile;
-                        final bool isOnline = data?['isOnline'] == true ||
+                        final bool isOnline =
+                            data?['isOnline'] == true ||
                             data?['online'] == true;
                         return Row(
                           children: [
@@ -346,7 +544,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                               width: 7,
                               height: 7,
                               decoration: BoxDecoration(
-                                color: isOnline ? Colors.greenAccent : Colors.grey,
+                                color: isOnline
+                                    ? Colors.greenAccent
+                                    : Colors.grey,
                                 shape: BoxShape.circle,
                               ),
                             ),
@@ -354,8 +554,11 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                             Text(
                               '${isOnline ? 'Online' : 'Offline'} • Tap to view profile',
                               style: TextStyle(
-                                  color: AppColors.goldMedium.withValues(alpha: 0.7),
-                                  fontSize: 12),
+                                color: AppColors.goldMedium.withValues(
+                                  alpha: 0.7,
+                                ),
+                                fontSize: 12,
+                              ),
                             ),
                           ],
                         );
@@ -387,7 +590,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                         snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(
                         child: CircularProgressIndicator(
-                            color: AppColors.goldMedium, strokeWidth: 2),
+                          color: AppColors.goldMedium,
+                          strokeWidth: 2,
+                        ),
                       );
                     }
 
@@ -396,15 +601,20 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.chat_bubble_outline,
-                                color: AppColors.goldMedium.withValues(alpha: 0.3),
-                                size: 48),
+                            Icon(
+                              Icons.chat_bubble_outline,
+                              color: AppColors.goldMedium.withValues(
+                                alpha: 0.3,
+                              ),
+                              size: 48,
+                            ),
                             const SizedBox(height: 16),
                             Text(
                               'Start your conversation 👋',
                               style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.6),
-                                  fontSize: 15),
+                                color: Colors.white.withValues(alpha: 0.6),
+                                fontSize: 15,
+                              ),
                             ),
                           ],
                         ),
@@ -418,33 +628,71 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                       itemBuilder: (context, index) {
                         final msg = messages[index];
                         final isMe = msg.senderId == currentUid;
-                        return _MessageBubble(
-                          msg: msg,
-                          isMe: isMe,
-                        );
+                        return _MessageBubble(msg: msg, isMe: isMe);
                       },
                     );
                   },
                 ),
               ),
 
-              // ── Input bar (hidden for deleted users) ──
-              if (_isOtherUserDeleted)
+              // ── Input bar (hidden for deleted / restricted users) ──
+              if (_chatRestricted && !_isOtherUserDeleted)
                 Container(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   decoration: BoxDecoration(
                     color: AppColors.obsidian,
                     border: Border(
                       top: BorderSide(
-                          color: Colors.white.withValues(alpha: 0.07)),
+                        color: Colors.white.withValues(alpha: 0.07),
+                      ),
+                    ),
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          _chatRestrictionReason ??
+                              'Messaging is not available on your plan.',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            fontSize: 13,
+                            height: 1.45,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextButton(
+                          onPressed: _showUpgradeSheet,
+                          child: const Text(
+                            'Upgrade to Premium',
+                            style: TextStyle(color: AppColors.goldMedium),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else if (_isOtherUserDeleted)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  decoration: BoxDecoration(
+                    color: AppColors.obsidian,
+                    border: Border(
+                      top: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.07),
+                      ),
                     ),
                   ),
                   child: SafeArea(
                     top: false,
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline,
-                            color: Colors.white30, size: 18),
+                        const Icon(
+                          Icons.info_outline,
+                          color: Colors.white30,
+                          size: 18,
+                        ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
@@ -469,7 +717,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                       color: AppColors.obsidian,
                       border: Border(
                         top: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.07)),
+                          color: Colors.white.withValues(alpha: 0.07),
+                        ),
                       ),
                     ),
                     child: Row(
@@ -485,7 +734,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                             decoration: InputDecoration(
                               hintText: 'Type a message…',
                               hintStyle: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.4)),
+                                color: Colors.white.withValues(alpha: 0.4),
+                              ),
                               filled: true,
                               fillColor: Colors.white.withValues(alpha: 0.06),
                               border: OutlineInputBorder(
@@ -493,7 +743,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                                 borderSide: BorderSide.none,
                               ),
                               contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 12),
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
                             ),
                           ),
                         ),
@@ -511,10 +763,12 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                             ),
                             child: _isSending
                                 ? const SizedBox(
-                                    width: 18, height: 18,
+                                    width: 18,
+                                    height: 18,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: AppColors.obsidian),
+                                      strokeWidth: 2,
+                                      color: AppColors.obsidian,
+                                    ),
                                   )
                                 : const Icon(Icons.send_rounded, size: 20),
                           ),
@@ -545,7 +799,8 @@ class _MessageBubble extends StatelessWidget {
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.75),
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
         margin: const EdgeInsets.symmetric(vertical: 4),
         child: ClipRRect(
           borderRadius: BorderRadius.only(
@@ -557,12 +812,9 @@ class _MessageBubble extends StatelessWidget {
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 4, sigmaY: 4),
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: isMe
-                    ? AppColors.goldMedium
-                    : const Color(0xFF2A2A2A),
+                color: isMe ? AppColors.goldMedium : const Color(0xFF2A2A2A),
                 border: Border.all(
                   color: isMe
                       ? AppColors.goldMedium
@@ -583,7 +835,7 @@ class _MessageBubble extends StatelessWidget {
                   Text(
                     msg.text,
                     style: TextStyle(
-                      color: isMe ? AppColors.obsidian : Colors.white, 
+                      color: isMe ? AppColors.obsidian : Colors.white,
                       fontSize: 14.5,
                       fontWeight: isMe ? FontWeight.w500 : FontWeight.normal,
                     ),
@@ -595,10 +847,11 @@ class _MessageBubble extends StatelessWidget {
                       Text(
                         _hhmm(msg.sentAt),
                         style: TextStyle(
-                            color: isMe
-                                ? AppColors.obsidian.withValues(alpha: 0.6)
-                                : Colors.white.withValues(alpha: 0.5),
-                            fontSize: 10),
+                          color: isMe
+                              ? AppColors.obsidian.withValues(alpha: 0.6)
+                              : Colors.white.withValues(alpha: 0.5),
+                          fontSize: 10,
+                        ),
                       ),
                       if (isMe) ...[
                         const SizedBox(width: 4),

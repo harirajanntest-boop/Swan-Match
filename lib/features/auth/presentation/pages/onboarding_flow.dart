@@ -249,6 +249,12 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data['profileApprovalStatus'] = 'pending';
       data['verificationStatus'] = 'pending'; // admin sets to 'approved'
 
+      final visibility =
+          (_onboardingData.profileVisibility).toString().trim();
+      final isPrivate = visibility == 'Private';
+      data['showProfileToEveryone'] = !isPrivate;
+      data['showPhotosToEveryone'] = data['showPhotosToEveryone'] ?? true;
+
       // Save to Firestore
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
 

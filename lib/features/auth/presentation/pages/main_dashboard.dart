@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../../services/payment_flow_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
@@ -81,7 +82,21 @@ class _MainDashboardState extends State<MainDashboard> {
   /// This fixes the case where the user paid but the webhook never fired.
   Future<void> _syncSubscriptionStatus() async {
     try {
-      await StripeService.instance.verifyAndActivatePremium();
+      final profile = await UserService.instance.getCurrentUserProfile();
+      if (UserService.instance.isOnFreeTrial(profile)) {
+        return;
+      }
+      for (var attempt = 0; attempt < 4; attempt++) {
+        final isPremium = await StripeService.instance.verifyAndActivatePremium();
+        UserService.instance.invalidateCurrentUserCache();
+        if (isPremium) {
+          await UserService.instance.endTrialAfterPaidUpgrade();
+          return;
+        }
+        if (attempt < 3) {
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
     } catch (_) {
       // Non-critical — don't show errors to the user at startup.
     }
@@ -1319,7 +1334,7 @@ class _EditorialMatchCard extends StatelessWidget {
                               child: Padding(
                                 padding: const EdgeInsets.only(bottom: 80.0),
                                 child: Icon(
-                                  match['showPhotosToEveryone'] == false ? Icons.lock_person_outlined : Icons.person,
+                                  match['showPhotosToEveryone'] == false ? Icons.admin_panel_settings_outlined : Icons.person,
                                   color: AppColors.goldDark,
                                   size: 100,
                                 ),
@@ -1594,11 +1609,9 @@ class _UpgradePlansPageState extends State<_UpgradePlansPage> {
   Future<void> _onSubscribe() async {
     setState(() => _isLoading = true);
     try {
-      // Clear the flag so the success screen shows again for this new purchase
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('payment_success_shown');
+      await PaymentFlowService.markCheckoutStarted();
 
-      const successUrl = 'https://swanmatch.page.link/payment-success';
+      const successUrl = 'swanmatch://payment-success';
       const cancelUrl  = 'https://swanmatch.page.link/payment-cancel';
       await StripeService.instance.startSubscription(
         priceId: _priceId,

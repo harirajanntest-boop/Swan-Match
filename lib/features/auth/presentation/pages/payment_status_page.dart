@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../services/payment_flow_service.dart';
 import 'main_dashboard.dart';
+
+/// Stays visible until the user taps [Back to Home] — no auto-dismiss.
 
 class PaymentStatusPage extends StatefulWidget {
   final bool isSuccess;
@@ -21,6 +24,8 @@ class _PaymentStatusPageState extends State<PaymentStatusPage>
   void initState() {
     super.initState();
     if (widget.isSuccess) {
+      PaymentFlowService.setCongratsVisible(true);
+      PaymentFlowService.markCongratulationsDisplayed();
       _ctrl = AnimationController(
         vsync: this,
         duration: const Duration(milliseconds: 700),
@@ -30,11 +35,26 @@ class _PaymentStatusPageState extends State<PaymentStatusPage>
         begin: const Offset(0, 0.18),
         end: Offset.zero,
       ).animate(CurvedAnimation(parent: _ctrl!, curve: Curves.easeOut));
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (await PaymentFlowService.hasShownSuccessScreen()) {
+          if (!mounted) return;
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const MainDashboard()),
+            (r) => false,
+          );
+          return;
+        }
+        await PaymentFlowService.syncPaidSubscription();
+      });
     }
   }
 
   @override
   void dispose() {
+    if (widget.isSuccess) {
+      PaymentFlowService.setCongratsVisible(false);
+    }
     _ctrl?.dispose();
     super.dispose();
   }
@@ -59,7 +79,9 @@ class _PaymentStatusPageState extends State<PaymentStatusPage>
   @override
   Widget build(BuildContext context) {
     if (widget.isSuccess) {
-      return Scaffold(
+      return PopScope(
+        canPop: false,
+        child: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(
           fit: StackFit.expand,
@@ -139,11 +161,17 @@ class _PaymentStatusPageState extends State<PaymentStatusPage>
                             borderRadius: BorderRadius.circular(32),
                           ),
                           child: ElevatedButton(
-                            onPressed: () => Navigator.pushAndRemoveUntil(
-                              context,
-                              MaterialPageRoute(builder: (_) => const MainDashboard()),
-                              (r) => false,
-                            ),
+                            onPressed: () async {
+                              await PaymentFlowService.markSuccessScreenShown();
+                              if (!context.mounted) return;
+                              Navigator.pushAndRemoveUntil(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const MainDashboard(),
+                                ),
+                                (r) => false,
+                              );
+                            },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: Colors.transparent,
                               shadowColor: Colors.transparent,
@@ -169,6 +197,7 @@ class _PaymentStatusPageState extends State<PaymentStatusPage>
             ),
           ],
         ),
+      ),
       );
     }
 

@@ -27,7 +27,7 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
   try {
     // 1. Fetch user data to get FCM tokens
     const userSnapshot = await admin.firestore().collection('users').doc(toUserId).get();
-    
+
     if (!userSnapshot.exists) {
       console.log(`[onNotificationCreated] User ${toUserId} does not exist`);
       return;
@@ -62,7 +62,7 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
           payload: { aps: { sound: 'default', badge: 1 } },
         },
       }).catch(err => {
-        console.error(`[onNotificationCreated] Failed for token ${token.substring(0,20)}...: ${err.message}`);
+        console.error(`[onNotificationCreated] Failed for token ${token.substring(0, 20)}...: ${err.message}`);
         return null;
       })
     );
@@ -97,7 +97,7 @@ exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messag
   const messageText = messageDetails.text || messageDetails.message || '';
   const chatId = event.params.chatId;
 
-  console.log(`[onMessageCreated] chatId=${chatId}, from=${senderId}, to=${receiverId}, text=${messageText.substring(0,30)}`);
+  console.log(`[onMessageCreated] chatId=${chatId}, from=${senderId}, to=${receiverId}, text=${messageText.substring(0, 30)}`);
 
   // Prevent sending notification to the sender
   if (!receiverId || receiverId === senderId) {
@@ -144,7 +144,7 @@ exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messag
           headers: { 'apns-priority': '10' },
         },
       }).catch(err => {
-        console.error(`[onMessageCreated] Failed for token ${token.substring(0,20)}...: ${err.code} ${err.message}`);
+        console.error(`[onMessageCreated] Failed for token ${token.substring(0, 20)}...: ${err.code} ${err.message}`);
         return null;
       })
     );
@@ -281,176 +281,201 @@ exports.handleStripeWebhook = onRequest(
     console.log('Has webhookSecret:', !!stripeWebhookSecret.value());
     console.log('webhookSecret starts with whsec_:', stripeWebhookSecret.value()?.startsWith('whsec_'));
 
-  const sig = req.headers['stripe-signature'];
-  const webhookSecretValue = stripeWebhookSecret.value();
+    const sig = req.headers['stripe-signature'];
+    const webhookSecretValue = stripeWebhookSecret.value();
 
-  // 2. WEBHOOK SIGNATURE — Mandatory verification
-  if (!webhookSecretValue) {
-    console.error('STRIPE_WEBHOOK_SECRET is not configured.');
-    return res.status(500).send('Webhook configuration missing.');
-  }
+    // 2. WEBHOOK SIGNATURE — Mandatory verification
+    if (!webhookSecretValue) {
+      console.error('STRIPE_WEBHOOK_SECRET is not configured.');
+      return res.status(500).send('Webhook configuration missing.');
+    }
 
-  if (!sig) {
-    console.error('Missing stripe-signature header.');
-    return res.status(400).send('Missing stripe-signature header.');
-  }
+    if (!sig) {
+      console.error('Missing stripe-signature header.');
+      return res.status(400).send('Missing stripe-signature header.');
+    }
 
-  const stripe = require('stripe')(stripeSecretKey.value().trim());
-  let event;
+    const stripe = require('stripe')(stripeSecretKey.value().trim());
+    let event;
 
-  try {
-    // 2. Use constructEvent with rawBody
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecretValue);
-  } catch (err) {
-    console.error('Webhook Signature Verify Failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
+    try {
+      // 2. Use constructEvent with rawBody
+      event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecretValue);
+    } catch (err) {
+      console.error('Webhook Signature Verify Failed:', err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
 
-  const db = admin.firestore();
+    const db = admin.firestore();
 
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        const uid = session.metadata.userId || session.client_reference_id;
-        
-        if (!uid) {
-          console.error('No UID found in session metadata or client_reference_id');
+    try {
+      switch (event.type) {
+        case 'checkout.session.completed': {
+          const session = event.data.object;
+          const uid = session.metadata.userId || session.client_reference_id;
+
+          if (!uid) {
+            console.error('No UID found in session metadata or client_reference_id');
+            break;
+          }
+
+          // 3. IDEMPOTENCY
+          const existingSession = await db.collection('users').where('lastCheckoutSessionId', '==', session.id).limit(1).get();
+          if (!existingSession.empty) {
+            console.log(`Checkout session ${session.id} already processed.`);
+            return res.status(200).send('Session already processed.');
+          }
+
+          const updateData = {
+            stripeCustomerId: session.customer,
+            lastCheckoutSessionId: session.id,
+            customerEmail: session.customer_details?.email,
+            customerName: session.customer_details?.name,
+            paymentStatus: session.payment_status,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          };
+
+          if (session.subscription) {
+            updateData.stripeSubscriptionId = session.subscription;
+          }
+
+          await db.collection('users').doc(uid).update(updateData);
           break;
         }
 
-        // 3. IDEMPOTENCY
-        const existingSession = await db.collection('users').where('lastCheckoutSessionId', '==', session.id).limit(1).get();
-        if (!existingSession.empty) {
-          console.log(`Checkout session ${session.id} already processed.`);
-          return res.status(200).send('Session already processed.');
-        }
+        case 'customer.subscription.created':
+        case 'customer.subscription.updated':
+        case 'customer.subscription.deleted': {
+          const subscription = event.data.object;
+          const periodStart = subscription.current_period_start;
+          const periodEnd = subscription.current_period_end;
 
-        const updateData = {
-          stripeCustomerId: session.customer,
-          lastCheckoutSessionId: session.id,
-          customerEmail: session.customer_details?.email,
-          customerName: session.customer_details?.name,
-          paymentStatus: session.payment_status,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
+          const priceId =
+            subscription.items?.data?.[0]?.price?.id ??
+            subscription.plan?.id ??
+            null;
 
-        if (session.subscription) {
-          updateData.stripeSubscriptionId = session.subscription;
-        }
-
-        await db.collection('users').doc(uid).update(updateData);
-        break;
-      }
-      
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated':
-      case 'customer.subscription.deleted': {
-        const subscription = event.data.object;
-        const periodStart = subscription.current_period_start;
-        const periodEnd = subscription.current_period_end;
-
-        const updateData = {
-          subscriptionStatus: subscription.status,
-          stripeSubscriptionId: subscription.id,
-          subscriptionPlan: subscription.status === 'active' ? 'premium' : 'free',
-          cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        // Only add timestamps if values exist and are valid integers
-        if (periodStart && Number.isInteger(Number(periodStart))) {
-          updateData.billingPeriodStart = admin.firestore.Timestamp.fromMillis(
-            Number(periodStart) * 1000
-          );
-        }
-
-        if (periodEnd && Number.isInteger(Number(periodEnd))) {
-          updateData.billingPeriodEnd = admin.firestore.Timestamp.fromMillis(
-            Number(periodEnd) * 1000
-          );
-        }
-
-        const customer = await stripe.customers.retrieve(subscription.customer);
-        const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
-
-        if (uid) {
-          await db.collection('users').doc(uid).update(updateData);
-          console.log(`Subscription updated for uid=${uid} status=${subscription.status}`);
-        } else {
-          console.log('No uid found in customer metadata — skipping Firestore update');
-        }
-        break;
-      }
-
-      case 'invoice.paid': {
-        const invoice = event.data.object;
-        const customer = await stripe.customers.retrieve(invoice.customer);
-        const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
-        
-        if (uid) {
-          // 3. IDEMPOTENCY check for invoice
-          const userDoc = await db.collection('users').doc(uid).get();
-          if (userDoc.exists && userDoc.data().lastInvoiceId === invoice.id) {
-            console.log(`Invoice ${invoice.id} already processed.`);
-            return res.status(200).send('Invoice already processed.');
-          }
-
-          await db.collection('users').doc(uid).update({
-            paymentStatus: 'paid',
-            subscriptionStatus: 'active',
-            lastInvoiceId: invoice.id,
-            lastPaymentDate: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
-        break;
-      }
-
-      case 'invoice.payment_failed': {
-        const invoice = event.data.object;
-        const customer = await stripe.customers.retrieve(invoice.customer);
-        const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
-        
-        if (uid) {
-          await db.collection('users').doc(uid).update({
-            paymentStatus: 'failed',
-            subscriptionStatus: 'past_due',
-            lastInvoiceId: invoice.id,
+          const updateData = {
+            subscriptionStatus: subscription.status,
+            stripeSubscriptionId: subscription.id,
+            subscriptionPlan: subscription.status === 'active' ? 'premium' : 'free',
+            cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
+          };
 
-          // 4. PAYMENT FAILED NOTIFICATION
-          const userSnapshot = await db.collection('users').doc(uid).get();
-          if (userSnapshot.exists) {
-            const userData = userSnapshot.data();
-            // Checking both array and single token fields for compatibility
-            let fcmTokens = userData.fcmTokens || [];
-            if (fcmTokens.length === 0 && userData.fcmToken) {
-              fcmTokens = [userData.fcmToken];
+          if (priceId) {
+            updateData.subscriptionPriceId = priceId;
+            updateData.subscription = {
+              status: subscription.status,
+              priceId,
+            };
+          }
+
+          if (subscription.status === 'active' || subscription.status === 'trialing') {
+            updateData.freeTrialEndsAt = admin.firestore.FieldValue.delete();
+            updateData.freeTrialStartedAt = admin.firestore.FieldValue.delete();
+            updateData.trialEndedAt = admin.firestore.FieldValue.serverTimestamp();
+            updateData.trialEndedReason = 'upgraded_to_premium';
+          }
+
+          // Only add timestamps if values exist and are valid integers
+          if (periodStart && Number.isInteger(Number(periodStart))) {
+            updateData.billingPeriodStart = admin.firestore.Timestamp.fromMillis(
+              Number(periodStart) * 1000
+            );
+          }
+
+          if (periodEnd && Number.isInteger(Number(periodEnd))) {
+            updateData.billingPeriodEnd = admin.firestore.Timestamp.fromMillis(
+              Number(periodEnd) * 1000
+            );
+          }
+
+          const customer = await stripe.customers.retrieve(subscription.customer);
+          const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
+
+          if (uid) {
+            await db.collection('users').doc(uid).update(updateData);
+            console.log(`Subscription updated for uid=${uid} status=${subscription.status}`);
+          } else {
+            console.log('No uid found in customer metadata — skipping Firestore update');
+          }
+          break;
+        }
+
+        case 'invoice.paid': {
+          const invoice = event.data.object;
+          const customer = await stripe.customers.retrieve(invoice.customer);
+          const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
+
+          if (uid) {
+            // 3. IDEMPOTENCY check for invoice
+            const userDoc = await db.collection('users').doc(uid).get();
+            if (userDoc.exists && userDoc.data().lastInvoiceId === invoice.id) {
+              console.log(`Invoice ${invoice.id} already processed.`);
+              return res.status(200).send('Invoice already processed.');
             }
-            
-            if (fcmTokens.length > 0) {
-              const message = {
-                notification: {
-                  title: "Payment Failed",
-                  body: "Please update your payment method to keep Swan Match Premium.",
-                },
-                tokens: fcmTokens,
-              };
-              await admin.messaging().sendEachForMulticast(message);
-              console.log(`Payment failed notification sent to user ${uid}`);
+
+            await db.collection('users').doc(uid).update({
+              paymentStatus: 'paid',
+              subscriptionStatus: 'active',
+              subscriptionPlan: 'premium',
+              lastInvoiceId: invoice.id,
+              lastPaymentDate: admin.firestore.FieldValue.serverTimestamp(),
+              freeTrialEndsAt: admin.firestore.FieldValue.delete(),
+              freeTrialStartedAt: admin.firestore.FieldValue.delete(),
+              trialEndedAt: admin.firestore.FieldValue.serverTimestamp(),
+              trialEndedReason: 'upgraded_to_premium',
+            });
+          }
+          break;
+        }
+
+        case 'invoice.payment_failed': {
+          const invoice = event.data.object;
+          const customer = await stripe.customers.retrieve(invoice.customer);
+          const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
+
+          if (uid) {
+            await db.collection('users').doc(uid).update({
+              paymentStatus: 'failed',
+              subscriptionStatus: 'past_due',
+              lastInvoiceId: invoice.id,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+
+            // 4. PAYMENT FAILED NOTIFICATION
+            const userSnapshot = await db.collection('users').doc(uid).get();
+            if (userSnapshot.exists) {
+              const userData = userSnapshot.data();
+              // Checking both array and single token fields for compatibility
+              let fcmTokens = userData.fcmTokens || [];
+              if (fcmTokens.length === 0 && userData.fcmToken) {
+                fcmTokens = [userData.fcmToken];
+              }
+
+              if (fcmTokens.length > 0) {
+                const message = {
+                  notification: {
+                    title: "Payment Failed",
+                    body: "Please update your payment method to keep Swan Match Premium.",
+                  },
+                  tokens: fcmTokens,
+                };
+                await admin.messaging().sendEachForMulticast(message);
+                console.log(`Payment failed notification sent to user ${uid}`);
+              }
             }
           }
+          break;
         }
-        break;
       }
+      res.json({ received: true });
+    } catch (error) {
+      console.error('Webhook Processing Error:', error);
+      res.status(500).send('Webhook Processing Error');
     }
-    res.json({ received: true });
-  } catch (error) {
-    console.error('Webhook Processing Error:', error);
-    res.status(500).send('Webhook Processing Error');
-  }
-});
+  });
 
 /**
  * verifySubscription - Source of truth for premium status.
@@ -478,24 +503,45 @@ exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (reque
     const userData = userDoc.data();
     const stripeCustomerId = userData.stripeCustomerId;
 
-    // ── Fast path: no Stripe customer means no subscription ──────────────────
+    const clearInAppTrialFields = () => ({
+      freeTrialEndsAt: admin.firestore.FieldValue.delete(),
+      freeTrialStartedAt: admin.firestore.FieldValue.delete(),
+      trialEndedAt: admin.firestore.FieldValue.serverTimestamp(),
+      trialEndedReason: 'upgraded_to_premium',
+    });
+
+    const isInAppTrial =
+      userData.subscriptionPlan === 'trial' &&
+      userData.subscriptionStatus === 'trialing';
+
+    // ── Fast path: no Stripe customer means no paid subscription ───────────
     if (!stripeCustomerId) {
       console.log(`[verifySubscription] No stripeCustomerId for uid=${uid}`);
-      // Still check Firestore fields set manually (admin overrides)
+      if (isInAppTrial) {
+        return { isPremium: false, expiresAt: null };
+      }
       const status = userData.subscriptionStatus;
-      const isPremiumAdmin = status === 'active' || status === 'trialing' ||
-                             userData.subscriptionPlan === 'premium';
-      return { isPremium: isPremiumAdmin, expiresAt: null };
+      const plan = userData.subscriptionPlan;
+      const isPremiumAdmin =
+        (status === 'active' || status === 'trialing') &&
+        (plan === 'premium' || plan === 'gold');
+      return { isPremium: !!isPremiumAdmin, expiresAt: null };
     }
 
     // ── Query Stripe for active subscriptions ────────────────────────────────
     const rawSecret = stripeSecretKey.value();
     if (!rawSecret) {
+      if (isInAppTrial) {
+        return { isPremium: false, expiresAt: null };
+      }
       // Fall back to Firestore if secret unavailable
       const status = userData.subscriptionStatus;
+      const plan = userData.subscriptionPlan;
       const expiry = userData.billingPeriodEnd;
-      const isPremium = (status === 'active' || status === 'trialing') &&
-                        (!expiry || expiry.toMillis() > Date.now());
+      const isPremium =
+        (status === 'active' || status === 'trialing') &&
+        (plan === 'premium' || plan === 'gold') &&
+        (!expiry || expiry.toMillis() > Date.now());
       return { isPremium: !!isPremium, expiresAt: expiry ? expiry.toMillis() : null };
     }
 
@@ -523,16 +569,36 @@ exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (reque
       }
     }
 
+    // In-app free trial with no paid Stripe sub — do not overwrite Firestore.
+    if (isInAppTrial && !isPremium) {
+      console.log(`[verifySubscription] Preserving in-app trial for uid=${uid}`);
+      return { isPremium: false, expiresAt: null };
+    }
+
     // ── Write back to Firestore so isPremium() works offline ─────────────────
     const updatePayload = {
       subscriptionStatus: isPremium ? (bestSub?.status || 'active') : (subscriptions.data[0]?.status || 'free'),
-      subscriptionPlan: isPremium ? 'premium' : 'free',
+      subscriptionPlan: isPremium ? 'premium' : (isInAppTrial ? 'trial' : 'free'),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (bestSub) {
+      const priceId =
+        bestSub.items?.data?.[0]?.price?.id ?? bestSub.plan?.id ?? null;
+
       updatePayload.stripeSubscriptionId = bestSub.id;
       updatePayload.billingPeriodEnd = admin.firestore.Timestamp.fromMillis(bestSub.current_period_end * 1000);
       updatePayload.billingPeriodStart = admin.firestore.Timestamp.fromMillis(bestSub.current_period_start * 1000);
+
+      if (priceId) {
+        updatePayload.subscriptionPriceId = priceId;
+        updatePayload.subscription = {
+          status: bestSub.status,
+          priceId,
+        };
+      }
+    }
+    if (isPremium) {
+      Object.assign(updatePayload, clearInAppTrialFields());
     }
     await userRef.set(updatePayload, { merge: true });
     console.log(`[verifySubscription] Updated Firestore: isPremium=${isPremium}`);
@@ -797,10 +863,10 @@ exports.checkAuthProviders = onCall(async (request) => {
 
   try {
     const userRecord = await admin.auth().getUserByEmail(email);
-    
+
     // Extract provider IDs from userRecord
     const providers = userRecord.providerData.map(info => info.providerId);
-    
+
     return {
       exists: true,
       providers: providers

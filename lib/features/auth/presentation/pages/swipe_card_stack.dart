@@ -544,7 +544,7 @@ class _SwipeMatchCard extends StatelessWidget {
                       child: Center(
                         child: Icon(
                           match['showPhotosToEveryone'] == false
-                              ? Icons.lock_person_outlined
+                              ? Icons.admin_panel_settings_outlined
                               : Icons.person,
                           color: AppColors.goldDark.withOpacity(0.4),
                           size: 120,

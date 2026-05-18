@@ -1,10 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../models/interest_model.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../shared/widgets/deleted_user_avatar.dart';
 import 'its_a_match_overlay.dart';
 import 'match_profile_detail_page.dart';
@@ -34,7 +36,6 @@ class _InterestsViewState extends State<InterestsView>
     _receivedInterestsStream = InterestService.instance.watchInterestsForMe();
     _sentInterestsStream = InterestService.instance.watchMySentInterests();
   }
-
 
   @override
   void dispose() {
@@ -189,8 +190,7 @@ class _TabPill extends StatelessWidget {
                   style: TextStyle(
                     color: isSelected ? Colors.white : Colors.white38,
                     fontSize: 19,
-                    fontWeight:
-                        isSelected ? FontWeight.bold : FontWeight.w400,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w400,
                     letterSpacing: 0.1,
                   ),
                 ),
@@ -242,6 +242,7 @@ class _MatchListTab extends StatelessWidget {
   final bool isReceived;
   final String emptyMessage;
   final String emptySubMessage;
+
   /// If non-null, only shows items matching this status
   final String? filterStatus;
 
@@ -271,7 +272,12 @@ class _MatchListTab extends StatelessWidget {
         // Apply status filter if provided
         final interests = filterStatus == null
             ? all
-            : all.where((i) => i.status.toLowerCase() == filterStatus!.toLowerCase()).toList();
+            : all
+                  .where(
+                    (i) =>
+                        i.status.toLowerCase() == filterStatus!.toLowerCase(),
+                  )
+                  .toList();
 
         // Deduplicate by other user, keep latest
         final byOtherUser = <String, InterestModel>{};
@@ -300,8 +306,7 @@ class _MatchListTab extends StatelessWidget {
           itemCount: sorted.length,
           itemBuilder: (context, index) {
             final item = sorted[index];
-            final otherUserId =
-                isReceived ? item.fromUserId : item.toUserId;
+            final otherUserId = isReceived ? item.fromUserId : item.toUserId;
             return _MatchRow(
               interest: item,
               otherUserId: otherUserId,
@@ -339,7 +344,9 @@ class _ConnectionsTab extends StatelessWidget {
                 sentSnap.connectionState == ConnectionState.waiting) {
               return const Center(
                 child: CircularProgressIndicator(
-                    color: AppColors.goldMedium, strokeWidth: 2),
+                  color: AppColors.goldMedium,
+                  strokeWidth: 2,
+                ),
               );
             }
 
@@ -350,15 +357,17 @@ class _ConnectionsTab extends StatelessWidget {
             final byOtherUser = <String, InterestModel>{};
 
             for (final item in received.where(
-                (i) => i.status.toLowerCase() == 'accepted')) {
+              (i) => i.status.toLowerCase() == 'accepted',
+            )) {
               final key = item.fromUserId; // the sender (the other person)
               final prev = byOtherUser[key];
               if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
                 byOtherUser[key] = item;
               }
             }
-            for (final item in
-                sent.where((i) => i.status.toLowerCase() == 'accepted')) {
+            for (final item in sent.where(
+              (i) => i.status.toLowerCase() == 'accepted',
+            )) {
               final key = item.toUserId;
               final prev = byOtherUser[key];
               if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
@@ -383,10 +392,12 @@ class _ConnectionsTab extends StatelessWidget {
               itemBuilder: (context, index) {
                 final item = sorted[index];
                 // Determine which side was received
-                final isReceived = item.status == 'accepted' &&
+                final isReceived =
+                    item.status == 'accepted' &&
                     received.any((r) => r.id == item.id);
-                final otherUserId =
-                    isReceived ? item.fromUserId : item.toUserId;
+                final otherUserId = isReceived
+                    ? item.fromUserId
+                    : item.toUserId;
                 return _MatchRow(
                   interest: item,
                   otherUserId: otherUserId,
@@ -449,12 +460,14 @@ class _MatchRowState extends State<_MatchRow> {
       builder: (context, snapshot) {
         final profile = snapshot.data ?? <String, dynamic>{};
         final isDeletedUser = DeletedUserHelper.isDeleted(
-            snapshot.data == null ? null : profile);
+          snapshot.data == null ? null : profile,
+        );
         final name = isDeletedUser
             ? 'Deleted Account'
             : (profile['name'] ?? 'Member').toString();
         final status = widget.interest.status.toLowerCase();
         final photoUrl = _getPhotoUrl(profile);
+        final hidePhotos = ProfileVisibilityHelper.shouldHidePhotos(profile);
         final isNew = status == 'pending';
         final isAccepted = status == 'accepted' || status == 'replied';
         final isDeclined = status == 'declined';
@@ -479,9 +492,12 @@ class _MatchRowState extends State<_MatchRow> {
                 builder: (ctx) => AlertDialog(
                   backgroundColor: const Color(0xFF1A1A1A),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20)),
-                  title: const Text('Account Deleted',
-                      style: TextStyle(color: Colors.white)),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  title: const Text(
+                    'Account Deleted',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   content: const Text(
                     'This user has deleted their account and is no longer available.',
                     style: TextStyle(color: Colors.white70),
@@ -489,8 +505,10 @@ class _MatchRowState extends State<_MatchRow> {
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text('OK',
-                          style: TextStyle(color: AppColors.goldMedium)),
+                      child: const Text(
+                        'OK',
+                        style: TextStyle(color: AppColors.goldMedium),
+                      ),
                     ),
                   ],
                 ),
@@ -523,9 +541,12 @@ class _MatchRowState extends State<_MatchRow> {
                     builder: (ctx) => AlertDialog(
                       backgroundColor: const Color(0xFF1A1A1A),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20)),
-                      title: const Text('Disconnect',
-                          style: TextStyle(color: Colors.white)),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      title: const Text(
+                        'Disconnect',
+                        style: TextStyle(color: Colors.white),
+                      ),
                       content: Text(
                         'Remove your connection with $name? This cannot be undone.',
                         style: const TextStyle(color: Colors.white70),
@@ -533,13 +554,17 @@ class _MatchRowState extends State<_MatchRow> {
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('Cancel',
-                              style: TextStyle(color: Colors.white54)),
+                          child: const Text(
+                            'Cancel',
+                            style: TextStyle(color: Colors.white54),
+                          ),
                         ),
                         TextButton(
                           onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('Disconnect',
-                              style: TextStyle(color: Colors.redAccent)),
+                          child: const Text(
+                            'Disconnect',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
                         ),
                       ],
                     ),
@@ -575,8 +600,8 @@ class _MatchRowState extends State<_MatchRow> {
                           color: isNew
                               ? AppColors.goldMedium
                               : isAccepted
-                                  ? const Color(0xFF2ECC71)
-                                  : Colors.white12,
+                              ? const Color(0xFF2ECC71)
+                              : Colors.white12,
                           width: isNew || isAccepted ? 2 : 1,
                         ),
                       ),
@@ -586,13 +611,18 @@ class _MatchRowState extends State<_MatchRow> {
                                 radius: 29,
                                 isDeleted: true,
                               )
+                            : hidePhotos
+                            ? ProfileVisibilityHelper.hiddenPhotoPlaceholder(
+                                iconSize: 28,
+                              )
                             : (photoUrl.isNotEmpty
-                                ? Image.network(
-                                    photoUrl,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => _defaultAvatar(),
-                                  )
-                                : _defaultAvatar()),
+                                  ? Image.network(
+                                      photoUrl,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) =>
+                                          _defaultAvatar(),
+                                    )
+                                  : _defaultAvatar()),
                       ),
                     ),
                     // Online indicator — hide for deleted users
@@ -604,7 +634,8 @@ class _MatchRowState extends State<_MatchRow> {
                           width: 13,
                           height: 13,
                           decoration: BoxDecoration(
-                            color: (profile['isOnline'] == true ||
+                            color:
+                                (profile['isOnline'] == true ||
                                     profile['online'] == true)
                                 ? const Color(0xFF2ECC71)
                                 : Colors.grey,
@@ -645,7 +676,10 @@ class _MatchRowState extends State<_MatchRow> {
                           // Verified badge — admin must have approved the ID
                           if (profile['isVerified'] == true ||
                               profile['profileVerified'] == true ||
-                              profile['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
+                              profile['verificationStatus']
+                                      ?.toString()
+                                      .toLowerCase() ==
+                                  'approved') ...[
                             const SizedBox(width: 5),
                             const Icon(
                               Icons.verified,
@@ -662,8 +696,8 @@ class _MatchRowState extends State<_MatchRow> {
                           color: isAccepted
                               ? const Color(0xFF2ECC71)
                               : isDeclined
-                                  ? Colors.redAccent.withOpacity(0.7)
-                                  : AppColors.goldMedium,
+                              ? Colors.redAccent.withOpacity(0.7)
+                              : AppColors.goldMedium,
                           fontSize: 13,
                           fontStyle: FontStyle.italic,
                           fontWeight: FontWeight.w500,
@@ -685,10 +719,11 @@ class _MatchRowState extends State<_MatchRow> {
                         color: Colors.white10,
                         iconColor: Colors.white38,
                         size: 38,
-                        onTap: () => InterestService.instance
-                            .updateInterestStatus(
-                                interestId: widget.interest.id,
-                                status: 'declined'),
+                        onTap: () =>
+                            InterestService.instance.updateInterestStatus(
+                              interestId: widget.interest.id,
+                              status: 'declined',
+                            ),
                       ),
                       const SizedBox(width: 8),
                       _CircleIconBtn(
@@ -697,44 +732,40 @@ class _MatchRowState extends State<_MatchRow> {
                         iconColor: Colors.black,
                         size: 38,
                         onTap: () async {
-                          // Accept interest
-                          await InterestService.instance.updateInterestStatus(
-                            interestId: widget.interest.id,
-                            status: 'accepted',
-                          );
-                          if (!context.mounted) return;
-                          // Fetch both profiles for the match overlay
-                          final myUid =
-                              FirebaseAuth.instance.currentUser?.uid ?? '';
-                          final myProfile =
-                              await UserService.instance.getUserProfile(myUid);
-                          final theirProfileSnap = snapshot.data;
-                          String myPhoto = '';
-                          if (myProfile != null) {
-                            final photos = myProfile['photos'];
-                            if (photos is List && photos.isNotEmpty) {
-                              myPhoto = photos.first.toString();
-                            } else {
-                              myPhoto = (myProfile['photoUrl'] ?? '').toString();
-                            }
-                          }
-                          String theirPhoto = '';
-                          if (theirProfileSnap != null) {
-                            final photos = theirProfileSnap['photos'];
-                            if (photos is List && photos.isNotEmpty) {
-                              theirPhoto = photos.first.toString();
-                            } else {
-                              theirPhoto =
-                                  (theirProfileSnap['photoUrl'] ?? '').toString();
-                            }
-                          }
-                          if (!context.mounted) return;
-                          await ItsAMatchOverlay.show(
+                          final interestId = widget.interest.id;
+                          if (interestId.isEmpty) return;
+
+                          final navigator = Navigator.of(
                             context,
-                            myPhotoUrl: myPhoto,
-                            theirPhotoUrl: theirPhoto,
+                            rootNavigator: true,
+                          );
+                          final theirPhoto = _getPhotoUrl(profile);
+
+                          try {
+                            await InterestService.instance.updateInterestStatus(
+                              interestId: interestId,
+                              status: 'accepted',
+                            );
+                          } catch (e) {
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(e.toString().replaceFirst(
+                                  'Exception: ',
+                                  '',
+                                )),
+                                backgroundColor: Colors.orange,
+                              ),
+                            );
+                            return;
+                          }
+
+                          if (!context.mounted) return;
+                          await ItsAMatchOverlay.showAfterAccept(
+                            navigator: navigator,
+                            otherUserId: widget.otherUserId,
                             theirName: name,
-                            theirUserId: widget.otherUserId,
+                            theirPhotoUrl: theirPhoto,
                           );
                         },
                       ),
@@ -743,12 +774,15 @@ class _MatchRowState extends State<_MatchRow> {
                 else if (isAccepted)
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFF2ECC71).withOpacity(0.12),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                          color: const Color(0xFF2ECC71).withOpacity(0.3)),
+                        color: const Color(0xFF2ECC71).withOpacity(0.3),
+                      ),
                     ),
                     child: const Text(
                       'Chat',

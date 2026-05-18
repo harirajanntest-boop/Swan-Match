@@ -4,10 +4,12 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../shared/widgets/deleted_user_avatar.dart';
 import 'chat_conversation_page.dart';
 import '../../../../services/chat_service.dart';
 import '../../../../services/interest_service.dart';
+import '../../../../services/subscription_limits_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/linear_message.dart';
 
@@ -41,12 +43,10 @@ class _MessagesViewState extends State<MessagesView>
       duration: const Duration(milliseconds: 600),
     );
 
-    _fadeAnim = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _entryController,
-        curve: Curves.easeOut,
-      ),
-    );
+    _fadeAnim = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _entryController, curve: Curves.easeOut));
 
     _myChatsStream = ChatService.instance.watchMyChats();
     _mySentInterestsStream = InterestService.instance.watchMySentInterests();
@@ -91,45 +91,70 @@ class _MessagesViewState extends State<MessagesView>
               child: StreamBuilder<List<Map<String, dynamic>>>(
                 stream: _myChatsStream,
                 builder: (context, chatsSnapshot) {
-                  if (chatsSnapshot.connectionState == ConnectionState.waiting) {
+                  if (chatsSnapshot.connectionState ==
+                      ConnectionState.waiting) {
                     return const Center(
-                      child: CircularProgressIndicator(color: AppColors.goldMedium),
+                      child: CircularProgressIndicator(
+                        color: AppColors.goldMedium,
+                      ),
                     );
                   }
-                  final chats = chatsSnapshot.data ?? const <Map<String, dynamic>>[];
+                  final chats =
+                      chatsSnapshot.data ?? const <Map<String, dynamic>>[];
                   return StreamBuilder<List<dynamic>>(
                     stream: _mySentInterestsStream,
                     builder: (context, sentSnapshot) {
-                      if (sentSnapshot.connectionState == ConnectionState.waiting) {
+                      if (sentSnapshot.connectionState ==
+                          ConnectionState.waiting) {
                         return const Center(
-                          child: CircularProgressIndicator(color: AppColors.goldMedium),
+                          child: CircularProgressIndicator(
+                            color: AppColors.goldMedium,
+                          ),
                         );
                       }
                       return StreamBuilder<List<dynamic>>(
                         stream: _interestsForMeStream,
                         builder: (context, receivedSnapshot) {
-                          if (receivedSnapshot.connectionState == ConnectionState.waiting) {
+                          if (receivedSnapshot.connectionState ==
+                              ConnectionState.waiting) {
                             return const Center(
-                              child: CircularProgressIndicator(color: AppColors.goldMedium),
+                              child: CircularProgressIndicator(
+                                color: AppColors.goldMedium,
+                              ),
                             );
                           }
                           final sent = sentSnapshot.data ?? const <dynamic>[];
-                          final received = receivedSnapshot.data ?? const <dynamic>[];
+                          final received =
+                              receivedSnapshot.data ?? const <dynamic>[];
 
                           return StreamBuilder<Map<String, dynamic>?>(
                             stream: _myProfileStream,
                             builder: (context, profileSnap) {
-                              final myProfile = profileSnap.data ?? const <String, dynamic>{};
-                              final blockedUids = Set<String>.from(myProfile['blockedUids'] ?? []);
-                              final reportedUids = Set<String>.from(myProfile['reportedUids'] ?? []);
-                              final hiddenUids = {...blockedUids, ...reportedUids};
-                              final mergedChats = _mergeAcceptedInterests(chats, sent, received, hiddenUids);
+                              final myProfile =
+                                  profileSnap.data ?? const <String, dynamic>{};
+                              final blockedUids = Set<String>.from(
+                                myProfile['blockedUids'] ?? [],
+                              );
+                              final reportedUids = Set<String>.from(
+                                myProfile['reportedUids'] ?? [],
+                              );
+                              final hiddenUids = {
+                                ...blockedUids,
+                                ...reportedUids,
+                              };
+                              final mergedChats = _mergeAcceptedInterests(
+                                chats,
+                                sent,
+                                received,
+                                hiddenUids,
+                              );
 
                               return _buildMessageContent(
                                 context,
                                 title: "Messages",
                                 emptyMessage: "No conversations yet.",
-                                emptySub: "Accept an interest or get connected to start chatting.",
+                                emptySub:
+                                    "Accept an interest or get connected to start chatting.",
                                 icon: Icons.chat_bubble_outline,
                                 chats: mergedChats,
                               );
@@ -157,11 +182,40 @@ class _MessagesViewState extends State<MessagesView>
     final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
     if (currentUid.isEmpty) return chats;
 
+    final disconnectedUserIds = <String>{};
+    for (final item in [...sent, ...received]) {
+      final status = (item.status ?? '').toString().toLowerCase();
+      if (status == 'blocked') {
+        final toUid = (item.toUserId ?? '').toString();
+        final fromUid = (item.fromUserId ?? '').toString();
+        if (toUid.isNotEmpty && toUid != currentUid)
+          disconnectedUserIds.add(toUid);
+        if (fromUid.isNotEmpty && fromUid != currentUid)
+          disconnectedUserIds.add(fromUid);
+      }
+    }
+
+    final validChats = chats.where((chat) {
+      final participants =
+          (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
+              .map((item) => item.toString())
+              .toList();
+      for (final uid in participants) {
+        if (uid != currentUid &&
+            uid.isNotEmpty &&
+            disconnectedUserIds.contains(uid)) {
+          return false;
+        }
+      }
+      return true;
+    }).toList();
+
     final existingUserIds = <String>{};
-    for (final chat in chats) {
-      final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
-          .map((item) => item.toString())
-          .toList();
+    for (final chat in validChats) {
+      final participants =
+          (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
+              .map((item) => item.toString())
+              .toList();
       for (final uid in participants) {
         if (uid != currentUid && uid.isNotEmpty) {
           existingUserIds.add(uid);
@@ -188,8 +242,7 @@ class _MessagesViewState extends State<MessagesView>
         }
       }
     }
-
-    final merged = List<Map<String, dynamic>>.from(chats);
+    final merged = List<Map<String, dynamic>>.from(validChats);
     for (final userId in acceptedUserIds) {
       if (existingUserIds.contains(userId)) continue;
       merged.add(<String, dynamic>{
@@ -214,19 +267,25 @@ class _MessagesViewState extends State<MessagesView>
     final filteredChats = chats.where((chat) {
       if (_searchQuery.isEmpty) return true;
       final lastMessage = (chat['lastMessage'] ?? '').toString().toLowerCase();
-      final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
-          .map((item) => item.toString().toLowerCase())
-          .join(' ');
-      return lastMessage.contains(_searchQuery) || participants.contains(_searchQuery);
+      final participants =
+          (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
+              .map((item) => item.toString().toLowerCase())
+              .join(' ');
+      return lastMessage.contains(_searchQuery) ||
+          participants.contains(_searchQuery);
     }).toList();
 
     // De-duplicate by other user ID (in case chat doc + synthetic entry both exist)
     final seen = <String>{};
     final deduped = filteredChats.where((chat) {
-      final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
-          .map((e) => e.toString())
-          .toList();
-      final otherId = participants.firstWhere((uid) => uid != currentUid, orElse: () => '');
+      final participants =
+          (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
+              .map((e) => e.toString())
+              .toList();
+      final otherId = participants.firstWhere(
+        (uid) => uid != currentUid,
+        orElse: () => '',
+      );
       if (otherId.isEmpty) return true;
       return seen.add(otherId);
     }).toList();
@@ -234,17 +293,20 @@ class _MessagesViewState extends State<MessagesView>
     return Column(
       children: [
         // ─── Search Bar ───
-
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: TextField(
             controller: _searchController,
-            onChanged: (value) => setState(() => _searchQuery = value.trim().toLowerCase()),
+            onChanged: (value) =>
+                setState(() => _searchQuery = value.trim().toLowerCase()),
             style: const TextStyle(color: Colors.white),
             decoration: InputDecoration(
               hintText: 'Search messages, user id or text',
               hintStyle: TextStyle(color: Colors.white.withOpacity(0.45)),
-              prefixIcon: Icon(Icons.search, color: Colors.white.withOpacity(0.7)),
+              prefixIcon: Icon(
+                Icons.search,
+                color: Colors.white.withOpacity(0.7),
+              ),
               suffixIcon: _searchQuery.isEmpty
                   ? null
                   : IconButton(
@@ -279,17 +341,22 @@ class _MessagesViewState extends State<MessagesView>
                   itemCount: deduped.length,
                   itemBuilder: (context, index) {
                     final chat = deduped[index];
-                    final participants = (chat['participants'] as List<dynamic>? ?? const <dynamic>[])
-                        .map((item) => item.toString())
-                        .toList();
+                    final participants =
+                        (chat['participants'] as List<dynamic>? ??
+                                const <dynamic>[])
+                            .map((item) => item.toString())
+                            .toList();
                     final otherUserId = participants.firstWhere(
                       (uid) => uid != currentUid,
                       orElse: () => '',
                     );
-                    return _ChatThreadTile(chat: chat, otherUserId: otherUserId);
+                    return _ChatThreadTile(
+                      chat: chat,
+                      otherUserId: otherUserId,
+                    );
                   },
                 ),
-          ),
+        ),
       ],
     );
   }
@@ -304,7 +371,9 @@ class _ChatThreadTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Map<String, dynamic>?>(
-      future: otherUserId.isEmpty ? Future.value(null) : UserService.instance.getUserProfile(otherUserId),
+      future: otherUserId.isEmpty
+          ? Future.value(null)
+          : UserService.instance.getUserProfile(otherUserId),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return Container(
@@ -320,10 +389,16 @@ class _ChatThreadTile extends StatelessWidget {
                 SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.goldMedium),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.goldMedium,
+                  ),
                 ),
                 SizedBox(width: 12),
-                Text('Loading chat...', style: TextStyle(color: Colors.white70)),
+                Text(
+                  'Loading chat...',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ],
             ),
           );
@@ -331,7 +406,8 @@ class _ChatThreadTile extends StatelessWidget {
 
         final profile = snapshot.data ?? const <String, dynamic>{};
         final isDeletedUser = DeletedUserHelper.isDeleted(
-            snapshot.data == null ? null : profile);
+          snapshot.data == null ? null : profile,
+        );
         final name = isDeletedUser
             ? 'Deleted Account'
             : (profile['name'] ?? 'Member').toString();
@@ -340,8 +416,15 @@ class _ChatThreadTile extends StatelessWidget {
             : (profile['city'] ?? '').toString();
         final lastMessage = (chat['lastMessage'] ?? '').toString();
 
-        return _buildChatTile(context, profile, name, city, lastMessage,
-            otherUserId, isDeletedUser);
+        return _buildChatTile(
+          context,
+          profile,
+          name,
+          city,
+          lastMessage,
+          otherUserId,
+          isDeletedUser,
+        );
       },
     );
   }
@@ -357,7 +440,9 @@ class _ChatThreadTile extends StatelessWidget {
   ) {
     // Get photo URL from either photoUrl field or photos array
     String photoUrl = (profile['photoUrl'] ?? '').toString();
-    if (photoUrl.isEmpty && profile['photos'] is List && (profile['photos'] as List).isNotEmpty) {
+    if (photoUrl.isEmpty &&
+        profile['photos'] is List &&
+        (profile['photos'] as List).isNotEmpty) {
       photoUrl = (profile['photos'] as List).first.toString();
     }
 
@@ -368,9 +453,27 @@ class _ChatThreadTile extends StatelessWidget {
       }
       // Prevent opening chat for deleted users
       if (isDeletedUser) {
-        showLinearMessage(context, 'This account no longer exists.', isError: true);
+        showLinearMessage(
+          context,
+          'This account no longer exists.',
+          isError: true,
+        );
         return;
       }
+      final chatCheck = await SubscriptionLimitsService.instance.canOpenChat(
+        otherUserId,
+      );
+      if (!chatCheck.allowed) {
+        if (!context.mounted) return;
+        showLinearMessage(
+          context,
+          chatCheck.reason ??
+              'Someone messaged you! Upgrade to Premium to reply.',
+          isError: true,
+        );
+        return;
+      }
+      if (!context.mounted) return;
       await Navigator.push(
         context,
         MaterialPageRoute(
@@ -384,10 +487,67 @@ class _ChatThreadTile extends StatelessWidget {
 
     return InkWell(
       onTap: openConversation,
+      onLongPress: () async {
+        final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+        if (otherUserId.isEmpty || currentUid.isEmpty) {
+          showLinearMessage(
+            context,
+            'Unable to delete conversation.',
+            isError: true,
+          );
+          return;
+        }
+
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Delete conversation'),
+            content: const Text(
+              'Permanently delete this conversation? This cannot be undone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text(
+                  'Delete',
+                  style: TextStyle(color: Colors.red),
+                ),
+              ),
+            ],
+          ),
+        );
+
+        if (!context.mounted) return;
+
+        if (confirm == true) {
+          try {
+            await ChatService.instance.deleteChatThreadBetween(
+              currentUid,
+              otherUserId,
+            );
+            if (!context.mounted) return;
+            showLinearMessage(context, 'Conversation deleted.');
+          } catch (e) {
+            if (!context.mounted) return;
+            showLinearMessage(
+              context,
+              'Failed to delete conversation.',
+              isError: true,
+            );
+          }
+        }
+      },
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12.0, horizontal: 16.0),
+            padding: const EdgeInsets.symmetric(
+              vertical: 12.0,
+              horizontal: 16.0,
+            ),
             child: Row(
               children: [
                 Stack(
@@ -396,9 +556,12 @@ class _ChatThreadTile extends StatelessWidget {
                       photoUrl: DeletedUserHelper.getAvatarUrl(profile),
                       radius: 26,
                       isDeleted: isDeletedUser,
+                      photosHidden:
+                          ProfileVisibilityHelper.shouldHidePhotos(profile),
                     ),
                     if (!isDeletedUser &&
-                        (profile['isOnline'] == true || profile['online'] == true))
+                        (profile['isOnline'] == true ||
+                            profile['online'] == true))
                       Positioned(
                         bottom: 0,
                         right: 0,
@@ -422,12 +585,29 @@ class _ChatThreadTile extends StatelessWidget {
                       Row(
                         children: [
                           Flexible(
-                            child: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis),
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                           // Verified badge — admin must have approved the ID
-                          if (profile['isVerified'] == true || profile['profileVerified'] == true || profile['verificationStatus']?.toString().toLowerCase() == 'approved') ...[
+                          if (profile['isVerified'] == true ||
+                              profile['profileVerified'] == true ||
+                              profile['verificationStatus']
+                                      ?.toString()
+                                      .toLowerCase() ==
+                                  'approved') ...[
                             const SizedBox(width: 4),
-                            const Icon(Icons.verified, color: AppColors.goldMedium, size: 14),
+                            const Icon(
+                              Icons.verified,
+                              color: AppColors.goldMedium,
+                              size: 14,
+                            ),
                           ],
                         ],
                       ),
@@ -436,12 +616,18 @@ class _ChatThreadTile extends StatelessWidget {
                         lastMessage.isEmpty ? city : lastMessage,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.65), fontSize: 13),
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.65),
+                          fontSize: 13,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                Icon(Icons.chevron_right, color: Colors.white.withValues(alpha: 0.2)),
+                Icon(
+                  Icons.chevron_right,
+                  color: Colors.white.withValues(alpha: 0.2),
+                ),
               ],
             ),
           ),
@@ -472,21 +658,29 @@ class _MessageEmptyState extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(icon, color: AppColors.goldMedium, size: 64),
-          
+
           const SizedBox(height: 24),
-          
+
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold, ),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
           ),
-          
+
           const SizedBox(height: 12),
-          
+
           Text(
             subMessage,
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 13, height: 1.5),
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.5),
+              fontSize: 13,
+              height: 1.5,
+            ),
           ),
         ],
       ),

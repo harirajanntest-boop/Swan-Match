@@ -4,7 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../core/utils/stream_utils.dart';
 import 'app_notification_service.dart';
 import '../models/message_model.dart';
-import 'trial_service.dart';
+import 'subscription_limits_service.dart';
 
 class ChatService {
 	ChatService._();
@@ -49,9 +49,9 @@ class ChatService {
 		final sender = _auth.currentUser;
 		if (sender == null || text.trim().isEmpty) return false;
 
-		// ── Premium gate: only premium users can message ────────────────────
-		final check = await TrialService.instance.canSendMessage();
-		if (!check.allowed) return false; // caller should show upgrade dialog
+		final check =
+				await SubscriptionLimitsService.instance.canSendMessageTo(receiverId);
+		if (!check.allowed) return false;
 
 		// ── Block gate: don't deliver if receiver has blocked this sender ──
 		if (await _isBlockedByReceiver(sender.uid, receiverId)) return false;
@@ -78,6 +78,8 @@ class ChatService {
 				lastSenderId: sender.uid,
 		);
 
+		await SubscriptionLimitsService.instance.recordMessagePartner(receiverId);
+
 		final senderProfile = await _firestore.collection('users').doc(sender.uid).get();
 		final senderName = (senderProfile.data()?['name'] ?? 'Someone').toString();
 		await AppNotificationService.instance.createNotification(
@@ -91,6 +93,24 @@ class ChatService {
 			},
 		);
 		return true;
+	}
+
+	/// Deletes the entire chat thread (messages subcollection and chat doc)
+	/// between two users. Safe to call whether or not the chat exists.
+	Future<void> deleteChatThreadBetween(String firstUserId, String secondUserId) async {
+		final chatId = chatIdFor(firstUserId, secondUserId);
+		final chatDoc = _firestore.collection('chats').doc(chatId);
+		try {
+			// Delete messages subcollection
+			final msgsSnap = await chatDoc.collection('messages').get();
+			for (final m in msgsSnap.docs) {
+				await m.reference.delete();
+			}
+			// Delete the chat document
+			await chatDoc.delete();
+		} catch (_) {
+			// ignore errors — best effort cleanup
+		}
 	}
 
 	Stream<List<Map<String, dynamic>>> watchMyChats() {

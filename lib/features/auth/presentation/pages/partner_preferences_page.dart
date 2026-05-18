@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:country_picker/country_picker.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
@@ -19,33 +18,14 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
 
-  String _selectedCountry = '';
-  String _selectedState = '';
-  String _selectedCity = '';
-
 
   List<String> _optionsForPreference(String key) {
     switch (key) {
       case 'age':
-        return const ['18 - 23', '24 - 30', '31 - 36', '37 - 45', 'Any'];
-      case 'height':
-        return const [
-          '4ft 8in - 5ft 2in',
-          '5ft 3in - 5ft 7in',
-          '5ft 8in - 6ft 2in',
-          'Any',
-        ];
+        return const ['18 - 23', '24 - 30', '31 - 36', '37 - 45', '45 - 55', '55+', 'Any'];
+
       case 'maritalStatus':
-        return const ['Never married', 'Divorced', 'Widowed', 'Any'];
-      case 'motherTongue':
-        return const ['Tamil', 'Telugu', 'Malayalam', 'Kannada', 'Hindi', 'Any'];
-      case 'physicalStatus':
-        return const ['Normal', 'Physically Challenged', 'Any'];
-      case 'eatingHabits':
-        return const ['Vegetarian', 'Non Vegetarian', 'Eggetarian', 'Any'];
-      case 'smokingHabits':
-      case 'drinkingHabits':
-        return const ['Never', 'Occasionally', 'Regularly', 'Any'];
+        return const ['Never Married', 'Divorced', 'Widowed', 'Separated', 'Any'];
       case 'religion':
         return const [
           'Hindu',
@@ -54,28 +34,22 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
           'Sikh',
           'Jain',
           'Buddhist',
+          'Atheist',
           'Any',
         ];
-      case 'dosham':
-        return const ['Yes', 'No', "Don't know", 'Any'];
-      case 'annualIncome':
-        return const [
-          'Below 3 LPA',
-          '3 - 6 LPA',
-          '6 - 10 LPA',
-          '10 - 20 LPA',
-          '20+ LPA',
-          'Any',
-        ];
-      case 'employedIn':
-        return const [
-          'Private',
-          'Government',
-          'Business',
-          'Defence',
-          'Not working',
-          'Any',
-        ];
+      case 'education':
+        return const ['High School', 'Associate Degree', 'Bachelor', 'Master', 'Doctorate', 'Any'];
+      case 'profession':
+        return const ['IT', 'Finance', 'Healthcare', 'Education', 'Engineering', 'Business', 'Law', 'Any'];
+      case 'income':
+        return const ['Under 25K', '25K - 50K', '50K - 100K', '100K - 200K', '200K+', 'Any'];
+      case 'eatingHabits':
+        return const ['Vegetarian', 'Non Vegetarian', 'Eggetarian', 'Any'];
+      case 'smokingHabits':
+      case 'drinkingHabits':
+        return const ['Never', 'Occasionally', 'Regularly', 'Any'];
+      case 'lifestyle':
+        return const ['Health-focused', 'Career-driven', 'Family-oriented', 'Social', 'Adventure-seeking', 'Any'];
       default:
         return const <String>[];
     }
@@ -195,15 +169,6 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     final source = raw ?? <String, dynamic>{};
     final root = rootProfile ?? <String, dynamic>{};
 
-    // Helper: read from nested section first, then flat root field as fallback
-    String flatFallback(String sectionKey, String key, String flatKey) {
-      final nested = (source[sectionKey] is Map)
-          ? (source[sectionKey] as Map)[key]?.toString().trim() ?? ''
-          : '';
-      if (nested.isNotEmpty) return nested;
-      return root[flatKey]?.toString().trim() ?? '';
-    }
-
     Map<String, dynamic> section(String key, Map<String, dynamic> defaults) {
       final existing = source[key];
       if (existing is Map) {
@@ -215,92 +180,49 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
       return {...defaults};
     }
 
-    // Build age string from flat fields if not in nested
-    String ageFromFlat() {
-      final nested = (source['basicDetails'] is Map)
-          ? (source['basicDetails'] as Map)['age']?.toString().trim() ?? ''
-          : '';
-      if (nested.isNotEmpty) return nested;
-      final minAge = root['minAgePreference'];
-      final maxAge = root['maxAgePreference'];
-      if (minAge != null && maxAge != null) {
-        return '$minAge - $maxAge';
-      }
-      return '';
+    // Extract age range from flat fields
+    String getAgeRange() {
+      final minAge = root['minAgePreference'] ?? 18;
+      final maxAge = root['maxAgePreference'] ?? 99;
+      return '$minAge - $maxAge';
     }
 
     final basic = section('basicDetails', <String, dynamic>{
-      'age': '',
-      'height': '',
-      'maritalStatus': '',
-      'motherTongue': '',
-      'physicalStatus': '',
+      'age': getAgeRange(),
+      'maritalStatus': root['preferredMaritalStatus']?.toString().trim() ?? '',
+      'religion': root['preferredReligion']?.toString().trim() ?? '',
     });
-    // Fallback age from flat fields
-    if ((basic['age'] ?? '').toString().trim().isEmpty) {
-      basic['age'] = ageFromFlat();
-    }
 
     final lifestyle = section('lifestyle', <String, dynamic>{
-      'eatingHabits': '',
-      'smokingHabits': '',
-      'drinkingHabits': '',
+      'eatingHabits': root['preferredEatingHabits']?.toString().trim() ?? '',
+      'smokingHabits': root['smoking']?.toString().trim() ?? '',
+      'drinkingHabits': root['drinking']?.toString().trim() ?? '',
+      'lifestyle': _convertLifestyleList(root['preferredLifestyle']),
     });
-    // Fallback smoking/drinking from flat fields
-    if ((lifestyle['smokingHabits'] ?? '').toString().trim().isEmpty) {
-      lifestyle['smokingHabits'] = root['smoking']?.toString().trim() ?? '';
-    }
-    if ((lifestyle['drinkingHabits'] ?? '').toString().trim().isEmpty) {
-      lifestyle['drinkingHabits'] = root['drinking']?.toString().trim() ?? '';
-    }
-
-    final religious = section('religiousDetails', <String, dynamic>{
-      'religion': '',
-      'caste': '',
-      'star': '',
-      'dosham': '',
-    });
-    // Fallback religion from flat preferredReligion
-    if ((religious['religion'] ?? '').toString().trim().isEmpty) {
-      religious['religion'] = root['preferredReligion']?.toString().trim() ?? '';
-    }
 
     final professional = section('professionalDetails', <String, dynamic>{
-      'education': '',
-      'employedIn': '',
-      'occupation': '',
-      'annualIncome': '',
+      'education': root['preferredEducation']?.toString().trim() ?? '',
+      'profession': root['preferredProfession']?.toString().trim() ?? '',
+      'income': root['preferredIncomeRange']?.toString().trim() ?? '',
     });
-    // Fallback education from flat preferredEducation
-    if ((professional['education'] ?? '').toString().trim().isEmpty) {
-      professional['education'] = root['preferredEducation']?.toString().trim() ?? '';
-    }
-    // Fallback occupation from flat preferredProfession
-    if ((professional['occupation'] ?? '').toString().trim().isEmpty) {
-      professional['occupation'] = root['preferredProfession']?.toString().trim() ?? '';
-    }
 
-    final locationNested = section('locationDetails', <String, dynamic>{
-      'country': '',
-      'state': '',
-      'city': '',
+    final location = section('locationDetails', <String, dynamic>{
+      'country': root['preferredLocation']?.toString().trim() ?? '',
     });
-    // Fallback location from flat preferredLocation
-    if ((locationNested['country'] ?? '').toString().trim().isEmpty &&
-        (locationNested['city'] ?? '').toString().trim().isEmpty) {
-      final flatLocation = root['preferredLocation']?.toString().trim() ?? '';
-      if (flatLocation.isNotEmpty) {
-        locationNested['city'] = flatLocation;
-      }
-    }
 
     return <String, dynamic>{
       'basicDetails': basic,
       'lifestyle': lifestyle,
-      'religiousDetails': religious,
       'professionalDetails': professional,
-      'locationDetails': locationNested,
+      'locationDetails': location,
     };
+  }
+
+  String _convertLifestyleList(dynamic lifestyle) {
+    if (lifestyle is List) {
+      return (lifestyle).cast<String>().join(', ');
+    }
+    return lifestyle?.toString().trim() ?? '';
   }
 
 
@@ -327,28 +249,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     await UserService.instance.updatePartnerPreferences(nextPrefs);
   }
 
-  Future<void> _loadLocationStateFromProfile() async {
-    final profile = await UserService.instance.getCurrentUserProfile();
-    final normalized = _normalizePreferences(
-      profile?['partnerPreference'] is Map
-          ? Map<String, dynamic>.from(profile?['partnerPreference'] as Map)
-          : (profile?['partnerPreferences'] is Map
-              ? Map<String, dynamic>.from(profile?['partnerPreferences'] as Map)
-              : null),
-      rootProfile: profile,
-    );
 
-    final location = Map<String, dynamic>.from(
-      normalized['locationDetails'] as Map,
-    );
-
-    if (!mounted) return;
-    setState(() {
-      _selectedCountry = (location['country'] ?? '').toString().trim();
-      _selectedState = (location['state'] ?? '').toString().trim();
-      _selectedCity = (location['city'] ?? '').toString().trim();
-    });
-  }
 
 
 
@@ -381,8 +282,6 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
     });
-
-    _loadLocationStateFromProfile();
   }
 
   @override
@@ -440,14 +339,8 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
 
               final basic = Map<String, dynamic>.from(currentPrefs['basicDetails'] as Map);
               final lifestyle = Map<String, dynamic>.from(currentPrefs['lifestyle'] as Map);
-              final religious = Map<String, dynamic>.from(currentPrefs['religiousDetails'] as Map);
               final professional = Map<String, dynamic>.from(currentPrefs['professionalDetails'] as Map);
               final location = Map<String, dynamic>.from(currentPrefs['locationDetails'] as Map);
-
-
-                final locationCountryValue = _selectedCountry ?? display(location['country']);
-                final locationStateValue = _selectedState ?? display(location['state']);
-                final locationCityValue = _selectedCity ?? display(location['city']);
 
               return Column(
                 children: [
@@ -474,7 +367,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       const SizedBox(width: 12),
                       Expanded(
                         child: Text(
-                          "Matches are recommended to you based on your preferences. To see matches exactly based on your preferences, turn on 'Compulsory' inside each section.",
+                          "Set your partner preferences to find matches tailored to you.",
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.7),
                             fontSize: 13,
@@ -498,24 +391,13 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                         title: "Basic Details",
                         children: [
                           _PreferenceRow(
-                            label: "Age",
+                            label: "Age Range",
                             value: display(basic['age']),
                             onTap: () => _editPreference(
                               section: 'basicDetails',
                               key: 'age',
-                              label: 'Age',
+                              label: 'Age Range',
                               currentValue: basic['age'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Height",
-                            value: display(basic['height']),
-                            onTap: () => _editPreference(
-                              section: 'basicDetails',
-                              key: 'height',
-                              label: 'Height',
-                              currentValue: basic['height'].toString(),
                               currentPrefs: currentPrefs,
                             ),
                           ),
@@ -531,25 +413,14 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                             ),
                           ),
                           _PreferenceRow(
-                            label: "Mother Tongue",
-                            value: display(basic['motherTongue']),
-                            onTap: () => _editPreference(
-                              section: 'basicDetails',
-                              key: 'motherTongue',
-                              label: 'Mother Tongue',
-                              currentValue: basic['motherTongue'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Physical Status",
-                            value: display(basic['physicalStatus']),
+                            label: "Religion",
+                            value: display(basic['religion']),
                             isLast: true,
                             onTap: () => _editPreference(
                               section: 'basicDetails',
-                              key: 'physicalStatus',
-                              label: 'Physical Status',
-                              currentValue: basic['physicalStatus'].toString(),
+                              key: 'religion',
+                              label: 'Religion',
+                              currentValue: basic['religion'].toString(),
                               currentPrefs: currentPrefs,
                             ),
                           ),
@@ -586,7 +457,6 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                           _PreferenceRow(
                             label: "Drinking Habits",
                             value: display(lifestyle['drinkingHabits']),
-                            isLast: true,
                             onTap: () => _editPreference(
                               section: 'lifestyle',
                               key: 'drinkingHabits',
@@ -595,56 +465,15 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                               currentPrefs: currentPrefs,
                             ),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 24),
-
-                      // 3. Religious Details
-                      _PreferenceCard(
-                        title: "Religious Details",
-                        children: [
                           _PreferenceRow(
-                            label: "Religion",
-                            value: display(religious['religion']),
-                            onTap: () => _editPreference(
-                              section: 'religiousDetails',
-                              key: 'religion',
-                              label: 'Religion',
-                              currentValue: religious['religion'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Caste",
-                            value: display(religious['caste']),
-                            onTap: () => _editPreference(
-                              section: 'religiousDetails',
-                              key: 'caste',
-                              label: 'Caste',
-                              currentValue: religious['caste'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Star",
-                            value: display(religious['star']),
-                            onTap: () => _editPreference(
-                              section: 'religiousDetails',
-                              key: 'star',
-                              label: 'Star',
-                              currentValue: religious['star'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Dosham",
-                            value: display(religious['dosham']),
+                            label: "Lifestyle",
+                            value: display(lifestyle['lifestyle']),
                             isLast: true,
                             onTap: () => _editPreference(
-                              section: 'religiousDetails',
-                              key: 'dosham',
-                              label: 'Dosham',
-                              currentValue: religious['dosham'].toString(),
+                              section: 'lifestyle',
+                              key: 'lifestyle',
+                              label: 'Lifestyle',
+                              currentValue: lifestyle['lifestyle'].toString(),
                               currentPrefs: currentPrefs,
                             ),
                           ),
@@ -652,7 +481,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       ),
                       const SizedBox(height: 24),
 
-                      // 4. Professional Details (Extrapolated)
+                      // 3. Professional Details
                       _PreferenceCard(
                         title: "Professional Details",
                         children: [
@@ -668,36 +497,25 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                             ),
                           ),
                           _PreferenceRow(
-                            label: "Employed in",
-                            value: display(professional['employedIn']),
+                            label: "Profession",
+                            value: display(professional['profession']),
                             onTap: () => _editPreference(
                               section: 'professionalDetails',
-                              key: 'employedIn',
-                              label: 'Employed in',
-                              currentValue: professional['employedIn'].toString(),
-                              currentPrefs: currentPrefs,
-                            ),
-                          ),
-                          _PreferenceRow(
-                            label: "Occupation",
-                            value: display(professional['occupation']),
-                            onTap: () => _editPreference(
-                              section: 'professionalDetails',
-                              key: 'occupation',
-                              label: 'Occupation',
-                              currentValue: professional['occupation'].toString(),
+                              key: 'profession',
+                              label: 'Profession',
+                              currentValue: professional['profession'].toString(),
                               currentPrefs: currentPrefs,
                             ),
                           ),
                           _PreferenceRow(
                             label: "Annual Income",
-                            value: display(professional['annualIncome']),
+                            value: display(professional['income']),
                             isLast: true,
                             onTap: () => _editPreference(
                               section: 'professionalDetails',
-                              key: 'annualIncome',
+                              key: 'income',
                               label: 'Annual Income',
-                              currentValue: professional['annualIncome'].toString(),
+                              currentValue: professional['income'].toString(),
                               currentPrefs: currentPrefs,
                             ),
                           ),
@@ -705,111 +523,20 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                       ),
                       const SizedBox(height: 24),
 
-                      // 5. Location Details
+                      // 4. Location Details
                       _PreferenceCard(
                         title: "Location Details",
                         children: [
-                          Padding(
-                            padding: const EdgeInsets.all(16.0),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // Country picker button
-                                GestureDetector(
-                                  onTap: () {
-                                    showCountryPicker(
-                                      context: context,
-                                      showPhoneCode: false,
-                                      onSelect: (Country country) {
-                                        setState(() {
-                                          _selectedCountry = country.name;
-                                          _selectedState = '';
-                                          _selectedCity = '';
-                                        });
-                                      },
-                                      countryListTheme: CountryListThemeData(
-                                        backgroundColor: const Color(0xFF1A1A1A),
-                                        textStyle: const TextStyle(color: Colors.white, fontSize: 14),
-                                        searchTextStyle: const TextStyle(color: Colors.white),
-                                        inputDecoration: InputDecoration(
-                                          hintText: 'Search country...',
-                                          hintStyle: const TextStyle(color: Colors.white38),
-                                          prefixIcon: const Icon(Icons.search, color: Color(0xFFD4A017)),
-                                          enabledBorder: OutlineInputBorder(
-                                            borderSide: const BorderSide(color: Color(0xFFD4A017)),
-                                            borderRadius: BorderRadius.circular(8),
-                                          ),
-                                          focusedBorder: OutlineInputBorder(
-                                            borderSide: const BorderSide(color: Color(0xFFD4A017), width: 2),
-                                            borderRadius: BorderRadius.circular(8),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                                    decoration: BoxDecoration(
-                                      border: Border(bottom: const BorderSide(color: Color(0xFFD4A017))),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Text(
-                                          _selectedCountry.isEmpty ? 'Select Country' : _selectedCountry,
-                                          style: TextStyle(
-                                            color: _selectedCountry.isEmpty ? Colors.white38 : Colors.white,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                        const Icon(Icons.arrow_drop_down, color: Color(0xFFD4A017)),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 20),
-                                // State TextField
-                                TextField(
-                                  enabled: _selectedCountry.isNotEmpty,
-                                  onChanged: (v) => setState(() => _selectedState = v),
-                                  style: const TextStyle(color: Colors.white),
-                                  cursorColor: const Color(0xFFD4A017),
-                                  decoration: InputDecoration(
-                                    labelText: 'State / Province',
-                                    labelStyle: const TextStyle(color: Colors.white54),
-                                    enabledBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Color(0xFFD4A017)),
-                                    ),
-                                    focusedBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
-                                    ),
-                                    disabledBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Colors.white12),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 20),
-                                // City TextField
-                                TextField(
-                                  enabled: _selectedState.isNotEmpty,
-                                  onChanged: (v) => setState(() => _selectedCity = v),
-                                  style: const TextStyle(color: Colors.white),
-                                  cursorColor: const Color(0xFFD4A017),
-                                  decoration: InputDecoration(
-                                    labelText: 'City / Town',
-                                    labelStyle: const TextStyle(color: Colors.white54),
-                                    enabledBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Color(0xFFD4A017)),
-                                    ),
-                                    focusedBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Color(0xFFD4A017), width: 2),
-                                    ),
-                                    disabledBorder: const UnderlineInputBorder(
-                                      borderSide: BorderSide(color: Colors.white12),
-                                    ),
-                                  ),
-                                ),
-                              ],
+                          _PreferenceRow(
+                            label: "Preferred Location",
+                            value: display(location['country']),
+                            isLast: true,
+                            onTap: () => _editPreference(
+                              section: 'locationDetails',
+                              key: 'country',
+                              label: 'Preferred Location',
+                              currentValue: location['country'].toString(),
+                              currentPrefs: currentPrefs,
                             ),
                           ),
                         ],
@@ -821,16 +548,7 @@ class _PartnerPreferencesPageState extends State<PartnerPreferencesPage>
                         text: "VIEW MATCHES",
                         onPressed: () async {
                           try {
-                            final nextPrefs = Map<String, dynamic>.from(currentPrefs);
-                            final nextLocation = Map<String, dynamic>.from(
-                              nextPrefs['locationDetails'] as Map<String, dynamic>,
-                            );
-                            nextLocation['country'] = _selectedCountry.isEmpty ? nextLocation['country'] ?? '' : _selectedCountry;
-                            nextLocation['state'] = _selectedState.isEmpty ? nextLocation['state'] ?? '' : _selectedState;
-                            nextLocation['city'] = _selectedCity.isEmpty ? nextLocation['city'] ?? '' : _selectedCity;
-                            nextPrefs['locationDetails'] = nextLocation;
-
-                            await UserService.instance.updatePartnerPreferences(nextPrefs);
+                            await UserService.instance.updatePartnerPreferences(currentPrefs);
                             if (!context.mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Partner preferences saved.')),
@@ -972,86 +690,6 @@ class _PreferenceRow extends StatelessWidget {
               Icon(
                 Icons.arrow_forward_ios,
                 color: Colors.white.withOpacity(0.3),
-                size: 14,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LocationPreferenceRow extends StatelessWidget {
-  final String label;
-  final String value;
-  final bool isLast;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  const _LocationPreferenceRow({
-    required this.label,
-    required this.value,
-    required this.onTap,
-    this.isLast = false,
-    this.enabled = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isNotSet = value.trim().isEmpty || value == 'Not set';
-    final rightColor = enabled
-        ? (isNotSet ? Colors.white54 : const Color(0xFFFFD700))
-        : Colors.grey;
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        splashColor: AppColors.goldMedium.withOpacity(0.1),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-          decoration: BoxDecoration(
-            border: isLast
-                ? null
-                : Border(
-                    bottom: BorderSide(
-                      color: Colors.white.withOpacity(0.05),
-                      width: 1,
-                    ),
-                  ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                flex: 2,
-                child: Text(
-                  label,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.9),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-              Expanded(
-                flex: 3,
-                child: Text(
-                  isNotSet ? 'Not set' : value,
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: rightColor,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Icon(
-                Icons.arrow_forward_ios,
-                color: enabled ? rightColor : Colors.grey,
                 size: 14,
               ),
             ],

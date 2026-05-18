@@ -1,13 +1,20 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../models/interest_model.dart';
+import '../../../../models/user_model.dart';
 import '../../../../shared/widgets/linear_message.dart';
+import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import 'notifications_page.dart';
 import 'match_profile_detail_page.dart';
 import 'settings_page.dart';
@@ -15,9 +22,14 @@ import 'subscription_page.dart';
 import 'edit_profile_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../services/auth_service.dart';
+import '../../../../services/subscription_limits_service.dart';
 
+class ScoredUser {
+  final UserModel user;
+  final int score;
 
-
+  ScoredUser({required this.user, required this.score});
+}
 
 class SwipePage extends StatefulWidget {
   final void Function({Map<String, dynamic>? profile})? onOpenMatches;
@@ -30,14 +42,23 @@ class SwipePage extends StatefulWidget {
 }
 
 class _SwipePageState extends State<SwipePage> {
-  final MatchService _matchService = MatchService.instance;
   final PageController _pageController = PageController();
   int _currentPage = 0;
+
+  List<UserModel> _profiles = [];
+  Set<String> likedUids = {};
+  Set<String> blockedUids = {};
+  bool _isLoading = false;
+  UserModel? _currentUser;
+  StreamSubscription<Map<String, dynamic>?>? _profileSubscription;
+  StreamSubscription<Map<String, String>>? _sentInterestSub;
+  StreamSubscription<Map<String, String>>? _recvInterestSub;
+  Timer? _discoverReloadDebounce;
+  String _lastProfileSignature = '';
 
   late final Stream<Map<String, dynamic>?> _userProfileStream;
   late final Stream<Map<String, String>> _sentInterestStatusStream;
   late final Stream<Map<String, String>> _receivedInterestStatusStream;
-  late final Stream<List<Map<String, dynamic>>> _recommendedMatchesStream;
 
   // Local filter states
   String _genderFilter = 'All';
@@ -46,60 +67,157 @@ class _SwipePageState extends State<SwipePage> {
   List<String> _selectedInterestTags = [];
   // Selected mother tongue (single-select from onboarding language list)
   String _motherTongueFilter = '';
+  DiscoverFilterAccess _filterAccess = DiscoverFilterAccess.free;
 
   // Interest options mirrored from onboarding_step5_personality
   static const List<Map<String, dynamic>> _kInterestOptions = [
-    {'label': 'Travel',           'icon': Icons.flight},
-    {'label': 'Reading',          'icon': Icons.menu_book},
-    {'label': 'Music',            'icon': Icons.music_note},
-    {'label': 'Cooking',          'icon': Icons.restaurant},
-    {'label': 'Photography',      'icon': Icons.camera_alt},
-    {'label': 'Sports',           'icon': Icons.sports_soccer},
-    {'label': 'Art',              'icon': Icons.brush},
-    {'label': 'Technology',       'icon': Icons.computer},
-    {'label': 'Movies',           'icon': Icons.movie},
-    {'label': 'Yoga & Meditation','icon': Icons.spa},
-    {'label': 'Dancing',          'icon': Icons.nightlife},
-    {'label': 'Hiking',           'icon': Icons.terrain},
-    {'label': 'Gaming',           'icon': Icons.sports_esports},
-    {'label': 'Volunteering',     'icon': Icons.volunteer_activism},
-    {'label': 'Fashion',          'icon': Icons.checkroom},
-    {'label': 'Gardening',        'icon': Icons.local_florist},
-    {'label': 'Writing',          'icon': Icons.edit},
-    {'label': 'Fitness',          'icon': Icons.fitness_center},
+    {'label': 'Travel', 'icon': Icons.flight},
+    {'label': 'Reading', 'icon': Icons.menu_book},
+    {'label': 'Music', 'icon': Icons.music_note},
+    {'label': 'Cooking', 'icon': Icons.restaurant},
+    {'label': 'Photography', 'icon': Icons.camera_alt},
+    {'label': 'Sports', 'icon': Icons.sports_soccer},
+    {'label': 'Art', 'icon': Icons.brush},
+    {'label': 'Technology', 'icon': Icons.computer},
+    {'label': 'Movies', 'icon': Icons.movie},
+    {'label': 'Yoga & Meditation', 'icon': Icons.spa},
+    {'label': 'Dancing', 'icon': Icons.nightlife},
+    {'label': 'Hiking', 'icon': Icons.terrain},
+    {'label': 'Gaming', 'icon': Icons.sports_esports},
+    {'label': 'Volunteering', 'icon': Icons.volunteer_activism},
+    {'label': 'Fashion', 'icon': Icons.checkroom},
+    {'label': 'Gardening', 'icon': Icons.local_florist},
+    {'label': 'Writing', 'icon': Icons.edit},
+    {'label': 'Fitness', 'icon': Icons.fitness_center},
   ];
 
   // Language options mirrored from onboarding_step4_cultural
   static const List<String> _kLanguageOptions = [
-    'English', 'Spanish', 'French', 'Arabic', 'Hindi', 'Mandarin',
-    'German', 'Italian', 'Tamil', 'Telugu', 'Turkish', 'Urdu', 'Other',
+    'English',
+    'Spanish',
+    'French',
+    'Arabic',
+    'Hindi',
+    'Mandarin',
+    'German',
+    'Italian',
+    'Tamil',
+    'Telugu',
+    'Turkish',
+    'Urdu',
+    'Other',
   ];
 
   @override
   void initState() {
     super.initState();
     _userProfileStream = UserService.instance.watchCurrentUserProfile();
-    _sentInterestStatusStream =
-        InterestService.instance.watchMySentInterestStatusByUserId();
-    _receivedInterestStatusStream =
-        InterestService.instance.watchInterestsForMe().map((items) {
-      final latest = <String, InterestModel>{};
-      for (final item in items) {
-        final prev = latest[item.fromUserId];
-        if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
-          latest[item.fromUserId] = item;
-        }
-      }
-      return latest.map((k, v) => MapEntry(k, v.status.toLowerCase()));
+    _sentInterestStatusStream = InterestService.instance
+        .watchMySentInterestStatusByUserId();
+    _receivedInterestStatusStream = InterestService.instance
+        .watchInterestsForMe()
+        .map((items) {
+          final latest = <String, InterestModel>{};
+          for (final item in items) {
+            final prev = latest[item.fromUserId];
+            if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
+              latest[item.fromUserId] = item;
+            }
+          }
+          return latest.map((k, v) => MapEntry(k, v.status.toLowerCase()));
+        });
+    _profileSubscription = _userProfileStream.listen(_handleProfileUpdate);
+    _sentInterestSub = _sentInterestStatusStream.listen(
+      (_) => _scheduleDiscoverReload(),
+    );
+    _recvInterestSub = _receivedInterestStatusStream.listen(
+      (_) => _scheduleDiscoverReload(),
+    );
+    _loadProfiles();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _syncDiscoverFilterLimits();
     });
-    _recommendedMatchesStream =
-        _matchService.watchRecommendedMatches(limit: 50);
+  }
+
+  Future<void> _syncDiscoverFilterLimits() async {
+    final access =
+        await SubscriptionLimitsService.instance.discoverFilterAccess();
+    if (!mounted) return;
+
+    final sanitized = access.sanitize(
+      genderFilter: _genderFilter,
+      ageRange: _ageRange,
+      selectedInterestTags: _selectedInterestTags,
+      motherTongueFilter: _motherTongueFilter,
+    );
+
+    final changed = _genderFilter != sanitized.genderFilter ||
+        _ageRange != sanitized.ageRange ||
+        !_listEquals(_selectedInterestTags, sanitized.selectedInterestTags) ||
+        _motherTongueFilter != sanitized.motherTongueFilter;
+
+    if (changed || _filterAccess.tier != access.tier) {
+      setState(() {
+        _filterAccess = access;
+        _genderFilter = sanitized.genderFilter;
+        _ageRange = sanitized.ageRange;
+        _selectedInterestTags = sanitized.selectedInterestTags;
+        _motherTongueFilter = sanitized.motherTongueFilter;
+      });
+    } else {
+      _filterAccess = access;
+    }
+  }
+
+  bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Refresh Discover list when interests change (e.g. after disconnect).
+  void _scheduleDiscoverReload() {
+    _discoverReloadDebounce?.cancel();
+    _discoverReloadDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      _loadExclusionLists().then((_) {
+        if (mounted) _loadProfiles();
+      });
+    });
   }
 
   @override
   void dispose() {
+    _profileSubscription?.cancel();
+    _sentInterestSub?.cancel();
+    _recvInterestSub?.cancel();
+    _discoverReloadDebounce?.cancel();
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _handleProfileUpdate(Map<String, dynamic>? profile) {
+    final signature = _profileSignature(profile);
+    if (signature == _lastProfileSignature) return;
+    _lastProfileSignature = signature;
+
+    if (_currentUser == null) return;
+    if (!mounted) return;
+    _syncDiscoverFilterLimits().then((_) {
+      if (mounted) _loadProfiles();
+    });
+  }
+
+  String _profileSignature(Map<String, dynamic>? profile) {
+    if (profile == null) return '';
+    final sub = profile['subscription'];
+    final subStatus = sub is Map ? (sub['status'] ?? '').toString() : '';
+    final subPlan = (profile['subscriptionPlan'] ?? '').toString();
+    final nestedPlan = sub is Map ? (sub['plan'] ?? '').toString() : '';
+    final nestedPriceId = sub is Map ? (sub['priceId'] ?? '').toString() : '';
+    return [subStatus, subPlan, nestedPlan, nestedPriceId].join('|');
   }
 
   // ─── Pre-cache the next profile's photos ───
@@ -115,9 +233,19 @@ class _SwipePageState extends State<SwipePage> {
   List<String> _photosOf(Map<String, dynamic> m) {
     final photos = m['photos'];
     if (photos is List && photos.isNotEmpty) {
-      return photos.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+      return photos
+          .map((e) => e.toString())
+          .where((e) => e.isNotEmpty)
+          .toList();
     }
-    final single = (m['photoUrl'] ?? m['profilePhoto'] ?? m['profilePic'] ?? '').toString();
+    // Check all known photo field names — Firestore uses 'profilePicture'
+    final single =
+        (m['profilePicture'] ??
+                m['photoUrl'] ??
+                m['profilePhoto'] ??
+                m['profilePic'] ??
+                '')
+            .toString();
     return single.isNotEmpty ? [single] : [];
   }
 
@@ -131,10 +259,24 @@ class _SwipePageState extends State<SwipePage> {
     final blocked = List<String>.from(profile['blockedUids'] ?? []);
     final now = DateTime.now().millisecondsSinceEpoch;
 
+    final discoverFilters = _filterAccess.sanitize(
+      genderFilter: _genderFilter,
+      ageRange: _ageRange,
+      selectedInterestTags: _selectedInterestTags,
+      motherTongueFilter: _motherTongueFilter,
+    );
+    final genderFilter = discoverFilters.genderFilter;
+    final ageRange = discoverFilters.ageRange;
+    final interestTags = discoverFilters.selectedInterestTags;
+    final motherTongueFilter = discoverFilters.motherTongueFilter;
+
     // ── Read partner preferences ──────────────────────────────────────────────
     // Support both the root-level "partnerPreference" (gender) field AND the
     // nested "partnerPreferences" map written by the preferences settings page.
-    final pref = (profile['partnerPreference'] ?? '').toString().trim().toLowerCase();
+    final pref = (profile['partnerPreference'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
     final prefs = profile['partnerPreferences'] is Map
         ? Map<String, dynamic>.from(profile['partnerPreferences'] as Map)
         : <String, dynamic>{};
@@ -145,19 +287,30 @@ class _SwipePageState extends State<SwipePage> {
     // gender is not set or is non-binary/unknown we fall back to the
     // previous partnerPreference logic.
     List<String> allowedGenders = [];
-    final myGenderRaw = (profile['gender'] ?? '').toString().trim().toLowerCase();
+    final myGenderRaw = (profile['gender'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
     if (myGenderRaw == 'male' || myGenderRaw == 'man' || myGenderRaw == 'm') {
       allowedGenders = ['Female', 'female', 'woman', 'Woman'];
-    } else if (myGenderRaw == 'female' || myGenderRaw == 'woman' || myGenderRaw == 'f') {
+    } else if (myGenderRaw == 'female' ||
+        myGenderRaw == 'woman' ||
+        myGenderRaw == 'f') {
       allowedGenders = ['Male', 'male', 'man', 'Man'];
     } else {
       // Fallback to partnerPreference if user's gender is not available
-      if (pref == 'female' || pref == 'women') allowedGenders = ['Female', 'female'];
-      else if (pref == 'male' || pref == 'men') allowedGenders = ['Male', 'male'];
-      else if (pref == 'both') allowedGenders = ['Male', 'male', 'Female', 'female'];
+      if (pref == 'female' || pref == 'women')
+        allowedGenders = ['Female', 'female'];
+      else if (pref == 'male' || pref == 'men')
+        allowedGenders = ['Male', 'male'];
+      else if (pref == 'both')
+        allowedGenders = ['Male', 'male', 'Female', 'female'];
 
       // Overridden by nested prefs if present
-      final prefGender = (prefs['gender'] ?? '').toString().trim().toLowerCase();
+      final prefGender = (prefs['gender'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
       if (prefGender.isNotEmpty) {
         if (prefGender == 'female' || prefGender == 'women') {
           allowedGenders = ['Female', 'female'];
@@ -178,32 +331,40 @@ class _SwipePageState extends State<SwipePage> {
     final heightMax = _parseInt(prefs['heightMax'] ?? prefs['maxHeight']);
 
     // Religion — single string OR list
-    final Set<String> allowedReligions = _toStringSet(prefs['religion'] ?? prefs['religions']);
+    final Set<String> allowedReligions = _toStringSet(
+      prefs['religion'] ?? prefs['religions'],
+    );
 
     // Country — single string OR list
-    final Set<String> allowedCountries = _toStringSet(prefs['country'] ?? prefs['countries']);
+    final Set<String> allowedCountries = _toStringSet(
+      prefs['country'] ?? prefs['countries'],
+    );
 
     // Mother tongue — single string OR list
     final Set<String> allowedTongues = _toStringSet(
-        prefs['motherTongue'] ?? prefs['motherTongues'] ?? prefs['language']);
+      prefs['motherTongue'] ?? prefs['motherTongues'] ?? prefs['language'],
+    );
 
     // Education level — single string OR list
     final Set<String> allowedEducation = _toStringSet(
-        prefs['educationLevel'] ?? prefs['education']);
+      prefs['educationLevel'] ?? prefs['education'],
+    );
 
     return matches.where((item) {
       final uid = (item['uid'] ?? '').toString();
       final itemGender = (item['gender'] ?? '').toString();
 
       // Skip profiles that are deleted, missing uid, or blocked
-      if (uid.isEmpty || blocked.contains(uid) || item['isDeleted'] == true) {
+      if (uid.isEmpty ||
+          blocked.contains(uid) ||
+          DeletedUserHelper.isDeleted(item)) {
         return false;
       }
 
-      // ─ Local Bottom Sheet Filters ─
-      if (_genderFilter != 'All') {
+      // ─ Local Bottom Sheet Filters (tier-enforced) ─
+      if (genderFilter != 'All') {
         final g = _normalizeGender(itemGender);
-        final f = _normalizeGender(_genderFilter);
+        final f = _normalizeGender(genderFilter);
         if (g != f) return false;
       }
 
@@ -212,13 +373,18 @@ class _SwipePageState extends State<SwipePage> {
       if (rawDob is DateTime) {
         final nowDate = DateTime.now();
         ageLocal = nowDate.year - rawDob.year;
-        if (nowDate.month < rawDob.month || (nowDate.month == rawDob.month && nowDate.day < rawDob.day)) ageLocal--;
-      } else if (rawDob != null && rawDob.runtimeType.toString() == 'Timestamp') {
+        if (nowDate.month < rawDob.month ||
+            (nowDate.month == rawDob.month && nowDate.day < rawDob.day))
+          ageLocal--;
+      } else if (rawDob != null &&
+          rawDob.runtimeType.toString() == 'Timestamp') {
         try {
           final dob = rawDob.toDate() as DateTime;
           final nowDate = DateTime.now();
           ageLocal = nowDate.year - dob.year;
-          if (nowDate.month < dob.month || (nowDate.month == dob.month && nowDate.day < dob.day)) ageLocal--;
+          if (nowDate.month < dob.month ||
+              (nowDate.month == dob.month && nowDate.day < dob.day))
+            ageLocal--;
         } catch (_) {}
       }
       ageLocal ??= _parseInt(item['age'] ?? item['calculatedAge']);
@@ -226,25 +392,30 @@ class _SwipePageState extends State<SwipePage> {
       if (ageLocal != null) {
         if (ageMin != null && ageLocal < ageMin) return false;
         if (ageMax != null && ageLocal > ageMax) return false;
-        if (ageLocal < _ageRange.start || ageLocal > _ageRange.end) return false;
+        if (ageLocal < ageRange.start || ageLocal > ageRange.end) return false;
       }
 
-      if (_selectedInterestTags.isNotEmpty) {
+      if (interestTags.isNotEmpty) {
         final interestsList = item['interests'] as List<dynamic>? ?? [];
-        final profileInterests = interestsList.map((i) => i.toString().trim().toLowerCase()).toSet();
-        final hasAny = _selectedInterestTags.any(
+        final profileInterests = interestsList
+            .map((i) => i.toString().trim().toLowerCase())
+            .toSet();
+        final hasAny = interestTags.any(
           (tag) => profileInterests.contains(tag.trim().toLowerCase()),
         );
         if (!hasAny) return false;
       }
 
-      if (_motherTongueFilter.isNotEmpty) {
-        final mt = (item['primaryLanguage'] ?? item['motherTongue'] ?? '').toString().trim().toLowerCase();
-        if (mt != _motherTongueFilter.trim().toLowerCase()) return false;
+      if (motherTongueFilter.isNotEmpty) {
+        final mt = (item['primaryLanguage'] ?? item['motherTongue'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
+        if (mt != motherTongueFilter.trim().toLowerCase()) return false;
       }
 
       // ─ Gender (Profile Prefs) ────────────────────────────────────────────
-      if (_genderFilter == 'All' && allowedGenders.isNotEmpty) {
+      if (genderFilter == 'All' && allowedGenders.isNotEmpty) {
         final profileGenderNorm = _normalizeGender(itemGender);
         final allowedNorm = allowedGenders.map(_normalizeGender).toSet();
         if (!allowedNorm.contains(profileGenderNorm)) return false;
@@ -265,36 +436,59 @@ class _SwipePageState extends State<SwipePage> {
 
       // ─ Country ───────────────────────────────────────────────────────────
       if (allowedCountries.isNotEmpty) {
-        final c = (item['country'] ?? item['location'] ?? '').toString().trim().toLowerCase();
+        final c = (item['country'] ?? item['location'] ?? '')
+            .toString()
+            .trim()
+            .toLowerCase();
         if (!allowedCountries.any((a) => c.contains(a))) return false;
       }
 
       // ─ Mother tongue ─────────────────────────────────────────────────────
-      if (_motherTongueFilter.isEmpty && allowedTongues.isNotEmpty) {
+      if (motherTongueFilter.isEmpty && allowedTongues.isNotEmpty) {
         final t = (item['motherTongue'] ?? item['primaryLanguage'] ?? '')
-            .toString().trim().toLowerCase();
+            .toString()
+            .trim()
+            .toLowerCase();
         if (!allowedTongues.any((a) => a == t)) return false;
       }
 
       // ─ Education ─────────────────────────────────────────────────────────
       if (allowedEducation.isNotEmpty) {
         final e = (item['educationLevel'] ?? item['education'] ?? '')
-            .toString().trim().toLowerCase();
+            .toString()
+            .trim()
+            .toLowerCase();
         if (!allowedEducation.any((a) => a == e)) return false;
       }
 
       // ─ Ignored / hidden ──────────────────────────────────────────────────
-      final ignoredMatchIds = (profile['ignoredMatchIds'] as List<dynamic>? ?? []).map((e) => e.toString()).toSet();
+      final ignoredMatchIds =
+          (profile['ignoredMatchIds'] as List<dynamic>? ?? [])
+              .map((e) => e.toString())
+              .toSet();
       if (ignoredMatchIds.contains(uid)) return false;
 
       final hidden = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
       if (hidden > now) return false;
 
-      // ─ Interest status ───────────────────────────────────────────────────
+      // ─ Interest / like status ────────────────────────────────────────────
       final ss = sentStatus[uid]?.toLowerCase() ?? '';
-      if (ss == 'accepted' || ss == 'replied' || ss == 'sent' || ss == 'pending') return false;
       final rs = receivedStatus[uid]?.toLowerCase() ?? '';
-      if (rs == 'accepted' || rs == 'replied') return false;
+
+      // After disconnect, interest is declined — show again on Discover.
+      final isDisconnected =
+          ss == 'declined' || rs == 'declined' || ss == 'blocked' || rs == 'blocked';
+
+      if (!isDisconnected) {
+        if (ss == 'accepted' || ss == 'replied' || ss == 'pending') {
+          return false;
+        }
+        if (rs == 'accepted' || rs == 'replied' || rs == 'pending') {
+          return false;
+        }
+        // Swipe "like" is stored separately from interests.
+        if (likedUids.contains(uid)) return false;
+      }
 
       return true;
     }).toList();
@@ -334,6 +528,291 @@ class _SwipePageState extends State<SwipePage> {
     return {};
   }
 
+  Future<void> _loadProfiles() async {
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+
+    try {
+      await _syncDiscoverFilterLimits();
+      if (!mounted) return;
+
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+
+      final meDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final meData = meDoc.data();
+      if (meData == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+
+      _currentUser = UserModel.fromMap(<String, dynamic>{
+        ...meData,
+        'uid': uid,
+      });
+
+      await _loadExclusionLists();
+
+      final targetGenders = _getTargetGenders(_currentUser!);
+      final fetched = <UserModel>[];
+      final seen = <String>{};
+
+      if (targetGenders.length == 1) {
+        final query = await FirebaseFirestore.instance
+            .collection('users')
+            .where('gender', isEqualTo: targetGenders.first)
+            .limit(150)
+            .get();
+
+        for (final doc in query.docs) {
+          final data = doc.data();
+          // Filter registrationCompleted in Dart — avoids needing a composite index
+          if (data['registrationCompleted'] != true) continue;
+          final user = UserModel.fromMap(<String, dynamic>{
+            ...data,
+            'uid': doc.id,
+          });
+          if (seen.add(user.uid)) fetched.add(user);
+        }
+      } else {
+        for (final gender in targetGenders) {
+          final query = await FirebaseFirestore.instance
+              .collection('users')
+              .where('gender', isEqualTo: gender)
+              .limit(150)
+              .get();
+
+          for (final doc in query.docs) {
+            final data = doc.data();
+            // Filter registrationCompleted in Dart — avoids needing a composite index
+            if (data['registrationCompleted'] != true) continue;
+            final user = UserModel.fromMap(<String, dynamic>{
+              ...data,
+              'uid': doc.id,
+            });
+            if (seen.add(user.uid)) fetched.add(user);
+          }
+        }
+      }
+
+      if (kDebugMode)
+        debugPrint('SwipePage: fetched=${fetched.length} candidates');
+      final filtered = _applyDartFilters(fetched, _currentUser!);
+      if (kDebugMode)
+        debugPrint('SwipePage: after dartFilter=${filtered.length}');
+      final ranked = _rankUsers(filtered, _currentUser!);
+      final boosted = _applySubscriptionBoost(ranked, _currentUser!);
+      if (kDebugMode)
+        debugPrint(
+          'SwipePage: showing ${boosted.length} profiles (plan=${_currentUser!.subscriptionPlan})',
+        );
+
+      if (!mounted) return;
+      setState(() {
+        _profiles = boosted;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      debugPrint('Load profiles error: $e');
+    }
+  }
+
+  List<UserModel> _applyDartFilters(
+    List<UserModel> users,
+    UserModel currentUser,
+  ) {
+    if (kDebugMode) debugPrint('SwipePage: dartFilter in=${users.length}');
+    int dropped = 0;
+    // Guard: if maxAge is misconfigured (≤ minAge or ≤ 18), ignore age filter
+    final minAge = currentUser.minAgePreference;
+    final maxAge =
+        currentUser.maxAgePreference <= minAge ||
+            currentUser.maxAgePreference <= 18
+        ? 99
+        : currentUser.maxAgePreference;
+
+    final result = users.where((user) {
+      if (user.uid == currentUser.uid) {
+        dropped++;
+        debugPrint('  DROP self: ${user.uid}');
+        return false;
+      }
+      if (user.uid.isEmpty) {
+        dropped++;
+        return false;
+      }
+      // Filter deleted profiles early
+      if (user.isDeleted || user.status.toLowerCase() == 'deleted') {
+        dropped++;
+        debugPrint('  DROP deleted: ${user.uid}');
+        return false;
+      }
+      // Hide private / non-discoverable profiles
+      if (user.profileVisibility == 'Private' ||
+          user.profileVisibility == 'Curated Matches Only') {
+        dropped++;
+        return false;
+      }
+      final userAge = user.age;
+      if (userAge > 0 && (userAge < minAge || userAge > maxAge)) {
+        dropped++;
+        debugPrint(
+          '  DROP age: ${user.uid} age=$userAge, range=$minAge-$maxAge',
+        );
+        return false;
+      }
+
+      final preferredReligion = currentUser.preferredReligion
+          .trim()
+          .toLowerCase();
+      const _noReligionPref = {
+        'any',
+        'open to all',
+        'all',
+        'no preference',
+        '',
+      };
+      if (!_noReligionPref.contains(preferredReligion)) {
+        if (user.religion.trim().toLowerCase() != preferredReligion) {
+          dropped++;
+          if (kDebugMode)
+            debugPrint(
+              '  DROP religion: ${user.uid} religion=${user.religion}, pref=${currentUser.preferredReligion}',
+            );
+          return false;
+        }
+      }
+
+      if (kDebugMode) debugPrint('  PASS: ${user.uid} name=${user.firstName}');
+      return true;
+    }).toList();
+    if (kDebugMode)
+      debugPrint(
+        'SwipePage: dartFilter out=${result.length}, dropped=$dropped',
+      );
+    return result;
+  }
+
+  int _calculateScore(UserModel currentUser, UserModel otherUser) {
+    var score = 0;
+
+    final myInterests = currentUser.interests;
+    final theirInterests = otherUser.interests;
+    final commonInterests = myInterests
+        .where((interest) => theirInterests.contains(interest))
+        .length;
+    score += (commonInterests * 8).clamp(0, 40).toInt();
+
+    if (currentUser.drinking == otherUser.drinking) score += 10;
+    if (currentUser.smoking == otherUser.smoking) score += 10;
+    if (currentUser.workout == otherUser.workout) score += 10;
+
+    if (currentUser.lookingFor == otherUser.lookingFor) score += 20;
+
+    if (currentUser.city.trim().toLowerCase() ==
+        otherUser.city.trim().toLowerCase()) {
+      score += 10;
+    }
+
+    return score.clamp(0, 100);
+  }
+
+  List<UserModel> _rankUsers(List<UserModel> users, UserModel currentUser) {
+    final scored = users
+        .map(
+          (user) =>
+              ScoredUser(user: user, score: _calculateScore(currentUser, user)),
+        )
+        .toList();
+
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    return scored.map((item) => item.user).toList();
+  }
+
+  Future<void> _loadExclusionLists() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final likesSnap = await FirebaseFirestore.instance
+        .collection('likes')
+        .doc(uid)
+        .collection('likedUsers')
+        .get();
+    likedUids = likesSnap.docs.map((doc) => doc.id).toSet();
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get();
+    final data = userDoc.data() ?? <String, dynamic>{};
+    blockedUids = Set<String>.from(data['blockedUids'] ?? <String>[]);
+  }
+
+  Future<void> _onLike(String likedUid) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    await FirebaseFirestore.instance
+        .collection('likes')
+        .doc(uid)
+        .collection('likedUsers')
+        .doc(likedUid)
+        .set({'timestamp': FieldValue.serverTimestamp()});
+
+    final reverseCheck = await FirebaseFirestore.instance
+        .collection('likes')
+        .doc(likedUid)
+        .collection('likedUsers')
+        .doc(uid)
+        .get();
+
+    if (reverseCheck.exists) {
+      await _createMatch(uid, likedUid);
+    }
+  }
+
+  Future<void> _createMatch(String uid1, String uid2) async {
+    final chatId = uid1.compareTo(uid2) < 0 ? '${uid1}_$uid2' : '${uid2}_$uid1';
+
+    await FirebaseFirestore.instance.collection('matches').doc(chatId).set({
+      'users': [uid1, uid2],
+      'timestamp': FieldValue.serverTimestamp(),
+      'chatId': chatId,
+      'lastMessage': '',
+      'lastMessageTime': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  List<UserModel> _applySubscriptionBoost(
+    List<UserModel> ranked,
+    UserModel currentUser,
+  ) {
+    final plan = currentUser.subscriptionPlan.toLowerCase();
+    final isPremium = plan == 'trial' || plan == 'gold' || plan == 'premium';
+    if (!isPremium) {
+      return ranked.take(10).toList();
+    }
+    return ranked;
+  }
+
+  List<String> _getTargetGenders(UserModel currentUser) {
+    final gender = currentUser.gender.trim().toLowerCase();
+    if (gender == 'man' || gender == 'male' || gender == 'm') {
+      return ['Woman'];
+    }
+    if (gender == 'woman' || gender == 'female' || gender == 'f') {
+      return ['Man'];
+    }
+    return ['Man', 'Woman'];
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -345,19 +824,34 @@ class _SwipePageState extends State<SwipePage> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           systemOverlayStyle: SystemUiOverlayStyle.light,
-          title: const Text('Discover',
-              style: TextStyle(color: Colors.white, fontSize: 22,
-                  fontWeight: FontWeight.w600, letterSpacing: 0.4)),
+          title: const Text(
+            'Discover',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.4,
+            ),
+          ),
           actions: [
             IconButton(
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const NotificationsPage())),
-              icon: const Icon(Icons.notifications_none_rounded,
-                  color: Colors.white, size: 26),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const NotificationsPage()),
+              ),
+              icon: const Icon(
+                Icons.notifications_none_rounded,
+                color: Colors.white,
+                size: 26,
+              ),
             ),
             IconButton(
               onPressed: _showAdvancedFilterSheet,
-              icon: const Icon(Icons.tune_rounded, color: Colors.white, size: 26),
+              icon: const Icon(
+                Icons.tune_rounded,
+                color: Colors.white,
+                size: 26,
+              ),
             ),
             const SizedBox(width: 4),
           ],
@@ -368,7 +862,8 @@ class _SwipePageState extends State<SwipePage> {
             final profile = ps.data ?? {};
             final hiddenRaw = profile['hiddenMatches'];
             final hiddenMap = hiddenRaw is Map
-                ? Map<String, dynamic>.from(hiddenRaw) : <String, dynamic>{};
+                ? Map<String, dynamic>.from(hiddenRaw)
+                : <String, dynamic>{};
 
             return StreamBuilder<Map<String, String>>(
               stream: _sentInterestStatusStream,
@@ -380,88 +875,126 @@ class _SwipePageState extends State<SwipePage> {
                     final recvStatus = rs.data ?? {};
                     final savedIds = ((profile['savedMatchIds'] ?? []) as List)
                         .map((e) => e.toString())
-                        .where((e) => e.isNotEmpty).toSet();
+                        .where((e) => e.isNotEmpty)
+                        .toSet();
 
-                    return StreamBuilder<List<Map<String, dynamic>>>(
-                      stream: _recommendedMatchesStream,
-                      builder: (context, snap) {
-                        if (snap.connectionState == ConnectionState.waiting) {
-                          return const Center(child: CircularProgressIndicator(
-                              color: AppColors.goldMedium));
+                    if (_isLoading) {
+                      return const Center(
+                        child: CircularProgressIndicator(
+                          color: AppColors.goldMedium,
+                        ),
+                      );
+                    }
+
+                    final rankedMaps = _profiles.map((u) {
+                      final m = u.toMap();
+                      m['uid'] = u
+                          .uid; // toMap() doesn't include uid — add it explicitly
+                      return m;
+                    }).toList();
+                    final matches = _applyFilters(
+                      rankedMaps,
+                      profile,
+                      hiddenMap,
+                      sentStatus,
+                      recvStatus,
+                    );
+
+                    if (matches.isEmpty) return _EmptyDiscoverState();
+
+                    return PageView.builder(
+                      controller: _pageController,
+                      scrollDirection: Axis.vertical,
+                      physics: const PageScrollPhysics(),
+                      onPageChanged: (i) async {
+                        if (i > _currentPage) {
+                          final swipeCheck =
+                              await SubscriptionLimitsService.instance
+                                  .canSwipe();
+                          if (!swipeCheck.allowed) {
+                            if (context.mounted) {
+                              _showSwipeUpgradeSheet(context);
+                            }
+                            _pageController.jumpToPage(_currentPage);
+                            return;
+                          }
+                          await SubscriptionLimitsService.instance
+                              .recordSwipe();
                         }
-                        final matches = _applyFilters(
-                            snap.data ?? [], profile, hiddenMap, sentStatus, recvStatus);
-
-                        if (matches.isEmpty) return _EmptyDiscoverState();
-
-                        return PageView.builder(
-                          controller: _pageController,
-                          scrollDirection: Axis.vertical,
-                          physics: const PageScrollPhysics(),
-                          onPageChanged: (i) {
-                            setState(() => _currentPage = i);
-                            _precacheNext(matches, i);
-                            _checkEmailLinkPopup();
-                          },
-                          itemCount: matches.length,
-                          itemBuilder: (context, index) {
-                            final item = matches[index];
-                            final uid = (item['uid'] ?? '').toString();
-                            return _ReelCard(
-                              key: ValueKey(uid),
-                              match: item,
-                              photos: _photosOf(item),
-                              interestStatus: sentStatus[uid] ?? '',
-                              isSaved: savedIds.contains(uid),
-                              onTap: () {
-                                if (uid.isNotEmpty) {
-                                  MatchService.instance
-                                      .recordProfileView(viewedUserId: uid);
-                                }
-                                Navigator.push(context,
-                                    MaterialPageRoute(builder: (_) =>
-                                        MatchProfileDetailPage(profile: item)));
-                              },
-                              onDismiss: () async {
-                                if (uid.isEmpty) return;
-                                final curIgnored = ((profile['ignoredMatchIds'] ?? []) as List)
-                                    .map((e) => e.toString()).toSet();
-                                curIgnored.add(uid);
-                                await UserService.instance
-                                    .updateCurrentUserProfile({'ignoredMatchIds': curIgnored.toList()});
-                                if (!context.mounted) return;
-                                showLinearMessage(context, 'Profile ignored.');
-                                _nextCard(matches);
-                              },
-                              onToggleSave: () async {
-                                if (uid.isEmpty) return;
-                                final cur = ((profile['savedMatchIds'] ?? []) as List)
-                                    .map((e) => e.toString()).toSet();
-                                if (cur.contains(uid)) {
-                                  cur.remove(uid);
-                                  showLinearMessage(context, 'Removed from saved.');
-                                } else {
-                                  cur.add(uid);
-                                  showLinearMessage(context, 'Profile saved!');
-                                }
-                                await UserService.instance
-                                    .updateCurrentUserProfile(
-                                        {'savedMatchIds': cur.toList()});
-                              },
-                              onLike: () async {
-                                if (uid.isEmpty) return;
-                                HapticFeedback.mediumImpact();
-                                final result = await InterestService.instance
-                                    .sendInterest(toUserId: uid);
-                                if (!context.mounted) return;
-                                if (result == InterestSendResult.trialLimitReached) {
-                                  _showSwipeUpgradeSheet(context);
-                                  return;
-                                }
-                                showLinearMessage(context, 'Interest sent! 💛');
-                                _nextCard(matches);
-                              },
+                        setState(() => _currentPage = i);
+                        _precacheNext(matches, i);
+                        _checkEmailLinkPopup();
+                      },
+                      itemCount: matches.length,
+                      itemBuilder: (context, index) {
+                        final item = matches[index];
+                        final uid = (item['uid'] ?? '').toString();
+                        return _ReelCard(
+                          key: ValueKey(uid),
+                          match: item,
+                          photos: _photosOf(item),
+                          interestStatus: sentStatus[uid] ?? '',
+                          isSaved: savedIds.contains(uid),
+                          onTap: () {
+                            if (uid.isNotEmpty) {
+                              MatchService.instance.recordProfileView(
+                                viewedUserId: uid,
+                              );
+                            }
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    MatchProfileDetailPage(profile: item),
+                              ),
                             );
+                          },
+                          onDismiss: () async {
+                            if (uid.isEmpty) return;
+                            final curIgnored =
+                                ((profile['ignoredMatchIds'] ?? []) as List)
+                                    .map((e) => e.toString())
+                                    .toSet();
+                            curIgnored.add(uid);
+                            await UserService.instance.updateCurrentUserProfile(
+                              {'ignoredMatchIds': curIgnored.toList()},
+                            );
+                            if (!context.mounted) return;
+                            showLinearMessage(context, 'Profile ignored.');
+                            _nextCard(matches);
+                          },
+                          onToggleSave: () async {
+                            if (uid.isEmpty) return;
+                            final cur =
+                                ((profile['savedMatchIds'] ?? []) as List)
+                                    .map((e) => e.toString())
+                                    .toSet();
+                            if (cur.contains(uid)) {
+                              cur.remove(uid);
+                              showLinearMessage(context, 'Removed from saved.');
+                            } else {
+                              cur.add(uid);
+                              showLinearMessage(context, 'Profile saved!');
+                            }
+                            await UserService.instance.updateCurrentUserProfile(
+                              {'savedMatchIds': cur.toList()},
+                            );
+                          },
+                          onLike: () async {
+                            if (uid.isEmpty) return;
+                            HapticFeedback.mediumImpact();
+                            final result = await InterestService.instance
+                                .sendInterest(toUserId: uid);
+                            if (!context.mounted) return;
+                            if (result ==
+                                InterestSendResult.trialLimitReached) {
+                              _showSwipeUpgradeSheet(context);
+                              return;
+                            }
+                            await _onLike(uid);
+                            likedUids.add(uid);
+                            showLinearMessage(context, 'Interest sent! 💛');
+                            _nextCard(matches);
                           },
                         );
                       },
@@ -492,7 +1025,9 @@ class _SwipePageState extends State<SwipePage> {
     if (hasSeen) return;
 
     final linkedProviders = AuthService.instance.getLinkedProviderIds();
-    final hasEmailOrGoogle = linkedProviders.contains('password') || linkedProviders.contains('google.com');
+    final hasEmailOrGoogle =
+        linkedProviders.contains('password') ||
+        linkedProviders.contains('google.com');
 
     if (hasEmailOrGoogle) {
       // Already linked, mark as seen and return
@@ -509,9 +1044,18 @@ class _SwipePageState extends State<SwipePage> {
       barrierDismissible: false,
       builder: (context) {
         return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)), // Linear, not modern rounded
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+          ), // Linear, not modern rounded
           backgroundColor: const Color(0xFF141414),
-          title: const Text('Account Security', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          title: const Text(
+            'Account Security',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           content: const Text(
             'Secure your account by linking an Email or Google account. This ensures you never lose access to your matches.',
             style: TextStyle(color: Colors.white70, fontSize: 14),
@@ -519,19 +1063,32 @@ class _SwipePageState extends State<SwipePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Later', style: TextStyle(color: Colors.white38)),
+              child: const Text(
+                'Later',
+                style: TextStyle(color: Colors.white38),
+              ),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.goldMedium,
                 foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)), // Linear look
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(4),
+                ), // Linear look
               ),
               onPressed: () {
                 Navigator.pop(context);
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsPage(scrollToSecurity: true)));
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const SettingsPage(scrollToSecurity: true),
+                  ),
+                );
               },
-              child: const Text('Go to Settings', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Go to Settings',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         );
@@ -554,37 +1111,55 @@ class _SwipePageState extends State<SwipePage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 40, height: 4,
+              width: 40,
+              height: 4,
               decoration: BoxDecoration(
-                  color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             const SizedBox(height: 28),
             Container(
-              width: 72, height: 72,
+              width: 72,
+              height: 72,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: const LinearGradient(
                   colors: [Color(0xFFD4A017), Color(0xFFC8960C)],
                 ),
                 boxShadow: [
-                  BoxShadow(color: AppColors.goldMedium.withOpacity(0.3),
-                      blurRadius: 20, spreadRadius: 2),
+                  BoxShadow(
+                    color: AppColors.goldMedium.withOpacity(0.3),
+                    blurRadius: 20,
+                    spreadRadius: 2,
+                  ),
                 ],
               ),
-              child: const Icon(Icons.workspace_premium_rounded,
-                  color: Colors.black, size: 36),
+              child: const Icon(
+                Icons.workspace_premium_rounded,
+                color: Colors.black,
+                size: 36,
+              ),
             ),
             const SizedBox(height: 20),
-            const Text('Daily Limit Reached',
-                style: TextStyle(color: Colors.white, fontSize: 22,
-                    fontWeight: FontWeight.bold)),
+            const Text(
+              'Daily Limit Reached',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const SizedBox(height: 10),
             Text(
               'You\'ve used your 3 free daily connections.\n'
               'Upgrade to Premium for unlimited interests.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.white.withOpacity(0.6),
-                  fontSize: 15, height: 1.6),
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 15,
+                height: 1.6,
+              ),
             ),
             const SizedBox(height: 32),
             SizedBox(
@@ -592,26 +1167,184 @@ class _SwipePageState extends State<SwipePage> {
               child: ElevatedButton(
                 onPressed: () {
                   Navigator.pop(context);
-                  Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const SubscriptionPage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  );
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.goldMedium,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30)),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
                   elevation: 0,
                 ),
-                child: const Text('Upgrade to Premium',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                child: const Text(
+                  'Upgrade to Premium',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
             const SizedBox(height: 12),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text('Maybe later',
-                  style: TextStyle(color: Colors.white.withOpacity(0.35), fontSize: 14)),
+              child: Text(
+                'Maybe later',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.35),
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showFilterUpgradeSheet(
+    BuildContext context, {
+    required String title,
+    required String message,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFF111111),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(28, 20, 28, 48),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Icon(
+              Icons.tune_rounded,
+              color: AppColors.goldMedium,
+              size: 44,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 15,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 28),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.goldMedium,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(30),
+                  ),
+                ),
+                child: const Text(
+                  'Upgrade to Premium',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _filterLockBanner(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppColors.goldMedium.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.goldMedium.withOpacity(0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.lock_rounded, color: AppColors.goldMedium, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLockedFilterSection({required Widget child}) {
+    return Opacity(
+      opacity: 0.45,
+      child: IgnorePointer(
+        child: Stack(
+          children: [
+            child,
+            Positioned(
+              top: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.lock, color: AppColors.goldMedium, size: 12),
+                    SizedBox(width: 4),
+                    Text(
+                      'Premium',
+                      style: TextStyle(
+                        color: AppColors.goldMedium,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -620,10 +1353,33 @@ class _SwipePageState extends State<SwipePage> {
   }
 
   Future<void> _showAdvancedFilterSheet() async {
-    RangeValues tempAge = _ageRange;
-    String tempGender = _genderFilter;
-    List<String> tempInterests = List.from(_selectedInterestTags);
-    String tempMotherTongue = _motherTongueFilter;
+    final access =
+        await SubscriptionLimitsService.instance.discoverFilterAccess();
+    if (!mounted) return;
+
+    final openCheck =
+        await SubscriptionLimitsService.instance.canOpenDiscoverFilters();
+    if (!openCheck.allowed) {
+      _showFilterUpgradeSheet(
+        context,
+        title: 'Discover Filters',
+        message: openCheck.reason ?? access.filterUpgradeMessage,
+      );
+      return;
+    }
+
+    _filterAccess = access;
+    final initial = access.sanitize(
+      genderFilter: _genderFilter,
+      ageRange: _ageRange,
+      selectedInterestTags: _selectedInterestTags,
+      motherTongueFilter: _motherTongueFilter,
+    );
+
+    RangeValues tempAge = initial.ageRange;
+    String tempGender = initial.genderFilter;
+    List<String> tempInterests = List.from(initial.selectedInterestTags);
+    String tempMotherTongue = initial.motherTongueFilter;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -653,7 +1409,8 @@ class _SwipePageState extends State<SwipePage> {
                       // ── drag handle ──
                       Container(
                         margin: const EdgeInsets.only(top: 10, bottom: 6),
-                        width: 40, height: 4,
+                        width: 40,
+                        height: 4,
                         decoration: BoxDecoration(
                           color: Colors.white24,
                           borderRadius: BorderRadius.circular(2),
@@ -676,7 +1433,11 @@ class _SwipePageState extends State<SwipePage> {
                             ),
                             GestureDetector(
                               onTap: () => Navigator.pop(ctx),
-                              child: const Icon(Icons.close_rounded, color: Colors.white54, size: 22),
+                              child: const Icon(
+                                Icons.close_rounded,
+                                color: Colors.white54,
+                                size: 22,
+                              ),
                             ),
                           ],
                         ),
@@ -688,10 +1449,17 @@ class _SwipePageState extends State<SwipePage> {
                         child: ListView(
                           controller: scrollCtrl,
                           padding: EdgeInsets.fromLTRB(
-                            20, 16, 20,
+                            20,
+                            16,
+                            20,
                             MediaQuery.of(context).viewInsets.bottom + 20,
                           ),
                           children: [
+                            if (access.tier == UserTier.trial)
+                              _filterLockBanner(
+                                'Trial includes Gender and Age filters only. '
+                                'Upgrade for Interests and Mother Tongue.',
+                              ),
                             // ──────────────────── SHOW (Gender) ────────────────────
                             const Text(
                               'SHOW',
@@ -709,22 +1477,34 @@ class _SwipePageState extends State<SwipePage> {
                               children: ['All', 'Male', 'Female'].map((g) {
                                 final sel = tempGender == g;
                                 return GestureDetector(
-                                  onTap: () => setModalState(() => tempGender = g),
+                                  onTap: () =>
+                                      setModalState(() => tempGender = g),
                                   child: AnimatedContainer(
                                     duration: const Duration(milliseconds: 200),
-                                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 22,
+                                      vertical: 9,
+                                    ),
                                     decoration: BoxDecoration(
-                                      color: sel ? AppColors.goldMedium : Colors.white.withOpacity(0.06),
+                                      color: sel
+                                          ? AppColors.goldMedium
+                                          : Colors.white.withOpacity(0.06),
                                       borderRadius: BorderRadius.circular(22),
                                       border: Border.all(
-                                        color: sel ? AppColors.goldMedium : Colors.white.withOpacity(0.14),
+                                        color: sel
+                                            ? AppColors.goldMedium
+                                            : Colors.white.withOpacity(0.14),
                                       ),
                                     ),
                                     child: Text(
                                       g,
                                       style: TextStyle(
-                                        color: sel ? Colors.black : Colors.white70,
-                                        fontWeight: sel ? FontWeight.bold : FontWeight.w400,
+                                        color: sel
+                                            ? Colors.black
+                                            : Colors.white70,
+                                        fontWeight: sel
+                                            ? FontWeight.bold
+                                            : FontWeight.w400,
                                         fontSize: 14,
                                       ),
                                     ),
@@ -759,7 +1539,9 @@ class _SwipePageState extends State<SwipePage> {
                             ),
                             RangeSlider(
                               activeColor: AppColors.goldMedium,
-                              inactiveColor: AppColors.goldMedium.withOpacity(0.2),
+                              inactiveColor: AppColors.goldMedium.withOpacity(
+                                0.2,
+                              ),
                               values: tempAge,
                               min: 18,
                               max: 70,
@@ -768,136 +1550,250 @@ class _SwipePageState extends State<SwipePage> {
                                 '${tempAge.start.round()}',
                                 '${tempAge.end.round()}',
                               ),
-                              onChanged: (v) => setModalState(() => tempAge = v),
+                              onChanged: (v) =>
+                                  setModalState(() => tempAge = v),
                             ),
                             const SizedBox(height: 24),
 
                             // ──────────────────── INTERESTS ────────────────────
-                            Row(
-                              children: [
-                                const Expanded(
-                                  child: Text(
-                                    'INTERESTS',
-                                    style: TextStyle(
-                                      color: Colors.white38,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: 1.2,
-                                    ),
-                                  ),
-                                ),
-                                if (tempInterests.isNotEmpty)
-                                  Text(
-                                    '${tempInterests.length} selected',
-                                    style: const TextStyle(
-                                      color: AppColors.goldMedium,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _kInterestOptions.map((opt) {
-                                final label = opt['label'] as String;
-                                final icon  = opt['icon']  as IconData;
-                                final sel   = tempInterests.contains(label);
-                                return GestureDetector(
-                                  onTap: () => setModalState(() {
-                                    if (sel) {
-                                      tempInterests.remove(label);
-                                    } else {
-                                      tempInterests.add(label);
-                                    }
-                                  }),
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 180),
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-                                    decoration: BoxDecoration(
-                                      color: sel
-                                          ? AppColors.goldMedium.withOpacity(0.18)
-                                          : Colors.white.withOpacity(0.05),
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(
-                                        color: sel
-                                            ? AppColors.goldMedium
-                                            : Colors.white.withOpacity(0.12),
-                                        width: sel ? 1.5 : 1,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(
-                                          icon,
-                                          size: 14,
-                                          color: sel ? AppColors.goldMedium : Colors.white38,
-                                        ),
-                                        const SizedBox(width: 5),
-                                        Text(
-                                          label,
-                                          style: TextStyle(
-                                            color: sel ? AppColors.goldMedium : Colors.white54,
-                                            fontSize: 13,
-                                            fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                            access.allowInterests
+                                ? Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Expanded(
+                                            child: Text(
+                                              'INTERESTS',
+                                              style: TextStyle(
+                                                color: Colors.white38,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700,
+                                                letterSpacing: 1.2,
+                                              ),
+                                            ),
                                           ),
+                                          if (tempInterests.isNotEmpty)
+                                            Text(
+                                              '${tempInterests.length} selected',
+                                              style: const TextStyle(
+                                                color: AppColors.goldMedium,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children:
+                                            _kInterestOptions.map((opt) {
+                                          final label = opt['label'] as String;
+                                          final icon = opt['icon'] as IconData;
+                                          final sel =
+                                              tempInterests.contains(label);
+                                          return GestureDetector(
+                                            onTap: () => setModalState(() {
+                                              if (sel) {
+                                                tempInterests.remove(label);
+                                              } else {
+                                                tempInterests.add(label);
+                                              }
+                                            }),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                milliseconds: 180,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 12,
+                                                vertical: 7,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: sel
+                                                    ? AppColors.goldMedium
+                                                        .withOpacity(0.18)
+                                                    : Colors.white
+                                                        .withOpacity(0.05),
+                                                borderRadius:
+                                                    BorderRadius.circular(20),
+                                                border: Border.all(
+                                                  color: sel
+                                                      ? AppColors.goldMedium
+                                                      : Colors.white
+                                                          .withOpacity(0.12),
+                                                  width: sel ? 1.5 : 1,
+                                                ),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Icon(
+                                                    icon,
+                                                    size: 14,
+                                                    color: sel
+                                                        ? AppColors.goldMedium
+                                                        : Colors.white38,
+                                                  ),
+                                                  const SizedBox(width: 5),
+                                                  Text(
+                                                    label,
+                                                    style: TextStyle(
+                                                      color: sel
+                                                          ? AppColors.goldMedium
+                                                          : Colors.white54,
+                                                      fontSize: 13,
+                                                      fontWeight: sel
+                                                          ? FontWeight.w600
+                                                          : FontWeight.w400,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                        }).toList(),
+                                      ),
+                                    ],
+                                  )
+                                : _buildLockedFilterSection(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'INTERESTS',
+                                          style: TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: 1.2,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: _kInterestOptions
+                                              .take(6)
+                                              .map((opt) {
+                                            final label =
+                                                opt['label'] as String;
+                                            return Chip(
+                                              label: Text(label),
+                                              backgroundColor:
+                                                  Colors.white10,
+                                            );
+                                          })
+                                              .toList(),
                                         ),
                                       ],
                                     ),
                                   ),
-                                );
-                              }).toList(),
-                            ),
                             const SizedBox(height: 24),
 
                             // ──────────────────── MOTHER TONGUE ────────────────────
-                            const Text(
-                              'MOTHER TONGUE',
-                              style: TextStyle(
-                                color: Colors.white38,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 1.2,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _kLanguageOptions.map((lang) {
-                                final sel = tempMotherTongue == lang;
-                                return GestureDetector(
-                                  onTap: () => setModalState(() {
-                                    tempMotherTongue = sel ? '' : lang;
-                                  }),
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 180),
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: sel
-                                          ? AppColors.goldMedium
-                                          : Colors.white.withOpacity(0.06),
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(
-                                        color: sel
-                                            ? AppColors.goldMedium
-                                            : Colors.white.withOpacity(0.14),
+                            access.allowMotherTongue
+                                ? Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'MOTHER TONGUE',
+                                        style: TextStyle(
+                                          color: Colors.white38,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: 1.2,
+                                        ),
                                       ),
-                                    ),
-                                    child: Text(
-                                      lang,
-                                      style: TextStyle(
-                                        color: sel ? Colors.black : Colors.white60,
-                                        fontWeight: sel ? FontWeight.bold : FontWeight.w400,
-                                        fontSize: 13,
+                                      const SizedBox(height: 10),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 8,
+                                        children:
+                                            _kLanguageOptions.map((lang) {
+                                          final sel = tempMotherTongue == lang;
+                                          return GestureDetector(
+                                            onTap: () => setModalState(() {
+                                              tempMotherTongue =
+                                                  sel ? '' : lang;
+                                            }),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                milliseconds: 180,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 14,
+                                                vertical: 8,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: sel
+                                                    ? AppColors.goldMedium
+                                                    : Colors.white
+                                                        .withOpacity(0.06),
+                                                borderRadius:
+                                                    BorderRadius.circular(20),
+                                                border: Border.all(
+                                                  color: sel
+                                                      ? AppColors.goldMedium
+                                                      : Colors.white
+                                                          .withOpacity(0.14),
+                                                ),
+                                              ),
+                                              child: Text(
+                                                lang,
+                                                style: TextStyle(
+                                                  color: sel
+                                                      ? Colors.black
+                                                      : Colors.white60,
+                                                  fontWeight: sel
+                                                      ? FontWeight.bold
+                                                      : FontWeight.w400,
+                                                  fontSize: 13,
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        }).toList(),
                                       ),
+                                    ],
+                                  )
+                                : _buildLockedFilterSection(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'MOTHER TONGUE',
+                                          style: TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: 1.2,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children: _kLanguageOptions
+                                              .take(6)
+                                              .map(
+                                                (lang) => Chip(
+                                                  label: Text(lang),
+                                                  backgroundColor:
+                                                      Colors.white10,
+                                                ),
+                                              )
+                                              .toList(),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                );
-                              }).toList(),
-                            ),
                             const SizedBox(height: 32),
 
                             // ──────────────────── ACTION BUTTONS ────────────────────
@@ -907,25 +1803,40 @@ class _SwipePageState extends State<SwipePage> {
                                   child: OutlinedButton(
                                     style: OutlinedButton.styleFrom(
                                       side: BorderSide(
-                                        color: AppColors.goldMedium.withOpacity(0.6),
+                                        color: AppColors.goldMedium.withOpacity(
+                                          0.6,
+                                        ),
                                       ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(24),
                                       ),
-                                      padding: const EdgeInsets.symmetric(vertical: 14),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
                                     ),
                                     onPressed: () {
+                                      final reset = access.sanitize(
+                                        genderFilter: 'All',
+                                        ageRange: const RangeValues(18, 70),
+                                        selectedInterestTags: const [],
+                                        motherTongueFilter: '',
+                                      );
                                       setState(() {
-                                        _ageRange = const RangeValues(18, 70);
-                                        _selectedInterestTags = [];
-                                        _motherTongueFilter = '';
-                                        _genderFilter = 'All';
+                                        _ageRange = reset.ageRange;
+                                        _selectedInterestTags =
+                                            reset.selectedInterestTags;
+                                        _motherTongueFilter =
+                                            reset.motherTongueFilter;
+                                        _genderFilter = reset.genderFilter;
                                       });
                                       Navigator.pop(ctx);
+                                      _loadProfiles();
                                     },
                                     child: const Text(
                                       'Reset',
-                                      style: TextStyle(color: AppColors.goldMedium),
+                                      style: TextStyle(
+                                        color: AppColors.goldMedium,
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -938,20 +1849,33 @@ class _SwipePageState extends State<SwipePage> {
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(24),
                                       ),
-                                      padding: const EdgeInsets.symmetric(vertical: 14),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ),
                                     ),
                                     onPressed: () {
+                                      final applied = access.sanitize(
+                                        genderFilter: tempGender,
+                                        ageRange: tempAge,
+                                        selectedInterestTags: tempInterests,
+                                        motherTongueFilter: tempMotherTongue,
+                                      );
                                       setState(() {
-                                        _ageRange = tempAge;
-                                        _selectedInterestTags = tempInterests;
-                                        _motherTongueFilter = tempMotherTongue;
-                                        _genderFilter = tempGender;
+                                        _ageRange = applied.ageRange;
+                                        _selectedInterestTags =
+                                            applied.selectedInterestTags;
+                                        _motherTongueFilter =
+                                            applied.motherTongueFilter;
+                                        _genderFilter = applied.genderFilter;
                                       });
                                       Navigator.pop(ctx);
+                                      _loadProfiles();
                                     },
                                     child: const Text(
                                       'Apply',
-                                      style: TextStyle(fontWeight: FontWeight.w700),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1012,12 +1936,16 @@ class _ReelCardState extends State<_ReelCard>
   void initState() {
     super.initState();
     _heartController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 350));
-    _heartScale = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween(begin: 1.0, end: 1.5), weight: 50),
-      TweenSequenceItem(tween: Tween(begin: 1.5, end: 1.0), weight: 50),
-    ]).animate(CurvedAnimation(
-        parent: _heartController, curve: Curves.easeInOut));
+      vsync: this,
+      duration: const Duration(milliseconds: 350),
+    );
+    _heartScale =
+        TweenSequence<double>([
+          TweenSequenceItem(tween: Tween(begin: 1.0, end: 1.5), weight: 50),
+          TweenSequenceItem(tween: Tween(begin: 1.5, end: 1.0), weight: 50),
+        ]).animate(
+          CurvedAnimation(parent: _heartController, curve: Curves.easeInOut),
+        );
   }
 
   @override
@@ -1036,7 +1964,9 @@ class _ReelCardState extends State<_ReelCard>
       int a = now.year - d.year;
       if (now.month < d.month || (now.month == d.month && now.day < d.day)) a--;
       return a;
-    } catch (_) { return null; }
+    } catch (_) {
+      return null;
+    }
   }
 
   bool _isVerifiedMatch() {
@@ -1047,15 +1977,19 @@ class _ReelCardState extends State<_ReelCard>
   }
 
   List<String> _traits() {
-    final tags = widget.match['lifestyleTags'] ??
-        widget.match['personalityTraits'] ?? widget.match['interests'];
+    final tags =
+        widget.match['lifestyleTags'] ??
+        widget.match['personalityTraits'] ??
+        widget.match['interests'];
     if (tags is List && tags.isNotEmpty) {
       return tags.take(3).map((e) => e.toString()).toList();
     }
     final out = <String>[];
     final r = (widget.match['religion'] ?? '').toString().trim();
     if (r.isNotEmpty) out.add(r);
-    final p = (widget.match['profession'] ?? widget.match['occupation'] ?? '').toString().trim();
+    final p = (widget.match['profession'] ?? widget.match['occupation'] ?? '')
+        .toString()
+        .trim();
     if (p.isNotEmpty && out.length < 3) out.add(p);
     return out;
   }
@@ -1069,17 +2003,26 @@ class _ReelCardState extends State<_ReelCard>
   @override
   Widget build(BuildContext context) {
     final name = (widget.match['name'] ?? 'Unknown').toString();
-    final age  = _age();
-    final city    = (widget.match['city']    ?? '').toString().trim();
+    final age = _age();
+    final city = (widget.match['city'] ?? '').toString().trim();
     final country = (widget.match['country'] ?? '').toString().trim();
     final location = [city, country].where((s) => s.isNotEmpty).join(', ');
-    final bio  = (widget.match['bio'] ?? widget.match['shortBio'] ?? '').toString().trim();
+    final bio = (widget.match['bio'] ?? widget.match['shortBio'] ?? '')
+        .toString()
+        .trim();
     final traits = _traits();
     // Verified only when admin has explicitly approved the user's ID.
-    final isVerified = widget.match['isVerified'] == true ||
+    final isVerified =
+        widget.match['isVerified'] == true ||
         widget.match['profileVerified'] == true ||
-        widget.match['verificationStatus']?.toString().toLowerCase() == 'approved';
-    final hasLiked = ['pending', 'sent'].contains(widget.interestStatus.toLowerCase());
+        widget.match['verificationStatus']?.toString().toLowerCase() ==
+            'approved';
+    final hasLiked = [
+      'pending',
+      'sent',
+    ].contains(widget.interestStatus.toLowerCase());
+
+    final hidePhotos = widget.match['showPhotosToEveryone'] == false;
 
     return Stack(
       fit: StackFit.expand,
@@ -1088,10 +2031,20 @@ class _ReelCardState extends State<_ReelCard>
         PageView.builder(
           controller: _photoController,
           scrollDirection: Axis.horizontal,
-          physics: const PageScrollPhysics(),
+          physics: hidePhotos
+              ? const NeverScrollableScrollPhysics()
+              : const PageScrollPhysics(),
           onPageChanged: (i) => setState(() => _photoIndex = i),
-          itemCount: _totalPages,
+          itemCount: hidePhotos ? 1 : _totalPages,
           itemBuilder: (ctx, i) {
+            if (hidePhotos) {
+              return GestureDetector(
+                onTap: widget.onTap,
+                child: ProfileVisibilityHelper.hiddenPhotoPlaceholder(
+                  iconSize: 100,
+                ),
+              );
+            }
             // Last page = upgrade prompt
             if (widget.photos.isNotEmpty && i == widget.photos.length) {
               return _UpgradePhotoPage();
@@ -1105,9 +2058,15 @@ class _ReelCardState extends State<_ReelCard>
                       imageUrl: url,
                       fit: BoxFit.cover,
                       fadeInDuration: const Duration(milliseconds: 200),
-                      placeholder: (_, __) => Container(color: const Color(0xFF111111),
-                          child: const Center(child: CircularProgressIndicator(
-                              color: AppColors.goldMedium, strokeWidth: 2))),
+                      placeholder: (_, __) => Container(
+                        color: const Color(0xFF111111),
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.goldMedium,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      ),
                       errorWidget: (_, __, ___) => _noPhoto(),
                     )
                   : _noPhoto(),
@@ -1145,7 +2104,8 @@ class _ReelCardState extends State<_ReelCard>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: List.generate(_totalPages, (i) {
-                final isUpgrade = widget.photos.isNotEmpty && i == widget.photos.length;
+                final isUpgrade =
+                    widget.photos.isNotEmpty && i == widget.photos.length;
                 return AnimatedContainer(
                   duration: const Duration(milliseconds: 250),
                   margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -1168,9 +2128,12 @@ class _ReelCardState extends State<_ReelCard>
             top: MediaQuery.of(context).padding.top + 56,
             right: 20,
             child: Container(
-              width: 34, height: 34,
+              width: 34,
+              height: 34,
               decoration: const BoxDecoration(
-                  color: Color(0xFF4A90E2), shape: BoxShape.circle),
+                color: Color(0xFF4A90E2),
+                shape: BoxShape.circle,
+              ),
               child: const Icon(Icons.check, color: Colors.white, size: 20),
             ),
           ),
@@ -1178,7 +2141,9 @@ class _ReelCardState extends State<_ReelCard>
         // ─── Bottom info (hidden on upgrade page) ───
         if (!_isUpgradePage)
           Positioned(
-            left: 0, right: 0, bottom: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
             child: IgnorePointer(
               ignoring: false,
               child: Padding(
@@ -1193,37 +2158,63 @@ class _ReelCardState extends State<_ReelCard>
                           child: Text(
                             age != null ? '$name, $age' : name,
                             style: const TextStyle(
-                                color: Colors.white, fontSize: 28,
-                                fontWeight: FontWeight.bold, letterSpacing: 0.2,
-                                shadows: [Shadow(blurRadius: 8, color: Colors.black54)]),
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.2,
+                              shadows: [
+                                Shadow(blurRadius: 8, color: Colors.black54),
+                              ],
+                            ),
                           ),
                         ),
                         if (_isVerifiedMatch()) ...[
                           const SizedBox(width: 8),
-                          const Icon(Icons.verified, color: Color(0xFF4A90E2), size: 20),
+                          const Icon(
+                            Icons.verified,
+                            color: Color(0xFF4A90E2),
+                            size: 20,
+                          ),
                         ],
                       ],
                     ),
                     if (location.isNotEmpty) ...[
                       const SizedBox(height: 4),
-                      Text(location,
-                          style: TextStyle(
-                              color: Colors.white.withOpacity(0.82), fontSize: 15,
-                              shadows: const [Shadow(blurRadius: 6, color: Colors.black45)])),
+                      Text(
+                        location,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.82),
+                          fontSize: 15,
+                          shadows: const [
+                            Shadow(blurRadius: 6, color: Colors.black45),
+                          ],
+                        ),
+                      ),
                     ],
                     if (traits.isNotEmpty) ...[
                       const SizedBox(height: 10),
-                      Wrap(spacing: 8, runSpacing: 6,
-                          children: traits.map((t) => _TraitChip(label: t)).toList()),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: traits
+                            .map((t) => _TraitChip(label: t))
+                            .toList(),
+                      ),
                     ],
                     if (bio.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       Text(
                         bio.length > 100 ? '${bio.substring(0, 100)}… ›' : bio,
-                        style: TextStyle(color: Colors.white.withOpacity(0.78),
-                            fontSize: 14, height: 1.45,
-                            shadows: const [Shadow(blurRadius: 6, color: Colors.black45)]),
-                        maxLines: 3, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.78),
+                          fontSize: 14,
+                          height: 1.45,
+                          shadows: const [
+                            Shadow(blurRadius: 6, color: Colors.black45),
+                          ],
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                     const SizedBox(height: 22),
@@ -1236,7 +2227,8 @@ class _ReelCardState extends State<_ReelCard>
                           icon: Icons.close_rounded,
                           iconColor: const Color(0xFFE74C3C),
                           bgColor: Colors.white.withOpacity(0.12),
-                          size: 58, iconSize: 26,
+                          size: 58,
+                          iconSize: 26,
                           onTap: widget.onDismiss,
                         ),
                         _ActionBtn(
@@ -1247,7 +2239,8 @@ class _ReelCardState extends State<_ReelCard>
                               ? AppColors.goldMedium
                               : Colors.white.withOpacity(0.85),
                           bgColor: Colors.white.withOpacity(0.12),
-                          size: 58, iconSize: 24,
+                          size: 58,
+                          iconSize: 24,
                           onTap: widget.onToggleSave,
                         ),
                         ScaleTransition(
@@ -1258,7 +2251,9 @@ class _ReelCardState extends State<_ReelCard>
                                 : Icons.favorite_border_rounded,
                             iconColor: Colors.white,
                             bgColor: AppColors.goldMedium,
-                            size: 58, iconSize: 26, glowing: true,
+                            size: 58,
+                            iconSize: 26,
+                            glowing: true,
                             onTap: () {
                               if (hasLiked) return;
                               _heartController.forward(from: 0);
@@ -1276,10 +2271,15 @@ class _ReelCardState extends State<_ReelCard>
 
         // ─── Scroll-down hint ───
         Positioned(
-          bottom: 6, left: 0, right: 0,
+          bottom: 6,
+          left: 0,
+          right: 0,
           child: Center(
-            child: Icon(Icons.keyboard_arrow_down_rounded,
-                color: Colors.white.withOpacity(0.25), size: 20),
+            child: Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: Colors.white.withOpacity(0.25),
+              size: 20,
+            ),
           ),
         ),
       ],
@@ -1287,8 +2287,9 @@ class _ReelCardState extends State<_ReelCard>
   }
 
   Widget _noPhoto() => Container(
-      color: const Color(0xFF111111),
-      child: const Icon(Icons.person, color: Colors.white12, size: 100));
+    color: const Color(0xFF111111),
+    child: const Icon(Icons.person, color: Colors.white12, size: 100),
+  );
 }
 
 // ─── Upgrade prompt (last horizontal page) ───
@@ -1304,26 +2305,40 @@ class _UpgradePhotoPage extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Container(
-                width: 88, height: 88,
+                width: 88,
+                height: 88,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: AppColors.goldMedium.withOpacity(0.1),
-                  border: Border.all(color: AppColors.goldMedium.withOpacity(0.4), width: 1.5),
+                  border: Border.all(
+                    color: AppColors.goldMedium.withOpacity(0.4),
+                    width: 1.5,
+                  ),
                 ),
-                child: const Icon(Icons.add_photo_alternate_outlined,
-                    color: AppColors.goldMedium, size: 40),
+                child: const Icon(
+                  Icons.add_photo_alternate_outlined,
+                  color: AppColors.goldMedium,
+                  size: 40,
+                ),
               ),
               const SizedBox(height: 24),
               const Text(
                 'Want to see more?',
-                style: TextStyle(color: Colors.white, fontSize: 22,
-                    fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 12),
               const Text(
                 'Add more photos of yourself to unlock\nexclusive profile views.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54, fontSize: 15, height: 1.5),
+                style: TextStyle(
+                  color: Colors.white54,
+                  fontSize: 15,
+                  height: 1.5,
+                ),
               ),
               const SizedBox(height: 32),
               GestureDetector(
@@ -1335,20 +2350,30 @@ class _UpgradePhotoPage extends StatelessWidget {
                   );
                 },
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 32,
+                    vertical: 14,
+                  ),
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
                       colors: [Color(0xFFC8960C), AppColors.goldMedium],
                     ),
                     borderRadius: BorderRadius.circular(30),
-                    boxShadow: [BoxShadow(
+                    boxShadow: [
+                      BoxShadow(
                         color: AppColors.goldMedium.withOpacity(0.35),
-                        blurRadius: 20, offset: const Offset(0, 6))],
+                        blurRadius: 20,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
                   ),
                   child: const Text(
                     'Add My Photos',
-                    style: TextStyle(color: Colors.black, fontSize: 15,
-                        fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.black,
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
               ),
@@ -1372,8 +2397,14 @@ class _TraitChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(20),
       border: Border.all(color: Colors.white.withOpacity(0.25)),
     ),
-    child: Text(label, style: const TextStyle(
-        color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500)),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+      ),
+    ),
   );
 }
 
@@ -1400,12 +2431,19 @@ class _ActionBtn extends StatelessWidget {
   Widget build(BuildContext context) => GestureDetector(
     onTap: onTap,
     child: Container(
-      width: size, height: size,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
-        color: bgColor, shape: BoxShape.circle,
+        color: bgColor,
+        shape: BoxShape.circle,
         boxShadow: glowing
-            ? [BoxShadow(color: AppColors.goldMedium.withOpacity(0.4),
-                blurRadius: 22, spreadRadius: 2)]
+            ? [
+                BoxShadow(
+                  color: AppColors.goldMedium.withOpacity(0.4),
+                  blurRadius: 22,
+                  spreadRadius: 2,
+                ),
+              ]
             : null,
       ),
       child: Icon(icon, color: iconColor, size: iconSize),
@@ -1417,16 +2455,29 @@ class _ActionBtn extends StatelessWidget {
 class _EmptyDiscoverState extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Center(
-    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      Icon(Icons.favorite_outline_rounded,
-          color: AppColors.goldMedium.withOpacity(0.35), size: 72),
-      const SizedBox(height: 24),
-      const Text('No profiles right now',
-          style: TextStyle(color: Colors.white, fontSize: 20,
-              fontWeight: FontWeight.bold)),
-      const SizedBox(height: 10),
-      Text('Check back soon for new matches',
-          style: TextStyle(color: Colors.white.withOpacity(0.45), fontSize: 14)),
-    ]),
+    child: Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(
+          Icons.favorite_outline_rounded,
+          color: AppColors.goldMedium.withOpacity(0.35),
+          size: 72,
+        ),
+        const SizedBox(height: 24),
+        const Text(
+          'No profiles right now',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Check back soon for new matches',
+          style: TextStyle(color: Colors.white.withOpacity(0.45), fontSize: 14),
+        ),
+      ],
+    ),
   );
 }

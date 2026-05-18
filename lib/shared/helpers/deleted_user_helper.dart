@@ -9,25 +9,52 @@ class DeletedUserHelper {
   static bool isDeleted(Map<String, dynamic>? userData) {
     if (userData == null) return true;
     if (userData['isDeleted'] == true) return true;
-    if (userData['status']?.toString() == 'deleted') return true;
+    if (userData['status']?.toString().toLowerCase() == 'deleted') return true;
+    if (userData['deletedAt'] != null) return true;
+    if (userData['scheduledHardDeleteAt'] != null) return true;
+
+    final name = (userData['name'] ?? userData['displayName'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    if (name == 'deleted account') return true;
+
+    final firstName = (userData['firstName'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    final lastName = (userData['lastName'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+    if (firstName == 'deleted' && lastName == 'account') return true;
     return false;
   }
 
   /// Returns 'Deleted Account' for deleted users, otherwise the firstName.
   static String getDisplayName(Map<String, dynamic>? userData) {
     if (isDeleted(userData)) return 'Deleted Account';
-    return (userData?['firstName'] ?? userData?['name'] ?? 'Unknown').toString();
+    return (userData?['firstName'] ?? userData?['name'] ?? 'Unknown')
+        .toString();
   }
 
-  /// Returns null for deleted users so no photo is shown.
+  /// True when the user has hidden their photos from public view.
+  static bool arePhotosHidden(Map<String, dynamic>? userData) {
+    if (userData == null) return false;
+    return userData['showPhotosToEveryone'] == false;
+  }
+
+  /// Returns null for deleted users or when photos are hidden.
   static String? getAvatarUrl(Map<String, dynamic>? userData) {
     if (isDeleted(userData)) return null;
+    if (arePhotosHidden(userData)) return null;
     // Check dedicated photo fields first, then fall back to photos array
-    final url = (userData?['profilePhotoUrl'] ??
-            userData?['photoUrl'] ??
-            userData?['profilePicture'] ??
-            '')
-        .toString();
+    final url =
+        (userData?['profilePhotoUrl'] ??
+                userData?['photoUrl'] ??
+                userData?['profilePicture'] ??
+                '')
+            .toString();
     if (url.isNotEmpty) return url;
     // Fall back to first item in photos array
     final photos = userData?['photos'];
@@ -46,6 +73,7 @@ class DeletedUserHelper {
   /// Returns a contextual subtitle string.
   static String getSubtitle(Map<String, dynamic>? userData) {
     if (isDeleted(userData)) return 'This account no longer exists';
-    return (userData?['profession'] ?? userData?['occupation'] ?? '').toString();
+    return (userData?['profession'] ?? userData?['occupation'] ?? '')
+        .toString();
   }
 }

@@ -669,7 +669,7 @@ class _MiniMatchCard extends StatelessWidget {
                     ? Center(
                         child: Icon(
                           match['showPhotosToEveryone'] == false
-                              ? Icons.lock_outline
+                              ? Icons.admin_panel_settings_outlined
                               : Icons.person_outline,
                           color: Colors.white24,
                           size: 50,

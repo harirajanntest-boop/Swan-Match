@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../services/user_service.dart';
 
 class SavedProfilesPage extends StatelessWidget {
@@ -87,27 +88,24 @@ class SavedProfilesPage extends StatelessWidget {
                   final profile = userSnapshot.data;
 
                   // Build display values
-                  final name =
-                      (profile?['name'] ??
-                          profile?['firstName'] ??
-                          '').toString();
+                  final name = (profile?['name'] ?? profile?['firstName'] ?? '')
+                      .toString();
                   final photos = profile?['photos'] as List?;
-                  final photoUrl =
-                      (photos != null && photos.isNotEmpty)
-                          ? photos.first.toString()
-                          : (profile?['photoUrl'] ?? '').toString();
+                  final photoUrl = (photos != null && photos.isNotEmpty)
+                      ? photos.first.toString()
+                      : (profile?['photoUrl'] ?? '').toString();
 
                   final age = _calcAge(profile?['dateOfBirth']);
-                  final city =
-                      (profile?['city'] ?? '').toString().trim();
-                  final country =
-                      (profile?['country'] ?? '').toString().trim();
-                  final location = [city, country]
-                      .where((s) => s.isNotEmpty)
-                      .join(', ');
+                  final city = (profile?['city'] ?? '').toString().trim();
+                  final country = (profile?['country'] ?? '').toString().trim();
+                  final location = [
+                    city,
+                    country,
+                  ].where((s) => s.isNotEmpty).join(', ');
+                  final hidePhotos = profile != null &&
+                      ProfileVisibilityHelper.shouldHidePhotos(profile);
 
-                  if (userSnapshot.connectionState ==
-                          ConnectionState.waiting &&
+                  if (userSnapshot.connectionState == ConnectionState.waiting &&
                       profile == null) {
                     return Container(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -124,9 +122,7 @@ class SavedProfilesPage extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.03),
                       borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.07),
-                      ),
+                      border: Border.all(color: Colors.white.withOpacity(0.07)),
                     ),
                     child: ListTile(
                       contentPadding: const EdgeInsets.symmetric(
@@ -136,10 +132,16 @@ class SavedProfilesPage extends StatelessWidget {
                       leading: CircleAvatar(
                         radius: 28,
                         backgroundColor: AppColors.onyx,
-                        backgroundImage: photoUrl.isNotEmpty
+                        backgroundImage: !hidePhotos && photoUrl.isNotEmpty
                             ? CachedNetworkImageProvider(photoUrl)
                             : null,
-                        child: photoUrl.isEmpty
+                        child: hidePhotos
+                            ? Icon(
+                                Icons.admin_panel_settings_outlined,
+                                color: Colors.white.withOpacity(0.35),
+                                size: 26,
+                              )
+                            : photoUrl.isEmpty
                             ? const Icon(
                                 Icons.person,
                                 color: AppColors.goldMedium,
@@ -148,7 +150,11 @@ class SavedProfilesPage extends StatelessWidget {
                             : null,
                       ),
                       title: Text(
-                        age > 0 ? '$name, $age' : name.isNotEmpty ? name : 'Unknown',
+                        age > 0
+                            ? '$name, $age'
+                            : name.isNotEmpty
+                            ? name
+                            : 'Unknown',
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w600,
@@ -179,10 +185,9 @@ class SavedProfilesPage extends StatelessWidget {
                                   .map((e) => e.toString())
                                   .toSet();
                           cur.remove(uid);
-                          await UserService.instance
-                              .updateCurrentUserProfile(<String, dynamic>{
-                            'savedMatchIds': cur.toList(),
-                          });
+                          await UserService.instance.updateCurrentUserProfile(
+                            <String, dynamic>{'savedMatchIds': cur.toList()},
+                          );
                         },
                       ),
                     ),
@@ -202,8 +207,7 @@ class SavedProfilesPage extends StatelessWidget {
       final d = (dob as dynamic).toDate() as DateTime;
       final now = DateTime.now();
       int a = now.year - d.year;
-      if (now.month < d.month ||
-          (now.month == d.month && now.day < d.day)) a--;
+      if (now.month < d.month || (now.month == d.month && now.day < d.day)) a--;
       return a;
     } catch (_) {
       return 0;

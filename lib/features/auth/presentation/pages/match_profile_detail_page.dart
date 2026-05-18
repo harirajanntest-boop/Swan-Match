@@ -6,6 +6,7 @@ import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
+import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import 'chat_conversation_page.dart';
 import 'subscription_page.dart';
@@ -29,8 +30,10 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
   @override
   void initState() {
     super.initState();
-    _pendingStream = InterestService.instance.watchMyPendingSentInterestUserIds();
-    _acceptedStream = InterestService.instance.watchMyAcceptedSentInterestUserIds();
+    _pendingStream = InterestService.instance
+        .watchMyPendingSentInterestUserIds();
+    _acceptedStream = InterestService.instance
+        .watchMyAcceptedSentInterestUserIds();
   }
 
   String _read(String key, {String fallback = ''}) {
@@ -67,14 +70,18 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
   List<String> _photos() {
     final photos = widget.profile['photos'];
     if (photos is List && photos.isNotEmpty) {
-      return photos.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+      return photos
+          .map((e) => e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList();
     }
-    final single = (widget.profile['photoUrl'] ??
-            widget.profile['profileImageUrl'] ??
-            widget.profile['imageUrl'] ??
-            '')
-        .toString()
-        .trim();
+    final single =
+        (widget.profile['photoUrl'] ??
+                widget.profile['profileImageUrl'] ??
+                widget.profile['imageUrl'] ??
+                '')
+            .toString()
+            .trim();
     return single.isNotEmpty ? [single] : [];
   }
 
@@ -121,24 +128,29 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.person_off_outlined,
-                  color: Colors.white24, size: 80),
+              const Icon(
+                Icons.person_off_outlined,
+                color: Colors.white24,
+                size: 80,
+              ),
               const SizedBox(height: 24),
               const Text(
                 'Account Deleted',
                 style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold),
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 12),
               Text(
                 'This user has deleted their account\nand is no longer available.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.5),
-                    fontSize: 15,
-                    height: 1.5),
+                  color: Colors.white.withValues(alpha: 0.5),
+                  fontSize: 15,
+                  height: 1.5,
+                ),
               ),
               const SizedBox(height: 32),
               OutlinedButton(
@@ -147,9 +159,12 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                   foregroundColor: AppColors.goldMedium,
                   side: const BorderSide(color: AppColors.goldMedium),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30)),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 32, vertical: 14),
+                    horizontal: 32,
+                    vertical: 14,
+                  ),
                 ),
                 child: const Text('Go Back'),
               ),
@@ -163,14 +178,19 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
     final name = _read('name', fallback: 'Member');
     final age = _age();
     final location = _location();
-    final bio =
-        _read('bio', fallback: _read('shortBio', fallback: _read('aboutMe')));
+    final bio = _read(
+      'bio',
+      fallback: _read('shortBio', fallback: _read('aboutMe')),
+    );
     final values = _values();
     final intent = _read('lookingFor', fallback: _read('goal'));
     final photos = _photos();
+    final hidePhotos = ProfileVisibilityHelper.shouldHidePhotos(widget.profile);
     final religion = _read('religion');
-    final education =
-        _read('educationLevel', fallback: _read('educationDegree'));
+    final education = _read(
+      'educationLevel',
+      fallback: _read('educationDegree'),
+    );
     final profession = _read('profession', fallback: _read('occupation'));
     final maritalStatus = _read('maritalStatus');
 
@@ -195,11 +215,13 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                 isSending: _isSending,
                 userName: name,
                 onConnect: () async {
-                  if (uid.isEmpty || isPending || isAccepted || _isSending) return;
+                  if (uid.isEmpty || isPending || isAccepted || _isSending)
+                    return;
                   HapticFeedback.mediumImpact();
                   setState(() => _isSending = true);
-                  final result = await InterestService.instance
-                      .sendInterest(toUserId: uid);
+                  final result = await InterestService.instance.sendInterest(
+                    toUserId: uid,
+                  );
                   if (!mounted) return;
                   setState(() => _isSending = false);
                   if (result == InterestSendResult.trialLimitReached) {
@@ -211,8 +233,8 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                     result == InterestSendResult.pending
                         ? 'Interest already pending'
                         : result == InterestSendResult.alreadyAccepted
-                            ? 'Already connected! You can message now.'
-                            : 'Interest sent! 💛',
+                        ? 'Already connected! You can message now.'
+                        : 'Interest sent! 💛',
                   );
                 },
                 onChat: () {
@@ -240,7 +262,11 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                 // Full-width image — no cropping, entire image visible
                 AspectRatio(
                   aspectRatio: 3 / 4,
-                  child: photos.isNotEmpty
+                  child: hidePhotos
+                      ? ProfileVisibilityHelper.hiddenPhotoPlaceholder(
+                          iconSize: 64,
+                        )
+                      : photos.isNotEmpty
                       ? CachedNetworkImage(
                           imageUrl: photos.first,
                           width: double.infinity,
@@ -251,7 +277,9 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                             color: const Color(0xFF111111),
                             child: const Center(
                               child: CircularProgressIndicator(
-                                  color: AppColors.goldMedium, strokeWidth: 2),
+                                color: AppColors.goldMedium,
+                                strokeWidth: 2,
+                              ),
                             ),
                           ),
                           errorWidget: (_, __, ___) => _noPhoto(),
@@ -314,8 +342,11 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                         color: Colors.black.withOpacity(0.45),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.arrow_back_ios_new,
-                          color: AppColors.goldMedium, size: 18),
+                      child: const Icon(
+                        Icons.arrow_back_ios_new,
+                        color: AppColors.goldMedium,
+                        size: 18,
+                      ),
                     ),
                   ),
                 ),
@@ -332,12 +363,16 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                         color: Colors.black.withOpacity(0.45),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.more_vert_rounded,
-                          color: Colors.white70, size: 20),
+                      child: const Icon(
+                        Icons.more_vert_rounded,
+                        color: Colors.white70,
+                        size: 20,
+                      ),
                     ),
                     color: const Color(0xFF1A1A1A),
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16)),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                     onSelected: (val) async {
                       if (val == 'ignore') {
                         await UserService.instance.ignoreUser(uid);
@@ -350,24 +385,32 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                           builder: (ctx) => AlertDialog(
                             backgroundColor: const Color(0xFF1A1A1A),
                             shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20)),
-                            title: const Text('Block Profile',
-                                style: TextStyle(color: Colors.white)),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            title: const Text(
+                              'Block Profile',
+                              style: TextStyle(color: Colors.white),
+                            ),
                             content: const Text(
-                                'Are you sure you want to block this profile?',
-                                style: TextStyle(color: Colors.white70)),
+                              'Are you sure you want to block this profile?',
+                              style: TextStyle(color: Colors.white70),
+                            ),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.pop(ctx, false),
-                                child: Text('Cancel',
-                                    style: TextStyle(
-                                        color: Colors.white.withOpacity(0.5))),
+                                child: Text(
+                                  'Cancel',
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.5),
+                                  ),
+                                ),
                               ),
                               TextButton(
                                 onPressed: () => Navigator.pop(ctx, true),
-                                child: const Text('Block',
-                                    style:
-                                        TextStyle(color: Colors.redAccent)),
+                                child: const Text(
+                                  'Block',
+                                  style: TextStyle(color: Colors.redAccent),
+                                ),
                               ),
                             ],
                           ),
@@ -379,68 +422,172 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                           showLinearMessage(context, 'Profile blocked');
                         }
                       } else if (val == 'report') {
+                        final reasonController = TextEditingController();
                         final confirm = await showDialog<bool>(
                           context: context,
                           builder: (ctx) => AlertDialog(
                             backgroundColor: const Color(0xFF1A1A1A),
                             shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20)),
-                            title: const Text('Report Profile',
-                                style: TextStyle(color: Colors.white)),
-                            content: const Text(
-                                'Report this profile for abuse? They will be permanently blocked and will never appear in your feed or connections again.',
-                                style: TextStyle(color: Colors.white70)),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            title: const Text(
+                              'Report Profile',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Report this profile for abuse? They will be permanently blocked and will never appear in your feed or connections again.',
+                                  style: TextStyle(color: Colors.white70),
+                                ),
+                                const SizedBox(height: 16),
+                                const Text(
+                                  'Reason for reporting:',
+                                  style: TextStyle(
+                                    color: Colors.white54,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                TextField(
+                                  controller: reasonController,
+                                  maxLines: 3,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: 'Please describe the issue...',
+                                    hintStyle: TextStyle(
+                                      color: Colors.white.withOpacity(0.3),
+                                      fontSize: 14,
+                                    ),
+                                    filled: true,
+                                    fillColor: Colors.white.withOpacity(0.06),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                        color: Colors.white.withOpacity(0.1),
+                                      ),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: BorderSide(
+                                        color: Colors.white.withOpacity(0.1),
+                                      ),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                      borderSide: const BorderSide(
+                                        color: Colors.redAccent,
+                                      ),
+                                    ),
+                                    contentPadding: const EdgeInsets.all(12),
+                                  ),
+                                ),
+                              ],
+                            ),
                             actions: [
                               TextButton(
                                 onPressed: () => Navigator.pop(ctx, false),
-                                child: Text('Cancel',
-                                    style: TextStyle(
-                                        color: Colors.white.withOpacity(0.5))),
+                                child: Text(
+                                  'Cancel',
+                                  style: TextStyle(
+                                    color: Colors.white.withOpacity(0.5),
+                                  ),
+                                ),
                               ),
                               TextButton(
                                 onPressed: () => Navigator.pop(ctx, true),
-                                child: const Text('Report',
-                                    style: TextStyle(color: Colors.redAccent)),
+                                child: const Text(
+                                  'Report',
+                                  style: TextStyle(color: Colors.redAccent),
+                                ),
                               ),
                             ],
                           ),
                         );
-                        if (confirm == true) {
-                          await UserService.instance.reportUser(uid);
-                          if (!context.mounted) return;
-                          Navigator.pop(context);
-                          showLinearMessage(context, 'Profile reported and permanently blocked');
+                        final reason = reasonController.text.trim();
+                        final shouldReport = confirm == true;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          reasonController.dispose();
+                        });
+                        if (shouldReport) {
+                          try {
+                            await UserService.instance.reportUser(
+                              uid,
+                              reason: reason,
+                            );
+                            if (!context.mounted) return;
+                            Navigator.pop(context);
+                            showLinearMessage(
+                              context,
+                              'Profile reported and permanently blocked',
+                            );
+                          } catch (_) {
+                            if (!context.mounted) return;
+                            showLinearMessage(
+                              context,
+                              'Could not submit report. Please try again.',
+                            );
+                          }
                         }
                       }
                     },
                     itemBuilder: (_) => [
                       const PopupMenuItem(
                         value: 'ignore',
-                        child: Row(children: [
-                          Icon(Icons.visibility_off_outlined,
-                              color: Colors.white54, size: 18),
-                          SizedBox(width: 10),
-                          Text('Ignore Match',
-                              style: TextStyle(color: Colors.white70)),
-                        ]),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.visibility_off_outlined,
+                              color: Colors.white54,
+                              size: 18,
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Ignore Match',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                          ],
+                        ),
                       ),
                       const PopupMenuItem(
                         value: 'block',
-                        child: Row(children: [
-                          Icon(Icons.block, color: Colors.orangeAccent, size: 18),
-                          SizedBox(width: 10),
-                          Text('Block Match',
-                              style: TextStyle(color: Colors.orangeAccent)),
-                        ]),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.block,
+                              color: Colors.orangeAccent,
+                              size: 18,
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Block Match',
+                              style: TextStyle(color: Colors.orangeAccent),
+                            ),
+                          ],
+                        ),
                       ),
                       const PopupMenuItem(
                         value: 'report',
-                        child: Row(children: [
-                          Icon(Icons.flag_rounded, color: Colors.redAccent, size: 18),
-                          SizedBox(width: 10),
-                          Text('Report Profile',
-                              style: TextStyle(color: Colors.redAccent)),
-                        ]),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.flag_rounded,
+                              color: Colors.redAccent,
+                              size: 18,
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Report Profile',
+                              style: TextStyle(color: Colors.redAccent),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -466,26 +613,35 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                                 fontWeight: FontWeight.bold,
                                 letterSpacing: 0.2,
                                 shadows: [
-                                  Shadow(blurRadius: 8, color: Colors.black54)
+                                  Shadow(blurRadius: 8, color: Colors.black54),
                                 ],
                               ),
                             ),
                           ),
                           if (_isVerified) ...[
                             const SizedBox(width: 8),
-                            const Icon(Icons.verified,
-                                color: Color(0xFF4A90E2), size: 22),
+                            const Icon(
+                              Icons.verified,
+                              color: Color(0xFF4A90E2),
+                              size: 22,
+                            ),
                           ],
-                          if ((widget.profile['uid'] == UserService.instance.currentUid) && UserService.instance.isPremium(widget.profile)) ...[
+                          if ((widget.profile['uid'] ==
+                                  UserService.instance.currentUid) &&
+                              UserService.instance.isPremium(
+                                widget.profile,
+                              )) ...[
                             const SizedBox(width: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 7, vertical: 3),
+                                horizontal: 7,
+                                vertical: 3,
+                              ),
                               decoration: BoxDecoration(
                                 gradient: const LinearGradient(
                                   colors: [
                                     Color(0xFFD4A017),
-                                    Color(0xFFC8960C)
+                                    Color(0xFFC8960C),
                                   ],
                                 ),
                                 borderRadius: BorderRadius.circular(5),
@@ -493,15 +649,21 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                               child: const Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.star_rounded,
-                                      color: Colors.black, size: 12),
+                                  Icon(
+                                    Icons.star_rounded,
+                                    color: Colors.black,
+                                    size: 12,
+                                  ),
                                   SizedBox(width: 3),
-                                  Text('PREMIUM',
-                                      style: TextStyle(
-                                          color: Colors.black,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.bold,
-                                          letterSpacing: 0.4)),
+                                  Text(
+                                    'PREMIUM',
+                                    style: TextStyle(
+                                      color: Colors.black,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.4,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
@@ -512,9 +674,11 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                         const SizedBox(height: 5),
                         Row(
                           children: [
-                            Icon(Icons.location_on_outlined,
-                                color: AppColors.goldMedium.withOpacity(0.85),
-                                size: 15),
+                            Icon(
+                              Icons.location_on_outlined,
+                              color: AppColors.goldMedium.withOpacity(0.85),
+                              size: 15,
+                            ),
                             const SizedBox(width: 4),
                             Text(
                               location,
@@ -522,7 +686,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                                 color: Colors.white.withOpacity(0.75),
                                 fontSize: 14,
                                 shadows: const [
-                                  Shadow(blurRadius: 6, color: Colors.black45)
+                                  Shadow(blurRadius: 6, color: Colors.black45),
                                 ],
                               ),
                             ),
@@ -569,19 +733,23 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                           .map(
                             (v) => Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 8),
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.white.withOpacity(0.06),
                                 borderRadius: BorderRadius.circular(24),
                                 border: Border.all(
-                                    color: Colors.white.withOpacity(0.14)),
+                                  color: Colors.white.withOpacity(0.14),
+                                ),
                               ),
                               child: Text(
                                 v,
                                 style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500),
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ),
                           )
@@ -616,7 +784,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                   ],
 
                   // Photo gallery
-                  if (photos.length > 1) ...[
+                  if (!hidePhotos && photos.length > 1) ...[
                     _sectionTitle('Photos'),
                     const SizedBox(height: 12),
                     SizedBox(
@@ -624,8 +792,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                       child: ListView.separated(
                         scrollDirection: Axis.horizontal,
                         itemCount: photos.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(width: 10),
+                        separatorBuilder: (_, __) => const SizedBox(width: 10),
                         itemBuilder: (ctx, i) => ClipRRect(
                           borderRadius: BorderRadius.circular(16),
                           child: CachedNetworkImage(
@@ -634,12 +801,16 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                             height: 180,
                             fit: BoxFit.cover,
                             placeholder: (_, __) => Container(
-                                width: 140, color: const Color(0xFF1A1A1A)),
+                              width: 140,
+                              color: const Color(0xFF1A1A1A),
+                            ),
                             errorWidget: (_, __, ___) => Container(
                               width: 140,
                               color: const Color(0xFF1A1A1A),
-                              child: const Icon(Icons.broken_image,
-                                  color: Colors.white24),
+                              child: const Icon(
+                                Icons.broken_image,
+                                color: Colors.white24,
+                              ),
                             ),
                           ),
                         ),
@@ -661,17 +832,20 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
 
   bool _hasDetails() {
     return _read('religion').isNotEmpty ||
-        _read('educationLevel', fallback: _read('educationDegree')).isNotEmpty ||
+        _read(
+          'educationLevel',
+          fallback: _read('educationDegree'),
+        ).isNotEmpty ||
         _read('profession', fallback: _read('occupation')).isNotEmpty ||
         _read('maritalStatus').isNotEmpty;
   }
 
   Widget _noPhoto() => Container(
-        color: const Color(0xFF111111),
-        child: const Center(
-          child: Icon(Icons.person, color: Colors.white12, size: 80),
-        ),
-      );
+    color: const Color(0xFF111111),
+    child: const Center(
+      child: Icon(Icons.person, color: Colors.white12, size: 80),
+    ),
+  );
 
   void _showUpgradeSheet(BuildContext context) {
     showModalBottomSheet(
@@ -691,7 +865,9 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                  color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
             const SizedBox(height: 28),
             Container(
@@ -706,22 +882,27 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                 ),
                 boxShadow: [
                   BoxShadow(
-                      color: AppColors.goldMedium.withOpacity(0.3),
-                      blurRadius: 20,
-                      spreadRadius: 2),
+                    color: AppColors.goldMedium.withOpacity(0.3),
+                    blurRadius: 20,
+                    spreadRadius: 2,
+                  ),
                 ],
               ),
-              child: const Icon(Icons.workspace_premium_rounded,
-                  color: Colors.black, size: 36),
+              child: const Icon(
+                Icons.workspace_premium_rounded,
+                color: Colors.black,
+                size: 36,
+              ),
             ),
             const SizedBox(height: 20),
             const Text(
               'Daily Limit Reached',
               style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.2),
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.2,
+              ),
             ),
             const SizedBox(height: 10),
             Text(
@@ -729,7 +910,10 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
               'Upgrade to Premium for unlimited interests and messaging.',
               textAlign: TextAlign.center,
               style: TextStyle(
-                  color: Colors.white.withOpacity(0.6), fontSize: 15, height: 1.6),
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 15,
+                height: 1.6,
+              ),
             ),
             const SizedBox(height: 32),
             SizedBox(
@@ -738,31 +922,39 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                 onPressed: () {
                   Navigator.pop(context);
                   Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => const SubscriptionPage()));
+                    context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
+                  );
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.goldMedium,
                   foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30)),
+                    borderRadius: BorderRadius.circular(30),
+                  ),
                   elevation: 0,
                 ),
-                child: const Text('Upgrade to Premium',
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.3)),
+                child: const Text(
+                  'Upgrade to Premium',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.3,
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 12),
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text('Maybe later',
-                  style: TextStyle(
-                      color: Colors.white.withOpacity(0.35), fontSize: 14)),
+              child: Text(
+                'Maybe later',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.35),
+                  fontSize: 14,
+                ),
+              ),
             ),
           ],
         ),
@@ -797,9 +989,7 @@ class _ConnectBar extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF0A0A0A),
-        border: Border(
-          top: BorderSide(color: Colors.white.withOpacity(0.06)),
-        ),
+        border: Border(top: BorderSide(color: Colors.white.withOpacity(0.06))),
       ),
       padding: EdgeInsets.fromLTRB(
         20,
@@ -816,15 +1006,18 @@ class _ConnectBar extends StatelessWidget {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: null, // disabled
-                    icon: const Icon(Icons.check_circle_outline_rounded,
-                        size: 18),
+                    icon: const Icon(
+                      Icons.check_circle_outline_rounded,
+                      size: 18,
+                    ),
                     label: const Text('Accepted'),
                     style: ElevatedButton.styleFrom(
                       disabledBackgroundColor: Colors.white.withOpacity(0.06),
                       disabledForegroundColor: Colors.white38,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       elevation: 0,
                     ),
                   ),
@@ -834,15 +1027,18 @@ class _ConnectBar extends StatelessWidget {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: onChat,
-                    icon: const Icon(Icons.chat_bubble_outline_rounded,
-                        size: 18),
+                    icon: const Icon(
+                      Icons.chat_bubble_outline_rounded,
+                      size: 18,
+                    ),
                     label: Text('Continue with $userName'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.goldMedium,
                       foregroundColor: Colors.black,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
+                        borderRadius: BorderRadius.circular(30),
+                      ),
                       elevation: 0,
                     ),
                   ),
@@ -861,7 +1057,8 @@ class _ConnectBar extends StatelessWidget {
                         disabledForegroundColor: Colors.white38,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30)),
+                          borderRadius: BorderRadius.circular(30),
+                        ),
                         elevation: 0,
                       ),
                     )
@@ -872,7 +1069,8 @@ class _ConnectBar extends StatelessWidget {
                         foregroundColor: Colors.black,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30)),
+                          borderRadius: BorderRadius.circular(30),
+                        ),
                         elevation: 0,
                       ),
                       child: isSending
@@ -880,14 +1078,17 @@ class _ConnectBar extends StatelessWidget {
                               width: 22,
                               height: 22,
                               child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.black),
+                                strokeWidth: 2,
+                                color: Colors.black,
+                              ),
                             )
                           : const Text(
                               'Connect',
                               style: TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5),
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
                             ),
                     ),
             ),
@@ -898,16 +1099,17 @@ class _ConnectBar extends StatelessWidget {
 // ─── Section Title ────────────────────────────────────────────────────────────
 
 Widget _sectionTitle(String text) => Padding(
-      padding: const EdgeInsets.only(bottom: 0),
-      child: Text(
-        text,
-        style: const TextStyle(
-            color: Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            letterSpacing: 0.1),
-      ),
-    );
+  padding: const EdgeInsets.only(bottom: 0),
+  child: Text(
+    text,
+    style: const TextStyle(
+      color: Colors.white,
+      fontSize: 18,
+      fontWeight: FontWeight.bold,
+      letterSpacing: 0.1,
+    ),
+  ),
+);
 
 // ─── Detail row ───────────────────────────────────────────────────────────────
 
@@ -926,18 +1128,24 @@ class _DetailRow extends StatelessWidget {
         children: [
           SizedBox(
             width: 120,
-            child: Text(label,
-                style: TextStyle(
-                    color: Colors.white.withOpacity(0.45),
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500)),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.45),
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ),
           Expanded(
-            child: Text(value,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600)),
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),

@@ -7,25 +7,33 @@ class DeletedUserAvatar extends StatelessWidget {
   final String? photoUrl;
   final double radius;
   final bool isDeleted;
+  final bool photosHidden;
 
   const DeletedUserAvatar({
     super.key,
     this.photoUrl,
     this.radius = 24,
     this.isDeleted = false,
+    this.photosHidden = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final showPlaceholder = isDeleted || (photoUrl == null || photoUrl!.isEmpty);
+    final showPlaceholder = isDeleted ||
+        photosHidden ||
+        (photoUrl == null || photoUrl!.isEmpty);
 
     if (showPlaceholder) {
       return CircleAvatar(
         radius: radius,
         backgroundColor: Colors.white12,
         child: Icon(
-          Icons.person_off_outlined,
-          color: Colors.white30,
+          photosHidden
+              ? Icons.admin_panel_settings_outlined
+              : Icons.person_off_outlined,
+          color: photosHidden
+              ? Colors.white.withOpacity(0.35)
+              : Colors.white30,
           size: radius * 0.8,
         ),
       );

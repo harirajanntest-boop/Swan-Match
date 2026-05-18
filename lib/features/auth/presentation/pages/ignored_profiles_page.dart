@@ -54,8 +54,14 @@ class IgnoredProfilesPage extends StatelessWidget {
                 future: UserService.instance.getUserProfile(uid),
                 builder: (context, userSnapshot) {
                   final profile = userSnapshot.data;
-                  final name = profile?['name'] ?? 'Loading...';
-                  final photoUrl = profile?['photoUrl'] ?? '';
+                  final name = profile?['firstName'] ?? profile?['name'] ?? 'Loading...';
+                  String photoUrl = profile?['profilePicture'] ?? '';
+                  if (photoUrl.isEmpty) {
+                    final photos = profile?['photos'] as List?;
+                    if (photos != null && photos.isNotEmpty) {
+                      photoUrl = photos.first.toString();
+                    }
+                  }
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12),

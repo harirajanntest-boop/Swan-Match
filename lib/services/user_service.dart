@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/utils/stream_utils.dart';
+import 'chat_service.dart';
 
 class UserService {
   UserService._();
@@ -68,19 +69,20 @@ class UserService {
     try {
       final user = _auth.currentUser;
       if (user == null) return;
-      
-      final providers = user.providerData.map((info) => info.providerId).toList();
+
+      final providers = user.providerData
+          .map((info) => info.providerId)
+          .toList();
       // Ensure 'password' is added if the user has an email and didn't exclusively use OAuth
       // (providerData might contain 'password' automatically, but it's good to just sync what Firebase reports)
-      
-      await _userRef(user.uid).set({
-        'providers': providers,
-      }, SetOptions(merge: true));
+
+      await _userRef(
+        user.uid,
+      ).set({'providers': providers}, SetOptions(merge: true));
     } catch (e) {
       print('Error syncing auth providers: $e');
     }
   }
-
 
   /// In-memory cache: uid → profile data.
   /// Eliminates redundant Firestore reads for the same profile within a session.
@@ -98,7 +100,6 @@ class UserService {
     }
     return _profileCache[uid];
   }
-
 
   Future<Map<String, dynamic>?> getCurrentUserProfile() async {
     final user = _auth.currentUser;
@@ -140,10 +141,20 @@ class UserService {
       }
       return _userRef(uid).snapshots().map((doc) {
         final data = doc.data();
-        if (data == null) return null;
-        return <String, dynamic>{...data, 'uid': uid};
+        if (data == null) {
+          _profileCache.remove(uid);
+          return null;
+        }
+        final profile = <String, dynamic>{...data, 'uid': uid};
+        _profileCache[uid] = profile;
+        return profile;
       });
     });
+  }
+
+  void invalidateCurrentUserCache() {
+    final uid = _auth.currentUser?.uid;
+    if (uid != null) _profileCache.remove(uid);
   }
 
   Future<void> updatePartnerPreferences(
@@ -341,7 +352,10 @@ class UserService {
       has('profession') || has('occupation'),
       has('lookingFor'),
       has('drinking') || has('smoking') || has('workout') || has('pets'),
-      has('communicationStyle') || has('loveLanguage') || has('educationLevel') || has('zodiac'),
+      has('communicationStyle') ||
+          has('loveLanguage') ||
+          has('educationLevel') ||
+          has('zodiac'),
       has('interests'),
       hasPhoto,
       has('bio') || has('aboutMe'),
@@ -364,7 +378,7 @@ class UserService {
 
   /// Reports a user: creates a document in the /reports collection (writable
   /// by any signed-in user) and permanently blocks them in the reporter's doc.
-  Future<void> reportUser(String targetUid) async {
+  Future<void> reportUser(String targetUid, {String reason = ''}) async {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;
 
@@ -372,6 +386,7 @@ class UserService {
     await _firestore.collection('reports').add({
       'reportedUid': targetUid,
       'reportedBy': currentUser.uid,
+      'reason': reason,
       'reportedAt': FieldValue.serverTimestamp(),
       'isReported': true,
     });
@@ -409,7 +424,37 @@ class UserService {
         'updatedAt': FieldValue.serverTimestamp(),
       });
     }
+
+    // 1. Remove from likes collection (both directions)
+    batch.delete(
+      _firestore
+          .collection('likes')
+          .doc(myUid)
+          .collection('likedUsers')
+          .doc(otherUid),
+    );
+    batch.delete(
+      _firestore
+          .collection('likes')
+          .doc(otherUid)
+          .collection('likedUsers')
+          .doc(myUid),
+    );
+
+    // 2. Remove match document
+    final matchId = myUid.compareTo(otherUid) < 0
+        ? '${myUid}_$otherUid'
+        : '${otherUid}_$myUid';
+    batch.delete(_firestore.collection('matches').doc(matchId));
+
     await batch.commit();
+
+    // Ensure we delete any existing chat thread between the two users
+    try {
+      await ChatService.instance.deleteChatThreadBetween(myUid, otherUid);
+    } catch (_) {
+      // Best-effort cleanup
+    }
   }
 
   Future<void> unblockUser(String uid) async {
@@ -418,41 +463,125 @@ class UserService {
     // Only remove from blockedUids — reportedUids stays forever
     await _userRef(currentUser.uid).update({
       'blockedUids': FieldValue.arrayRemove([uid]),
+      'ignoredMatchIds': FieldValue.arrayRemove([uid]),
     });
+
+    try {
+      final batch = _firestore.batch();
+      batch.delete(
+        _firestore
+            .collection('likes')
+            .doc(currentUser.uid)
+            .collection('likedUsers')
+            .doc(uid),
+      );
+      batch.delete(
+        _firestore
+            .collection('likes')
+            .doc(uid)
+            .collection('likedUsers')
+            .doc(currentUser.uid),
+      );
+      await batch.commit();
+    } catch (_) {}
   }
 
   Future<void> ignoreUser(String uid) async {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;
 
-    await _userRef(
-      currentUser.uid,
-    ).update({'ignoredMatchIds': FieldValue.arrayUnion([uid])});
+    await _userRef(currentUser.uid).update({
+      'ignoredMatchIds': FieldValue.arrayUnion([uid]),
+    });
   }
 
   Future<void> unignoreUser(String uid) async {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;
-    await _userRef(
-      currentUser.uid,
-    ).update({'ignoredMatchIds': FieldValue.arrayRemove([uid])});
+    await _userRef(currentUser.uid).update({
+      'ignoredMatchIds': FieldValue.arrayRemove([uid]),
+    });
   }
 
-  bool isPremium(Map<String, dynamic>? profile) {
+  /// In-app 7-day free trial (not a Stripe subscription).
+  bool isOnFreeTrial(Map<String, dynamic>? profile) {
     if (profile == null) return false;
-    // Top-level fields (set by UI / legacy)
-    final status = profile['subscriptionStatus']?.toString().toLowerCase();
     final plan = profile['subscriptionPlan']?.toString().toLowerCase();
-    if (status == 'active' || status == 'trialing' || plan == 'premium') {
-      return true;
+    final status = profile['subscriptionStatus']?.toString().toLowerCase();
+    if (plan != 'trial' || status != 'trialing') return false;
+
+    final endsAt = profile['freeTrialEndsAt'];
+    if (endsAt is Timestamp) {
+      return endsAt.toDate().isAfter(DateTime.now());
     }
-    // Nested 'subscription' map written by the verifySubscription Cloud Function
+    return true;
+  }
+
+  /// Paid Stripe premium (excludes in-app free trial).
+  bool isPaidPremium(Map<String, dynamic>? profile) {
+    if (profile == null || isOnFreeTrial(profile)) return false;
+
+    final plan = profile['subscriptionPlan']?.toString().toLowerCase() ?? '';
+    final topStatus = profile['subscriptionStatus']?.toString().toLowerCase() ?? '';
+
+    final statuses = <String>[];
+    if (topStatus.isNotEmpty) statuses.add(topStatus);
     final sub = profile['subscription'];
     if (sub is Map) {
       final nestedStatus = sub['status']?.toString().toLowerCase();
-      if (nestedStatus == 'active' || nestedStatus == 'trialing') return true;
+      if (nestedStatus != null && nestedStatus.isNotEmpty) {
+        statuses.add(nestedStatus);
+      }
     }
+
+    final hasStripeSub =
+        (profile['stripeSubscriptionId']?.toString() ?? '').isNotEmpty;
+    final hasPaidPlan = plan == 'premium' || plan == 'gold';
+    final hasStripePrice = sub is Map &&
+        (sub['priceId']?.toString() ?? '').isNotEmpty;
+
+    for (final status in statuses) {
+      if (status != 'active' && status != 'trialing') continue;
+      if (hasStripeSub || hasPaidPlan || hasStripePrice) return true;
+    }
+
+    if (hasStripeSub &&
+        (topStatus == 'active' || topStatus == 'trialing')) {
+      return true;
+    }
+
     return false;
+  }
+
+  /// Premium access for limits/features (paid OR in-app trial).
+  bool isPremium(Map<String, dynamic>? profile) {
+    return isPaidPremium(profile) || isOnFreeTrial(profile);
+  }
+
+  /// Clears in-app trial fields only after a paid Stripe plan is confirmed.
+  Future<void> endTrialAfterPaidUpgrade() async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+
+    invalidateCurrentUserCache();
+    final profile = await getUserProfile(uid);
+    if (!isPaidPremium(profile)) return;
+
+    final hadTrialFields = isOnFreeTrial(profile) ||
+        profile?['freeTrialEndsAt'] != null ||
+        profile?['freeTrialStartedAt'] != null;
+    if (!hadTrialFields) return;
+
+    _invalidateCache(uid);
+    await _userRef(uid).set({
+      'subscriptionPlan': 'premium',
+      'subscriptionStatus': profile?['subscriptionStatus'] ?? 'active',
+      'freeTrialEndsAt': FieldValue.delete(),
+      'freeTrialStartedAt': FieldValue.delete(),
+      'trialEndedAt': FieldValue.serverTimestamp(),
+      'trialEndedReason': 'upgraded_to_premium',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   /// Count users by relationship goal (lookingFor field)
@@ -472,12 +601,16 @@ class UserService {
         if (lookingFor != null) {
           // Exact matching with case-insensitive comparison
           final normalized = lookingFor.toLowerCase().trim();
-          if (normalized == 'ready to marry' || normalized == 'ready to Marry') {
+          if (normalized == 'ready to marry' ||
+              normalized == 'ready to Marry') {
             counts['Ready to Marry'] = (counts['Ready to Marry'] ?? 0) + 1;
           } else if (normalized == 'something serious') {
-            counts['Something Serious'] = (counts['Something Serious'] ?? 0) + 1;
-          } else if (normalized == 'long-term partner' || normalized == 'long term partner') {
-            counts['Long-term Partner'] = (counts['Long-term Partner'] ?? 0) + 1;
+            counts['Something Serious'] =
+                (counts['Something Serious'] ?? 0) + 1;
+          } else if (normalized == 'long-term partner' ||
+              normalized == 'long term partner') {
+            counts['Long-term Partner'] =
+                (counts['Long-term Partner'] ?? 0) + 1;
           } else if (normalized == 'just browsing') {
             counts['Just Browsing'] = (counts['Just Browsing'] ?? 0) + 1;
           } else if (normalized == 'let love lead') {
@@ -491,43 +624,47 @@ class UserService {
   }
 
   /// Get users by relationship goal
-  Stream<List<Map<String, dynamic>>> getUsersByRelationshipGoal(String goalTitle) {
+  Stream<List<Map<String, dynamic>>> getUsersByRelationshipGoal(
+    String goalTitle,
+  ) {
     // Convert goal title to lowercase for matching
     final goalLower = goalTitle.toLowerCase();
-    
+
     return _firestore.collection('users').snapshots().map((snapshot) {
       final users = <Map<String, dynamic>>[];
-      
+
       for (final doc in snapshot.docs) {
         final data = doc.data();
         final lookingFor = data['lookingFor']?.toString();
         if (lookingFor != null) {
           final normalized = lookingFor.toLowerCase().trim();
-          
+
           bool matches = false;
-          if (goalLower.contains('ready to marry') && 
-              (normalized == 'ready to marry' || normalized == 'ready to Marry')) {
+          if (goalLower.contains('ready to marry') &&
+              (normalized == 'ready to marry' ||
+                  normalized == 'ready to Marry')) {
             matches = true;
-          } else if (goalLower.contains('something serious') && 
+          } else if (goalLower.contains('something serious') &&
               normalized == 'something serious') {
             matches = true;
-          } else if (goalLower.contains('long-term') && 
-              (normalized == 'long-term partner' || normalized == 'long term partner')) {
+          } else if (goalLower.contains('long-term') &&
+              (normalized == 'long-term partner' ||
+                  normalized == 'long term partner')) {
             matches = true;
-          } else if (goalLower.contains('just browsing') && 
+          } else if (goalLower.contains('just browsing') &&
               normalized == 'just browsing') {
             matches = true;
-          } else if (goalLower.contains('let love lead') && 
+          } else if (goalLower.contains('let love lead') &&
               normalized == 'let love lead') {
             matches = true;
           }
-          
+
           if (matches && data['registrationCompleted'] == true) {
             users.add(<String, dynamic>{...data, 'uid': doc.id});
           }
         }
       }
-      
+
       return users;
     });
   }

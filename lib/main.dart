@@ -1,9 +1,11 @@
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
+import 'package:swam_match_app/services/payment_flow_service.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
 import 'package:swam_match_app/services/notification_service.dart' as v1;
 import 'package:swam_match_app/features/auth/presentation/pages/payment_status_page.dart';
@@ -11,8 +13,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:swam_match_app/services/stripe_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -33,12 +35,18 @@ class SwamMatchApp extends StatefulWidget {
 
 class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver {
   late final Future<String?> _initFuture;
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
+  final AppLinks _appLinks = AppLinks();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initFuture = _initializeApp();
+    _initFuture.then((_) async {
+      await PaymentFlowService.reconcileCheckoutState();
+      if (mounted) _initDeepLinks();
+    });
   }
 
   @override
@@ -47,13 +55,52 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
     super.dispose();
   }
 
+  void _initDeepLinks() {
+    _appLinks.uriLinkStream.listen(_handlePaymentUri, onError: (_) {});
+    _appLinks.getInitialLink().then((uri) {
+      if (uri != null) _handlePaymentUri(uri);
+    });
+  }
+
+  bool _isPaymentSuccessUri(Uri uri) {
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host == 'payment-success' ||
+        path.contains('payment-success') ||
+        uri.toString().contains('payment-success');
+  }
+
+  bool _isPaymentCancelUri(Uri uri) {
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host == 'payment-cancel' ||
+        path.contains('payment-cancel') ||
+        uri.toString().contains('payment-cancel');
+  }
+
+  Future<void> _handlePaymentUri(Uri uri) async {
+    if (_isPaymentSuccessUri(uri)) {
+      await PaymentFlowService.handlePaymentSuccessDeepLink();
+    } else if (_isPaymentCancelUri(uri)) {
+      await PaymentFlowService.clearCheckoutPending();
+      final nav = _navigatorKey.currentState;
+      if (nav == null) return;
+      nav.pushNamedAndRemoveUntil('/payment-cancel', (route) => false);
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       UserService.instance.updateOnlineStatus(true);
+      _onAppResumed();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       UserService.instance.updateOnlineStatus(false);
     }
+  }
+
+  Future<void> _onAppResumed() async {
+    await PaymentFlowService.presentCongratulationsIfPaid();
   }
 
   Future<String?> _initializeApp() async {
@@ -84,7 +131,10 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
         final initError = initDone ? snapshot.data : null;
         final hasFirebaseError = initError != null;
 
+        PaymentFlowService.navigatorKey = _navigatorKey;
+
         return MaterialApp(
+          navigatorKey: _navigatorKey,
           debugShowCheckedModeBanner: false,
           title: 'Swan Match',
           theme: ThemeData(
@@ -146,7 +196,8 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
               ? const {}
               : {
                   '/profile': (context) => const ProfileScreen(),
-                  '/payment-success': (context) => const _PaymentSuccessGate(),
+                  '/payment-success': (context) =>
+                      const PaymentStatusPage(isSuccess: true),
                   '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
                 },
         );
@@ -214,60 +265,6 @@ class FirebaseSetupRequiredPage extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-/// Guards the payment success page so it only shows once per subscription.
-/// If the user has already seen it, they are redirected to MainDashboard.
-class _PaymentSuccessGate extends StatefulWidget {
-  const _PaymentSuccessGate();
-
-  @override
-  State<_PaymentSuccessGate> createState() => _PaymentSuccessGateState();
-}
-
-class _PaymentSuccessGateState extends State<_PaymentSuccessGate> {
-  static const _prefKey = 'payment_success_shown';
-
-  @override
-  void initState() {
-    super.initState();
-    _checkAndRoute();
-  }
-
-  Future<void> _checkAndRoute() async {
-    final prefs = await SharedPreferences.getInstance();
-    final alreadyShown = prefs.getBool(_prefKey) ?? false;
-
-    if (!mounted) return;
-
-    if (alreadyShown) {
-      // Already shown once — go straight to dashboard
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (_) => const MainDashboard()),
-        (r) => false,
-      );
-    } else {
-      // Mark as shown, then show the success page
-      await prefs.setBool(_prefKey, true);
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const PaymentStatusPage(isSuccess: true),
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Show a blank loading screen while checking prefs
-    return const Scaffold(
-      backgroundColor: Colors.black,
-      body: Center(child: CircularProgressIndicator(color: Color(0xFFD4AF37))),
     );
   }
 }

@@ -25,42 +25,39 @@ class MatchService {
         return Stream.value(<Map<String, dynamic>>[]);
       }
 
-      return _firestore.collection('users').doc(uid).snapshots().asyncMap((
+      return switchMap(_firestore.collection('users').doc(uid).snapshots(), (
         userDoc,
-      ) async {
+      ) {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
-
-        // Fetch ALL registered users — gender filtering is handled
-        // entirely client-side in SwipePage._applyFilters so that the
-        // Discover filter chips (All / Male / Female) work correctly.
-        final snapshot = await _firestore
-            .collection('users')
-            .where('registrationCompleted', isEqualTo: true)
-            .get();
-
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
         final ignoredMap = Map<String, dynamic>.from(
           myProfile['ignoredProfiles'] ?? {},
         );
-        final now = DateTime.now();
 
-        return snapshot.docs
-            .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
-            .where((profile) {
-              final pUid = (profile['uid'] ?? '').toString();
-              if (pUid == uid) return false;
-              if (blockedUids.contains(pUid)) return false;
+        return _firestore
+            .collection('users')
+            .where('registrationCompleted', isEqualTo: true)
+            .snapshots()
+            .map((snapshot) {
+          final now = DateTime.now();
+          return snapshot.docs
+              .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
+              .where((profile) {
+                final pUid = (profile['uid'] ?? '').toString();
+                if (pUid == uid) return false;
+                if (blockedUids.contains(pUid)) return false;
 
-              final ignoreExpiry = ignoredMap[pUid];
-              if (ignoreExpiry is Timestamp &&
-                  ignoreExpiry.toDate().isAfter(now)) {
-                return false;
-              }
-              return true;
-            })
-            .where(_isVisibleToEveryone)
-            .take(limit)
-            .toList();
+                final ignoreExpiry = ignoredMap[pUid];
+                if (ignoreExpiry is Timestamp &&
+                    ignoreExpiry.toDate().isAfter(now)) {
+                  return false;
+                }
+                return true;
+              })
+              .where(_isVisibleToEveryone)
+              .take(limit)
+              .toList();
+        });
       });
     });
   }
@@ -71,39 +68,38 @@ class MatchService {
         return Stream.value(<Map<String, dynamic>>[]);
       }
 
-      return _firestore.collection('users').doc(uid).snapshots().asyncMap((
+      return switchMap(_firestore.collection('users').doc(uid).snapshots(), (
         userDoc,
-      ) async {
+      ) {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
-
-        // Get all registered users
-        final snapshot = await _firestore
-            .collection('users')
-            .where('registrationCompleted', isEqualTo: true)
-            .get();
-
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
         final ignoredMap = Map<String, dynamic>.from(
           myProfile['ignoredProfiles'] ?? {},
         );
-        final now = DateTime.now();
 
-        return snapshot.docs
-            .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
-            .where((profile) {
-              final pUid = (profile['uid'] ?? '').toString();
-              if (pUid == uid) return false;
-              if (blockedUids.contains(pUid)) return false;
+        return _firestore
+            .collection('users')
+            .where('registrationCompleted', isEqualTo: true)
+            .snapshots()
+            .map((snapshot) {
+          final now = DateTime.now();
+          return snapshot.docs
+              .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
+              .where((profile) {
+                final pUid = (profile['uid'] ?? '').toString();
+                if (pUid == uid) return false;
+                if (blockedUids.contains(pUid)) return false;
 
-              final ignoreExpiry = ignoredMap[pUid];
-              if (ignoreExpiry is Timestamp &&
-                  ignoreExpiry.toDate().isAfter(now)) {
-                return false;
-              }
-              return true;
-            })
-            .where(_isVisibleToEveryone)
-            .toList();
+                final ignoreExpiry = ignoredMap[pUid];
+                if (ignoreExpiry is Timestamp &&
+                    ignoreExpiry.toDate().isAfter(now)) {
+                  return false;
+                }
+                return true;
+              })
+              .where(_isVisibleToEveryone)
+              .toList();
+        });
       });
     });
   }
@@ -116,9 +112,9 @@ class MatchService {
 
       final cutoff = DateTime.now().subtract(Duration(days: days));
 
-      return _firestore.collection('users').doc(uid).snapshots().asyncMap((
+      return switchMap(_firestore.collection('users').doc(uid).snapshots(), (
         userDoc,
-      ) async {
+      ) {
         final myProfile = userDoc.data() ?? <String, dynamic>{};
         final myPrefs = Map<String, dynamic>.from(
           myProfile['partnerPreference'] ??
@@ -126,79 +122,81 @@ class MatchService {
               <String, dynamic>{},
         );
 
-        // Get all registered users
-        final snapshot = await _firestore
-            .collection('users')
-            .where('registrationCompleted', isEqualTo: true)
-            .get();
-
         final blockedUids = List<String>.from(myProfile['blockedUids'] ?? []);
         final ignoredMap = Map<String, dynamic>.from(
           myProfile['ignoredProfiles'] ?? {},
         );
-        final now = DateTime.now();
 
-        final items = snapshot.docs
-            .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
-            .where((profile) {
-              final pUid = (profile['uid'] ?? '').toString();
-              if (pUid == uid) return false;
-              if (blockedUids.contains(pUid)) return false;
+        return _firestore
+            .collection('users')
+            .where('registrationCompleted', isEqualTo: true)
+            .snapshots()
+            .map((snapshot) {
+          final now = DateTime.now();
+          final items = snapshot.docs
+              .map((doc) => <String, dynamic>{...doc.data(), 'uid': doc.id})
+              .where((profile) {
+                final pUid = (profile['uid'] ?? '').toString();
+                if (pUid == uid) return false;
+                if (blockedUids.contains(pUid)) return false;
 
-              final ignoreExpiry = ignoredMap[pUid];
-              if (ignoreExpiry is Timestamp &&
-                  ignoreExpiry.toDate().isAfter(now)) {
-                return false;
-              }
-              return true;
-            })
-            .where(_isVisibleToEveryone)
-            .where(
-              (profile) => _calculateMatchScore(profile, myPrefs) < 0.5,
-            ) // Less than 50% match
-            .where((profile) {
-              final createdAt = profile['createdAt'];
-              if (createdAt == null) return true;
-              if (createdAt.runtimeType.toString() == 'Timestamp') {
+                final ignoreExpiry = ignoredMap[pUid];
+                if (ignoreExpiry is Timestamp &&
+                    ignoreExpiry.toDate().isAfter(now)) {
+                  return false;
+                }
+                return true;
+              })
+              .where(_isVisibleToEveryone)
+              .where(
+                (profile) => _calculateMatchScore(profile, myPrefs) < 0.5,
+              )
+              .where((profile) {
+                final createdAt = profile['createdAt'];
+                if (createdAt == null) return true;
+                if (createdAt.runtimeType.toString() == 'Timestamp') {
+                  try {
+                    return (createdAt.toDate() as DateTime).isAfter(cutoff);
+                  } catch (_) {
+                    return true;
+                  }
+                }
+                if (createdAt is DateTime) {
+                  return createdAt.isAfter(cutoff);
+                }
+                return true;
+              })
+              .toList();
+
+          items.sort((a, b) {
+            DateTime parse(dynamic raw) {
+              if (raw is DateTime) return raw;
+              if (raw != null && raw.runtimeType.toString() == 'Timestamp') {
                 try {
-                  return (createdAt.toDate() as DateTime).isAfter(cutoff);
+                  return raw.toDate() as DateTime;
                 } catch (_) {
-                  return true;
+                  return DateTime.fromMillisecondsSinceEpoch(0);
                 }
               }
-              if (createdAt is DateTime) {
-                return createdAt.isAfter(cutoff);
-              }
-              return true;
-            })
-            .toList();
-
-        items.sort((a, b) {
-          DateTime parse(dynamic raw) {
-            if (raw is DateTime) return raw;
-            if (raw != null && raw.runtimeType.toString() == 'Timestamp') {
-              try {
-                return raw.toDate() as DateTime;
-              } catch (_) {
-                return DateTime.fromMillisecondsSinceEpoch(0);
-              }
+              return DateTime.fromMillisecondsSinceEpoch(0);
             }
-            return DateTime.fromMillisecondsSinceEpoch(0);
-          }
 
-          return parse(b['createdAt']).compareTo(parse(a['createdAt']));
+            return parse(b['createdAt']).compareTo(parse(a['createdAt']));
+          });
+
+          return items;
         });
-
-        return items;
       });
     });
   }
 
   bool _isVisibleToEveryone(Map<String, dynamic> profile) {
     if (profile['isDeleted'] == true) return false;
+    if (profile['status']?.toString().toLowerCase() == 'deleted') return false;
     if (profile['showProfileToEveryone'] == false) return false;
     final visibility = (profile['profileVisibility'] ?? 'Public').toString();
     if (visibility == 'Private') return false;
+    if (visibility == 'Curated Matches Only') return false;
     return true;
   }
 
@@ -340,6 +338,8 @@ class MatchService {
             final ignoreExpiry = ignoredMap[id];
             if (ignoreExpiry is Timestamp && ignoreExpiry.toDate().isAfter(now))
               continue;
+
+            if (profile['isDeleted'] == true) continue;
 
             if (_isVisibleToEveryone(profile)) {
               ordered.add(profile);

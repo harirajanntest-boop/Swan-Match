@@ -70,7 +70,13 @@ class UserModel {
 	final String profileApprovalStatus;
 	final String inviteCode;
 	final String profileVisibility;
+	final bool showProfileToEveryone;
+	final bool showPhotosToEveryone;
 	final int onboardingStep;
+	final bool isDeleted;
+	final String status;
+	final DateTime? deletedAt;
+	final DateTime? scheduledHardDeleteAt;
 
 	final DateTime createdAt;
 	final DateTime updatedAt;
@@ -144,7 +150,13 @@ class UserModel {
 		this.profileApprovalStatus = 'pending',
 		this.inviteCode = '',
 		this.profileVisibility = 'Public',
+		this.showProfileToEveryone = true,
+		this.showPhotosToEveryone = true,
 		this.onboardingStep = 0,
+		this.isDeleted = false,
+		this.status = '',
+		this.deletedAt,
+		this.scheduledHardDeleteAt,
 		required this.createdAt,
 		required this.updatedAt,
 	});
@@ -222,7 +234,13 @@ class UserModel {
 		String? profileApprovalStatus,
 		String? inviteCode,
 		String? profileVisibility,
+		bool? showProfileToEveryone,
+		bool? showPhotosToEveryone,
 		int? onboardingStep,
+		bool? isDeleted,
+		String? status,
+		DateTime? deletedAt,
+		DateTime? scheduledHardDeleteAt,
 		DateTime? createdAt,
 		DateTime? updatedAt,
 	}) {
@@ -294,7 +312,15 @@ class UserModel {
 			profileApprovalStatus: profileApprovalStatus ?? this.profileApprovalStatus,
 			inviteCode: inviteCode ?? this.inviteCode,
 			profileVisibility: profileVisibility ?? this.profileVisibility,
+			showProfileToEveryone:
+					showProfileToEveryone ?? this.showProfileToEveryone,
+			showPhotosToEveryone:
+					showPhotosToEveryone ?? this.showPhotosToEveryone,
 			onboardingStep: onboardingStep ?? this.onboardingStep,
+			isDeleted: isDeleted ?? this.isDeleted,
+			status: status ?? this.status,
+			deletedAt: deletedAt ?? this.deletedAt,
+			scheduledHardDeleteAt: scheduledHardDeleteAt ?? this.scheduledHardDeleteAt,
 			createdAt: createdAt ?? this.createdAt,
 			updatedAt: updatedAt ?? this.updatedAt,
 		);
@@ -370,7 +396,13 @@ class UserModel {
 			'profileApprovalStatus': profileApprovalStatus,
 			'inviteCode': inviteCode,
 			'profileVisibility': profileVisibility,
+			'showProfileToEveryone': showProfileToEveryone,
+			'showPhotosToEveryone': showPhotosToEveryone,
 			'onboardingStep': onboardingStep,
+			'isDeleted': isDeleted,
+			'status': status,
+			'deletedAt': deletedAt == null ? null : Timestamp.fromDate(deletedAt!),
+			'scheduledHardDeleteAt': scheduledHardDeleteAt == null ? null : Timestamp.fromDate(scheduledHardDeleteAt!),
 			'createdAt': Timestamp.fromDate(createdAt),
 			'updatedAt': Timestamp.fromDate(updatedAt),
 		};
@@ -380,6 +412,13 @@ class UserModel {
 		DateTime? readDate(dynamic value) {
 			if (value is Timestamp) return value.toDate();
 			return null;
+		}
+
+		int toInt(dynamic v, [int fallback = 0]) {
+			if (v == null) return fallback;
+			if (v is int) return v;
+			if (v is double) return v.toInt();
+			return int.tryParse(v.toString()) ?? fallback;
 		}
 
 		return UserModel(
@@ -407,15 +446,15 @@ class UserModel {
 			city: (map['city'] ?? '') as String,
 			state: (map['state'] ?? '') as String,
 			country: (map['country'] ?? '') as String,
-			age: (map['age'] ?? 0) as int,
+			age: toInt(map['age']),
 			subscriptionPlan: (map['subscriptionPlan'] ?? 'free') as String,
 			profileVerified: (map['profileVerified'] ?? map['isVerified'] ?? false) as bool,
 			verificationPhotoUrl: (map['verificationPhotoUrl'] ?? '') as String,
 			registrationCompleted: (map['registrationCompleted'] ?? false) as bool,
-			partnerPreference: (map['partnerPreference'] ?? '') as String,
-			minAgePreference: (map['minAgePreference'] ?? 18) as int,
-			maxAgePreference: (map['maxAgePreference'] ?? 99) as int,
-			distanceKm: (map['distanceKm'] ?? 50) as int,
+			partnerPreference: map['partnerPreference'] is String ? map['partnerPreference'] as String : '',
+			minAgePreference: toInt(map['minAgePreference'], 18),
+			maxAgePreference: toInt(map['maxAgePreference'], 99),
+			distanceKm: toInt(map['distanceKm'], 50),
 			lookingFor: (map['lookingFor'] ?? '') as String,
 			highestQualification: (map['highestQualification'] ?? '') as String,
 			university: (map['university'] ?? '') as String,
@@ -450,7 +489,7 @@ class UserModel {
 					.toList(),
 			languageFluency: ((map['languageFluency'] ?? <String, dynamic>{}) as Map<String, dynamic>)
 					.map((k, v) => MapEntry(k, v.toString())),
-			familyValuesImportance: (map['familyValuesImportance'] ?? 3) as int,
+			familyValuesImportance: toInt(map['familyValuesImportance'], 3),
 			personalityTraits: ((map['personalityTraits'] ?? <dynamic>[]) as List<dynamic>)
 					.map((item) => item.toString())
 					.toList(),
@@ -468,7 +507,13 @@ class UserModel {
 			profileApprovalStatus: (map['profileApprovalStatus'] ?? 'pending') as String,
 			inviteCode: (map['inviteCode'] ?? '') as String,
 			profileVisibility: (map['profileVisibility'] ?? 'Public') as String,
-			onboardingStep: (map['onboardingStep'] ?? 0) as int,
+			showProfileToEveryone: map['showProfileToEveryone'] != false,
+			showPhotosToEveryone: map['showPhotosToEveryone'] != false,
+			onboardingStep: toInt(map['onboardingStep']),
+			isDeleted: (map['isDeleted'] ?? false) as bool,
+			status: (map['status'] ?? '') as String,
+			deletedAt: readDate(map['deletedAt']),
+			scheduledHardDeleteAt: readDate(map['scheduledHardDeleteAt']),
 			createdAt: readDate(map['createdAt']) ?? DateTime.now(),
 			updatedAt: readDate(map['updatedAt']) ?? DateTime.now(),
 		);

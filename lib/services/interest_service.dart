@@ -5,7 +5,7 @@ import '../core/utils/stream_utils.dart';
 import '../services/app_notification_service.dart';
 import '../models/interest_model.dart';
 import 'chat_service.dart';
-import 'trial_service.dart';
+import 'subscription_limits_service.dart';
 
 enum InterestSendResult {
 	sent,
@@ -36,8 +36,9 @@ class InterestService {
 		}
 
 		// ── Premium / trial gate ──────────────────────────────────────────────
-		final trialCheck = await TrialService.instance.canSendInterest();
-		if (!trialCheck.allowed) {
+		final limitCheck =
+				await SubscriptionLimitsService.instance.canSendInterest();
+		if (!limitCheck.allowed) {
 			return InterestSendResult.trialLimitReached;
 		}
 
@@ -89,7 +90,7 @@ class InterestService {
 		await _interests.doc(id).set(model.toMap());
 		await _notifyInterestSent(toUserId: toUserId, interestId: id, senderId: user.uid);
 		// Record trial usage
-		await TrialService.instance.recordInterestSent();
+		await SubscriptionLimitsService.instance.recordInterestSent();
 		return InterestSendResult.sent;
 	}
 
@@ -120,28 +121,48 @@ class InterestService {
 		final data = doc.data();
 		if (data == null) return;
 
+		final fromUserId = (data['fromUserId'] ?? '').toString();
+		final toUserId = (data['toUserId'] ?? '').toString();
+		if (fromUserId.isEmpty || toUserId.isEmpty) return;
+
+		final normalized = status.toLowerCase();
+		final currentUserId = _auth.currentUser?.uid ?? '';
+
+		if (normalized == 'accepted' && currentUserId == toUserId) {
+			final acceptCheck =
+					await SubscriptionLimitsService.instance.canAcceptInterest();
+			if (!acceptCheck.allowed) {
+				throw Exception(acceptCheck.reason ?? 'Accept limit reached');
+			}
+		}
+
 		await _interests.doc(interestId).update(<String, dynamic>{
 			'status': status,
 			'updatedAt': FieldValue.serverTimestamp(),
 		});
 
-		final fromUserId = (data['fromUserId'] ?? '').toString();
-		final toUserId = (data['toUserId'] ?? '').toString();
-		if (fromUserId.isEmpty || toUserId.isEmpty) return;
+		// Disconnect / decline — clear chat, likes, and sync both interest directions
+		// so the other user can see them again on Discover.
+		if (normalized == 'declined' || normalized == 'blocked') {
+			await _clearConnectionBetween(fromUserId, toUserId, status: normalized);
+		}
 
-		final currentUserId = _auth.currentUser?.uid ?? '';
-		if (currentUserId == toUserId && status.toLowerCase() == 'accepted') {
-			await ChatService.instance.ensureChatThread(
-					firstUserId: fromUserId,
-					secondUserId: toUserId,
-					seedMessage: 'Interest accepted. You can now start chatting.',
-					lastSenderId: toUserId,
-			);
+		if (currentUserId == toUserId && normalized == 'accepted') {
+			await SubscriptionLimitsService.instance.recordAccept();
+			final chatBlocked = await SubscriptionLimitsService.instance
+					.isChatBlockedForFreeUser(otherUserId: fromUserId);
+			if (!chatBlocked) {
+				await ChatService.instance.ensureChatThread(
+						firstUserId: fromUserId,
+						secondUserId: toUserId,
+						seedMessage: 'Interest accepted. You can now start chatting.',
+						lastSenderId: toUserId,
+				);
+			}
 		}
 
 		final receiverProfile = await _firestore.collection('users').doc(toUserId).get();
 		final receiverName = (receiverProfile.data()?['name'] ?? 'A member').toString();
-		final normalized = status.toLowerCase();
 		final message = normalized == 'accepted'
 				? 'accepted your interest. You can now message.'
 				: 'updated your interest status to $status';
@@ -169,7 +190,12 @@ class InterestService {
 					.map(
 						(snapshot) {
 							final items = snapshot.docs
-									.map((doc) => InterestModel.fromMap(doc.data()))
+									.map(
+										(doc) => InterestModel.fromMap({
+											...doc.data(),
+											'id': doc.id,
+										}),
+									)
 									.toList();
 							items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 							return items;
@@ -217,6 +243,58 @@ class InterestService {
 		});
 	}
 
+	/// Declines/blocks all interest docs between two users and removes swipe likes.
+	Future<void> _clearConnectionBetween(
+		String userA,
+		String userB, {
+		required String status,
+	}) async {
+		try {
+			await ChatService.instance.deleteChatThreadBetween(userA, userB);
+		} catch (_) {}
+
+		final sent = await _interests
+				.where('fromUserId', isEqualTo: userA)
+				.where('toUserId', isEqualTo: userB)
+				.get();
+		final received = await _interests
+				.where('fromUserId', isEqualTo: userB)
+				.where('toUserId', isEqualTo: userA)
+				.get();
+
+		final batch = _firestore.batch();
+		final now = FieldValue.serverTimestamp();
+		for (final doc in [...sent.docs, ...received.docs]) {
+			batch.update(doc.reference, {
+				'status': status,
+				'updatedAt': now,
+			});
+		}
+
+		// Swipe stores likes separately — remove so profile reappears on Discover.
+		batch.delete(
+			_firestore
+					.collection('likes')
+					.doc(userA)
+					.collection('likedUsers')
+					.doc(userB),
+		);
+		batch.delete(
+			_firestore
+					.collection('likes')
+					.doc(userB)
+					.collection('likedUsers')
+					.doc(userA),
+		);
+
+		final matchId = userA.compareTo(userB) < 0
+				? '${userA}_$userB'
+				: '${userB}_$userA';
+		batch.delete(_firestore.collection('matches').doc(matchId));
+
+		await batch.commit();
+	}
+
 	Stream<List<InterestModel>> watchInterestsForMe() {
 		return switchMap(_uidStream, (uid) {
 			if (uid == null) {
@@ -229,7 +307,12 @@ class InterestService {
 					.map(
 						(snapshot) {
 							final items = snapshot.docs
-									.map((doc) => InterestModel.fromMap(doc.data()))
+									.map(
+										(doc) => InterestModel.fromMap({
+											...doc.data(),
+											'id': doc.id,
+										}),
+									)
 									.toList();
 							items.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 							return items;

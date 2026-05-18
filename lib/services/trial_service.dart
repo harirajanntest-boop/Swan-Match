@@ -24,7 +24,11 @@ class TrialService {
   DocumentReference<Map<String, dynamic>>? get _usageRef {
     final uid = _uid;
     if (uid == null) return null;
-    return _db.collection('users').doc(uid).collection('meta').doc('trialUsage');
+    return _db
+        .collection('users')
+        .doc(uid)
+        .collection('meta')
+        .doc('trialUsage');
   }
 
   Future<Map<String, dynamic>> _getOrResetUsage() async {
@@ -40,7 +44,8 @@ class TrialService {
       }
 
       final data = snap.data()!;
-      final lastReset = (data['lastResetAt'] as Timestamp?)?.toDate() ?? DateTime(2000);
+      final lastReset =
+          (data['lastResetAt'] as Timestamp?)?.toDate() ?? DateTime(2000);
       final hoursSinceReset = DateTime.now().difference(lastReset).inHours;
 
       if (hoursSinceReset >= 24) {
@@ -57,10 +62,10 @@ class TrialService {
   }
 
   Map<String, dynamic> _blankUsage() => {
-        'profileViews': 0,
-        'interestsSent': 0,
-        'lastResetAt': FieldValue.serverTimestamp(),
-      };
+    'profileViews': 0,
+    'interestsSent': 0,
+    'lastResetAt': FieldValue.serverTimestamp(),
+  };
 
   // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -82,8 +87,9 @@ class TrialService {
 
     final data = doc.data() ?? <String, dynamic>{};
     final plan = (data['subscriptionPlan'] ?? 'free').toString().toLowerCase();
-    final status =
-        (data['subscriptionStatus'] ?? 'free').toString().toLowerCase();
+    final status = (data['subscriptionStatus'] ?? 'free')
+        .toString()
+        .toLowerCase();
 
     // Paid Premium subscriber
     if ((plan == 'premium' || plan == 'gold') && status == 'active') {
@@ -106,10 +112,7 @@ class TrialService {
         return TrialStatus.trial;
       } else {
         // Trial expired — update Firestore
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .update({
+        await FirebaseFirestore.instance.collection('users').doc(uid).update({
           'subscriptionStatus': 'expired',
           'subscriptionPlan': 'free',
         });
@@ -129,8 +132,9 @@ class TrialService {
     if (!doc.exists) return null;
     final data = doc.data() ?? <String, dynamic>{};
     final plan = (data['subscriptionPlan'] ?? 'free').toString().toLowerCase();
-    final status =
-        (data['subscriptionStatus'] ?? 'free').toString().toLowerCase();
+    final status = (data['subscriptionStatus'] ?? 'free')
+        .toString()
+        .toLowerCase();
 
     if (plan != 'trial' || status != 'trialing') return null;
 
@@ -163,7 +167,7 @@ class TrialService {
       remaining: remaining.clamp(0, freeProfileViewsPerDay),
       reason: remaining <= 0
           ? 'You\'ve reached your $freeProfileViewsPerDay free profile views for today. '
-              'Upgrade to Premium for unlimited access.'
+                'Upgrade to Premium for unlimited access.'
           : null,
     );
   }
@@ -173,10 +177,9 @@ class TrialService {
     if (await _checkPremium()) return;
     final ref = _usageRef;
     if (ref == null) return;
-    await ref.set(
-      {'profileViews': FieldValue.increment(1)},
-      SetOptions(merge: true),
-    );
+    await ref.set({
+      'profileViews': FieldValue.increment(1),
+    }, SetOptions(merge: true));
   }
 
   /// Check whether the user can send one more interest today.
@@ -192,7 +195,7 @@ class TrialService {
       remaining: remaining.clamp(0, freeInterestSendsPerDay),
       reason: remaining <= 0
           ? 'You\'ve used all $freeInterestSendsPerDay free connections for today. '
-              'Upgrade to Premium to send unlimited interests.'
+                'Upgrade to Premium to send unlimited interests.'
           : null,
     );
   }
@@ -202,10 +205,9 @@ class TrialService {
     if (await _checkPremium()) return;
     final ref = _usageRef;
     if (ref == null) return;
-    await ref.set(
-      {'interestsSent': FieldValue.increment(1)},
-      SetOptions(merge: true),
-    );
+    await ref.set({
+      'interestsSent': FieldValue.increment(1),
+    }, SetOptions(merge: true));
   }
 
   /// Check whether the user can send a chat message.
@@ -221,7 +223,8 @@ class TrialService {
     return const TrialCheck(
       allowed: false,
       remaining: 0,
-      reason: 'Messaging is a Premium feature. '
+      reason:
+          'Messaging is a Premium feature. '
           'Upgrade to connect with your matches.',
     );
   }
@@ -230,7 +233,11 @@ class TrialService {
   Future<TrialUsageSummary> getUsageSummary() async {
     final isPremium = await _checkPremium();
     if (isPremium) {
-      return const TrialUsageSummary(isPremium: true, profileViews: 0, interestsSent: 0);
+      return const TrialUsageSummary(
+        isPremium: true,
+        profileViews: 0,
+        interestsSent: 0,
+      );
     }
     final usage = await _getOrResetUsage();
     return TrialUsageSummary(
@@ -241,13 +248,7 @@ class TrialService {
   }
 }
 
-enum TrialStatus {
-  free,
-  trial,
-  trialExpiringSoon,
-  trialExpired,
-  premium,
-}
+enum TrialStatus { free, trial, trialExpiringSoon, trialExpired, premium }
 
 // ─── Value objects ────────────────────────────────────────────────────────────
 
