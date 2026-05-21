@@ -4,6 +4,22 @@ const admin = require('firebase-admin');
 
 admin.initializeApp();
 
+/** Collect FCM tokens from fcmTokens array and legacy fcmToken field. */
+function collectFcmTokens(userData) {
+  if (!userData) return [];
+  const tokens = new Set();
+  if (Array.isArray(userData.fcmTokens)) {
+    for (const t of userData.fcmTokens) {
+      if (t && typeof t === 'string' && t.trim()) tokens.add(t.trim());
+    }
+  }
+  const legacy = userData.fcmToken;
+  if (legacy && typeof legacy === 'string' && legacy.trim()) {
+    tokens.add(legacy.trim());
+  }
+  return [...tokens];
+}
+
 exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async (event) => {
   const notificationDetails = event.data?.data();
   if (!notificationDetails) {
@@ -34,7 +50,7 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
     }
 
     const userData = userSnapshot.data();
-    const fcmTokens = userData.fcmTokens || [];
+    const fcmTokens = collectFcmTokens(userData);
     console.log(`[onNotificationCreated] Found ${fcmTokens.length} FCM tokens for ${toUserId}`);
 
     if (fcmTokens.length === 0) {
@@ -84,7 +100,7 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
   }
 });
 
-exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messageId}', async (event) => {
+exports.onMessageCreated = onDocumentCreated('chats/{chatId}/messages/{messageId}', async (event) => {
   const messageDetails = event.data?.data();
   if (!messageDetails) {
     console.log('[onMessageCreated] No message data');
@@ -93,9 +109,21 @@ exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messag
 
   const receiverId = messageDetails.receiverId || messageDetails.toUserId;
   const senderId = messageDetails.senderId;
-  const senderName = messageDetails.senderName || 'New message';
+  let senderName = messageDetails.senderName || '';
   const messageText = messageDetails.text || messageDetails.message || '';
   const chatId = event.params.chatId;
+
+  if (!senderName && senderId) {
+    try {
+      const senderDoc = await admin.firestore().collection('users').doc(senderId).get();
+      if (senderDoc.exists) {
+        senderName = (senderDoc.data()?.name || senderDoc.data()?.firstName || '').toString().trim();
+      }
+    } catch (_) {
+      /* use fallback below */
+    }
+  }
+  if (!senderName) senderName = 'New message';
 
   console.log(`[onMessageCreated] chatId=${chatId}, from=${senderId}, to=${receiverId}, text=${messageText.substring(0, 30)}`);
 
@@ -114,7 +142,7 @@ exports.onMessageCreated = onDocumentCreated('messages/{chatId}/messages/{messag
     }
 
     const userData = userSnapshot.data();
-    const fcmTokens = userData.fcmTokens || [];
+    const fcmTokens = collectFcmTokens(userData);
     console.log(`[onMessageCreated] Found ${fcmTokens.length} tokens for receiver ${receiverId}`);
 
     if (fcmTokens.length === 0) {
@@ -172,6 +200,56 @@ const { defineSecret } = require('firebase-functions/params');
 // 1. SECRETS
 const stripeSecretKey = defineSecret('STRIPE_SECRET_KEY');
 const stripeWebhookSecret = defineSecret('STRIPE_WEBHOOK_SECRET');
+/** Monthly plan ($19.99) — set via: firebase functions:secrets:set STRIPE_PRICE_MONTHLY */
+const stripePriceMonthly = defineSecret('STRIPE_PRICE_MONTHLY');
+
+// 6-month / yearly IDs (Stripe Dashboard). Monthly is only in STRIPE_PRICE_MONTHLY secret.
+const PREMIUM_PRICE_IDS_FIXED = {
+  sixMonth: 'price_1TQBjHE3Rb5ApPY7CSk2jPPy',
+  yearly: 'price_1TQBknE3Rb5ApPY7oldut4en',
+};
+
+/** Previous $19.00 monthly price — keep mapping for existing subscribers. */
+const LEGACY_MONTHLY_PRICE_ID = 'price_1TKOrRE3Rb5ApPY7fOuscBJK';
+
+function readPremiumPriceIds() {
+  return {
+    monthly: (stripePriceMonthly.value() || '').trim(),
+    sixMonth: PREMIUM_PRICE_IDS_FIXED.sixMonth,
+    yearly: PREMIUM_PRICE_IDS_FIXED.yearly,
+  };
+}
+
+function isAllowedPremiumPriceId(priceId) {
+  const ids = readPremiumPriceIds();
+  if (!ids.monthly) return false;
+  return priceId === ids.monthly || priceId === ids.sixMonth || priceId === ids.yearly;
+}
+
+/** Human-readable plan label for admin dashboard (subscriptionPlan stays premium/free/trial). */
+function subscriptionNameFromPriceId(priceId) {
+  if (!priceId || typeof priceId !== 'string') return null;
+  const ids = readPremiumPriceIds();
+  if (priceId === ids.monthly || priceId === LEGACY_MONTHLY_PRICE_ID) return 'Monthly';
+  if (priceId === ids.sixMonth) return 'Six Month';
+  if (priceId === ids.yearly) return 'Yearly';
+  return null;
+}
+
+function attachSubscriptionName(updateData, priceId, isPremiumActive) {
+  if (isPremiumActive && priceId) {
+    const name = subscriptionNameFromPriceId(priceId);
+    if (name) {
+      updateData.subscriptionName = name;
+      if (updateData.subscription && typeof updateData.subscription === 'object') {
+        updateData.subscription.name = name;
+      }
+    }
+  } else if (!isPremiumActive) {
+    updateData.subscriptionName = admin.firestore.FieldValue.delete();
+  }
+  return updateData;
+}
 
 exports.checkPhoneExists = onCall(async (request) => {
   if (!request.auth) {
@@ -196,7 +274,9 @@ exports.checkPhoneExists = onCall(async (request) => {
  * Stripe - Create Checkout Session
  * Expected data: { priceId: string, successUrl: string, cancelUrl: string }
  */
-exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (request) => {
+exports.createCheckoutSession = onCall(
+  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  async (request) => {
   // AUTH GUARD
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
@@ -205,6 +285,10 @@ exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (re
   const { priceId, successUrl, cancelUrl } = request.data;
   if (!priceId) {
     throw new HttpsError('invalid-argument', 'The function must be called with "priceId".');
+  }
+
+  if (!isAllowedPremiumPriceId(priceId)) {
+    throw new HttpsError('invalid-argument', 'Invalid or unsupported subscription price.');
   }
 
   const uid = request.auth.uid;
@@ -264,11 +348,31 @@ exports.createCheckoutSession = onCall({ secrets: [stripeSecretKey] }, async (re
 });
 
 /**
+ * Returns configured Stripe price IDs for the client (monthly from Firebase secret).
+ */
+exports.getSubscriptionPriceIds = onCall(
+  { secrets: [stripePriceMonthly] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    }
+    const ids = readPremiumPriceIds();
+    if (!ids.monthly) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Monthly subscription price is not configured. Set STRIPE_PRICE_MONTHLY secret.'
+      );
+    }
+    return ids;
+  }
+);
+
+/**
  * Stripe - Webhook Handler
  */
 exports.handleStripeWebhook = onRequest(
   {
-    secrets: [stripeSecretKey, stripeWebhookSecret],
+    secrets: [stripeSecretKey, stripeWebhookSecret, stripePriceMonthly],
     rawBody: true, // Required for Stripe signature verification
   },
   async (req, res) => {
@@ -355,10 +459,13 @@ exports.handleStripeWebhook = onRequest(
             subscription.plan?.id ??
             null;
 
+          const isPremiumActive =
+            subscription.status === 'active' || subscription.status === 'trialing';
+
           const updateData = {
             subscriptionStatus: subscription.status,
             stripeSubscriptionId: subscription.id,
-            subscriptionPlan: subscription.status === 'active' ? 'premium' : 'free',
+            subscriptionPlan: isPremiumActive ? 'premium' : 'free',
             cancelAtPeriodEnd: subscription.cancel_at_period_end ?? false,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           };
@@ -370,6 +477,7 @@ exports.handleStripeWebhook = onRequest(
               priceId,
             };
           }
+          attachSubscriptionName(updateData, priceId, isPremiumActive);
 
           if (subscription.status === 'active' || subscription.status === 'trialing') {
             updateData.freeTrialEndsAt = admin.firestore.FieldValue.delete();
@@ -416,7 +524,12 @@ exports.handleStripeWebhook = onRequest(
               return res.status(200).send('Invoice already processed.');
             }
 
-            await db.collection('users').doc(uid).update({
+            const invoicePriceId =
+              invoice.lines?.data?.[0]?.price?.id ??
+              invoice.lines?.data?.[0]?.plan?.id ??
+              null;
+
+            const invoiceUpdate = {
               paymentStatus: 'paid',
               subscriptionStatus: 'active',
               subscriptionPlan: 'premium',
@@ -426,7 +539,17 @@ exports.handleStripeWebhook = onRequest(
               freeTrialStartedAt: admin.firestore.FieldValue.delete(),
               trialEndedAt: admin.firestore.FieldValue.serverTimestamp(),
               trialEndedReason: 'upgraded_to_premium',
-            });
+            };
+            if (invoicePriceId) {
+              invoiceUpdate.subscriptionPriceId = invoicePriceId;
+              invoiceUpdate.subscription = {
+                status: 'active',
+                priceId: invoicePriceId,
+              };
+            }
+            attachSubscriptionName(invoiceUpdate, invoicePriceId, true);
+
+            await db.collection('users').doc(uid).update(invoiceUpdate);
           }
           break;
         }
@@ -483,7 +606,9 @@ exports.handleStripeWebhook = onRequest(
  * even when the webhook never fired (e.g. first purchase in test mode).
  * Also writes the authoritative status back to Firestore.
  */
-exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (request) => {
+exports.verifySubscription = onCall(
+  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
@@ -596,6 +721,9 @@ exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (reque
           priceId,
         };
       }
+      attachSubscriptionName(updatePayload, priceId, isPremium);
+    } else {
+      attachSubscriptionName(updatePayload, null, false);
     }
     if (isPremium) {
       Object.assign(updatePayload, clearInAppTrialFields());
@@ -618,7 +746,9 @@ exports.verifySubscription = onCall({ secrets: [stripeSecretKey] }, async (reque
  * Returns: { prices: { [priceId]: { id, amount, currency, interval,
  *   intervalCount, formattedAmount, formattedPerMonth, productName } } }
  */
-exports.getStripePrices = onCall({ secrets: [stripeSecretKey] }, async (request) => {
+exports.getStripePrices = onCall(
+  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
@@ -626,6 +756,15 @@ exports.getStripePrices = onCall({ secrets: [stripeSecretKey] }, async (request)
   const { priceIds } = request.data;
   if (!Array.isArray(priceIds) || priceIds.length === 0) {
     throw new HttpsError('invalid-argument', '"priceIds" must be a non-empty array.');
+  }
+
+  for (const id of priceIds) {
+    if (
+      !isAllowedPremiumPriceId(id) &&
+      id !== LEGACY_MONTHLY_PRICE_ID
+    ) {
+      throw new HttpsError('invalid-argument', 'One or more price IDs are not allowed.');
+    }
   }
 
   const rawSecret = stripeSecretKey.value();
@@ -730,9 +869,14 @@ exports.sendNotification = onCall(async (request) => {
       },
       data: data || {},
       android: {
+        priority: 'high',
         notification: {
-          channel_id: 'high_importance_channel',
+          channelId: 'high_importance_channel',
+          sound: 'default',
         },
+      },
+      apns: {
+        payload: { aps: { sound: 'default', badge: 1 } },
       },
     };
 

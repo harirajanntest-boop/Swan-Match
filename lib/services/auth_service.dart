@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+import 'push_notification_service.dart';
 import 'user_service.dart';
 
 class AuthService {
@@ -367,6 +368,9 @@ class AuthService {
   }
 
   Future<void> signOut() async {
+    try {
+      await PushNotificationService.instance.clearTokenForCurrentUser();
+    } catch (_) {}
     try {
       await _googleSignIn.signOut();
     } catch (_) {}

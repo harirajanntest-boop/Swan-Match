@@ -706,37 +706,37 @@ class _SettingsPageState extends State<SettingsPage>
                             _SettingsActionRow(
                               label: "Terms of Service",
                               subtitle: "Read our rules and regulations",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/terms"),
                             ),
                             _SettingsActionRow(
                               label: "Privacy Policy",
                               subtitle: "Learn how we protect your data",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/privacy"),
                             ),
                             _SettingsActionRow(
                               label: "Community Guidelines",
                               subtitle: "Our standards for a safe space",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/guidelines"),
                             ),
                             _SettingsActionRow(
                               label: "Subscription & Payments terms",
                               subtitle: "Manage your billing and payments",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/subscription"),
                             ),
                             _SettingsActionRow(
                               label: "Safety Disclaimer",
                               subtitle: "Important safety information",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/safety"),
                             ),
                             _SettingsActionRow(
                               label: "Data Deletion policy",
                               subtitle: "How to request data removal",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/data-deletion"),
                             ),
                             _SettingsActionRow(
                               label: "Help & Contact",
                               subtitle: "Get in touch with support",
-                              onTap: () => _launchUrl("https://swanmatch.com"),
+                              onTap: () => _launchUrl("https://www.swan-match.com/help"),
                             ),
                           ],
                         ),
@@ -807,7 +807,7 @@ class _SettingsPageState extends State<SettingsPage>
                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                             children: [
                               TextButton(
-                                onPressed: () {},
+                                onPressed: () => _launchUrl("https://www.swan-match.com/terms"),
                                 child: const Text(
                                   'Terms of Service',
                                   style: TextStyle(
@@ -819,7 +819,7 @@ class _SettingsPageState extends State<SettingsPage>
                                 ),
                               ),
                               TextButton(
-                                onPressed: () {},
+                                onPressed: () => _launchUrl("https://www.swan-match.com/privacy"),
                                 child: const Text(
                                   'Privacy Policy',
                                   style: TextStyle(

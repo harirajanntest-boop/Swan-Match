@@ -8,6 +8,7 @@ import 'package:swam_match_app/services/user_service.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/custom_signup_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
+import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
 import 'forgot_password_page.dart';
 
 class CustomLoginPage extends StatefulWidget {
@@ -49,6 +50,13 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     try {
       final profile = await UserService.instance.getUserProfile(user.uid);
       if (!mounted) return;
+
+      if (profile != null &&
+          UserService.instance.isAccountSuspended(profile)) {
+        await FirebaseAuth.instance.signOut();
+        _showError(AccountSuspensionHelper.message);
+        return;
+      }
 
       if (profile != null && profile['registrationCompleted'] == true) {
         // User has completed all details → Dashboard

@@ -9,6 +9,7 @@ import 'package:swam_match_app/services/user_service.dart';
 import 'onboarding_flow.dart';
 import 'main_dashboard.dart';
 import 'intro_onboarding_screens.dart';
+import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -52,6 +53,39 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
       try {
         final profile = await UserService.instance.getUserProfile(user.uid);
         if (!mounted) return;
+        if (profile != null &&
+            UserService.instance.isAccountSuspended(profile)) {
+          await FirebaseAuth.instance.signOut();
+          if (!mounted) return;
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (ctx, anim, sec) => const CustomLoginPage(),
+              transitionsBuilder: (ctx, animation, sec, child) =>
+                  FadeTransition(opacity: animation, child: child),
+              transitionDuration: const Duration(milliseconds: 800),
+            ),
+          );
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            showDialog<void>(
+              context: context,
+              barrierDismissible: false,
+              builder: (ctx) => AlertDialog(
+                title: const Text('Account Suspended'),
+                content: const Text(AccountSuspensionHelper.message),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+            );
+          });
+          return;
+        }
+
         if (profile != null && profile['registrationCompleted'] == true) {
           Navigator.pushReplacement(
             context,

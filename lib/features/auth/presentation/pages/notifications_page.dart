@@ -268,16 +268,53 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
                           when = createdAt.toDate();
                         }
 
-                        return _NotificationTile(
-                          item: {
-                            'name': (item['name'] ?? item['title'] ?? 'System').toString(),
-                            'action': (item['action'] ?? item['message'] ?? '').toString(),
-                            'time': _timeAgo(when),
-                            'isNew': item['isRead'] != true,
-                            'isSystem': (item['isSystem'] ?? false) == true,
-                            'fromUserId': (item['fromUserId'] ?? '').toString(),
+                        final notificationId = (item['id'] ?? '').toString();
+
+                        return Dismissible(
+                          key: ValueKey(notificationId),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            margin: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 6,
+                            ),
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 24),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent.withOpacity(0.85),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: const Icon(
+                              Icons.delete_outline,
+                              color: Colors.white,
+                            ),
+                          ),
+                          onDismissed: (_) async {
+                            if (notificationId.isEmpty) return;
+                            try {
+                              await FirebaseFirestore.instance
+                                  .collection('notifications')
+                                  .doc(notificationId)
+                                  .delete();
+                            } catch (e) {
+                              debugPrint('Delete notification error: $e');
+                            }
                           },
-                          index: index,
+                          child: _NotificationTile(
+                            notificationId: notificationId,
+                            item: {
+                              'name': (item['name'] ?? item['title'] ?? 'System')
+                                  .toString(),
+                              'action': (item['action'] ?? item['message'] ?? '')
+                                  .toString(),
+                              'time': _timeAgo(when),
+                              'isNew': item['isRead'] != true,
+                              'isSystem': (item['isSystem'] ?? false) == true,
+                              'fromUserId':
+                                  (item['fromUserId'] ?? '').toString(),
+                            },
+                            index: index,
+                          ),
                         );
                       },
                     );
@@ -303,10 +340,15 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
 
 // ─── Reusable Glass Notification Tile ───
 class _NotificationTile extends StatelessWidget {
+  final String notificationId;
   final Map<String, dynamic> item;
   final int index;
 
-  const _NotificationTile({required this.item, required this.index});
+  const _NotificationTile({
+    required this.notificationId,
+    required this.item,
+    required this.index,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -432,14 +474,6 @@ class _NotificationTile extends StatelessWidget {
                               ),
                             ),
                           ],
-                        )
-                      else
-                        GestureDetector(
-                          onTap: () {},
-                          child: const Text(
-                            "Upgrade Now >",
-                            style: TextStyle(color: AppColors.goldMedium, fontSize: 13, fontWeight: FontWeight.bold),
-                          ),
                         ),
                     ],
                   ),

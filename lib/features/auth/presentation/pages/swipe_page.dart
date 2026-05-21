@@ -47,6 +47,8 @@ class _SwipePageState extends State<SwipePage> {
 
   List<UserModel> _profiles = [];
   Set<String> likedUids = {};
+  /// Prevents double-tap duplicate interest sends.
+  final Set<String> _interestActionLocks = {};
   Set<String> blockedUids = {};
   bool _isLoading = false;
   UserModel? _currentUser;
@@ -55,6 +57,9 @@ class _SwipePageState extends State<SwipePage> {
   StreamSubscription<Map<String, String>>? _recvInterestSub;
   Timer? _discoverReloadDebounce;
   String _lastProfileSignature = '';
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _discoverSubscription;
+  bool _discoverStreamStarted = false;
+  List<UserModel> _lastRawCandidates = [];
 
   late final Stream<Map<String, dynamic>?> _userProfileStream;
   late final Stream<Map<String, String>> _sentInterestStatusStream;
@@ -194,6 +199,7 @@ class _SwipePageState extends State<SwipePage> {
     _sentInterestSub?.cancel();
     _recvInterestSub?.cancel();
     _discoverReloadDebounce?.cancel();
+    _discoverSubscription?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -217,16 +223,32 @@ class _SwipePageState extends State<SwipePage> {
     final subPlan = (profile['subscriptionPlan'] ?? '').toString();
     final nestedPlan = sub is Map ? (sub['plan'] ?? '').toString() : '';
     final nestedPriceId = sub is Map ? (sub['priceId'] ?? '').toString() : '';
-    return [subStatus, subPlan, nestedPlan, nestedPriceId].join('|');
+    return [
+      subStatus,
+      subPlan,
+      nestedPlan,
+      nestedPriceId,
+      (profile['minAgePreference'] ?? '').toString(),
+      (profile['maxAgePreference'] ?? '').toString(),
+      (profile['preferredReligion'] ?? '').toString(),
+      (profile['gender'] ?? '').toString(),
+    ].join('|');
   }
 
-  // ─── Pre-cache the next profile's photos ───
+  // ─── Pre-cache the next 3 profiles' photos so swipes feel instant ───
   void _precacheNext(List<Map<String, dynamic>> matches, int currentIndex) {
-    if (currentIndex + 1 >= matches.length) return;
-    final next = matches[currentIndex + 1];
-    final photos = _photosOf(next);
-    for (final url in photos.take(3)) {
-      precacheImage(CachedNetworkImageProvider(url), context);
+    // Pre-cache up to 3 upcoming profiles
+    for (int offset = 1; offset <= 3; offset++) {
+      final idx = currentIndex + offset;
+      if (idx >= matches.length) break;
+      final next = matches[idx];
+      final photos = _photosOf(next);
+      for (final url in photos.take(2)) {
+        precacheImage(
+          CachedNetworkImageProvider(url),
+          context,
+        );
+      }
     }
   }
 
@@ -270,22 +292,16 @@ class _SwipePageState extends State<SwipePage> {
     final interestTags = discoverFilters.selectedInterestTags;
     final motherTongueFilter = discoverFilters.motherTongueFilter;
 
-    // ── Read partner preferences ──────────────────────────────────────────────
-    // Support both the root-level "partnerPreference" (gender) field AND the
-    // nested "partnerPreferences" map written by the preferences settings page.
-    final pref = (profile['partnerPreference'] ?? '')
+    // Discover prefs from Edit Profile only — not Partner Preferences screen map.
+    final ageMin = _parseInt(profile['minAgePreference']);
+    final ageMax = _parseInt(profile['maxAgePreference']);
+    final preferredReligion = (profile['preferredReligion'] ?? '')
         .toString()
         .trim()
         .toLowerCase();
-    final prefs = profile['partnerPreferences'] is Map
-        ? Map<String, dynamic>.from(profile['partnerPreferences'] as Map)
-        : <String, dynamic>{};
+    const noReligionPref = {'any', 'open to all', 'all', 'no preference', ''};
 
-    // Force discover to show only the opposite gender of the current user.
-    // We compute the user's own gender and then restrict allowedGenders
-    // to the opposite (male -> female, female -> male). If the user's
-    // gender is not set or is non-binary/unknown we fall back to the
-    // previous partnerPreference logic.
+    // Opposite gender only (from the signed-in user's gender).
     List<String> allowedGenders = [];
     final myGenderRaw = (profile['gender'] ?? '')
         .toString()
@@ -297,58 +313,7 @@ class _SwipePageState extends State<SwipePage> {
         myGenderRaw == 'woman' ||
         myGenderRaw == 'f') {
       allowedGenders = ['Male', 'male', 'man', 'Man'];
-    } else {
-      // Fallback to partnerPreference if user's gender is not available
-      if (pref == 'female' || pref == 'women')
-        allowedGenders = ['Female', 'female'];
-      else if (pref == 'male' || pref == 'men')
-        allowedGenders = ['Male', 'male'];
-      else if (pref == 'both')
-        allowedGenders = ['Male', 'male', 'Female', 'female'];
-
-      // Overridden by nested prefs if present
-      final prefGender = (prefs['gender'] ?? '')
-          .toString()
-          .trim()
-          .toLowerCase();
-      if (prefGender.isNotEmpty) {
-        if (prefGender == 'female' || prefGender == 'women') {
-          allowedGenders = ['Female', 'female'];
-        } else if (prefGender == 'male' || prefGender == 'men') {
-          allowedGenders = ['Male', 'male'];
-        } else if (prefGender == 'both' || prefGender == 'any') {
-          allowedGenders = [];
-        }
-      }
     }
-
-    // Age range
-    final ageMin = _parseInt(prefs['ageMin'] ?? prefs['minAge']);
-    final ageMax = _parseInt(prefs['ageMax'] ?? prefs['maxAge']);
-
-    // Height range (cm)
-    final heightMin = _parseInt(prefs['heightMin'] ?? prefs['minHeight']);
-    final heightMax = _parseInt(prefs['heightMax'] ?? prefs['maxHeight']);
-
-    // Religion — single string OR list
-    final Set<String> allowedReligions = _toStringSet(
-      prefs['religion'] ?? prefs['religions'],
-    );
-
-    // Country — single string OR list
-    final Set<String> allowedCountries = _toStringSet(
-      prefs['country'] ?? prefs['countries'],
-    );
-
-    // Mother tongue — single string OR list
-    final Set<String> allowedTongues = _toStringSet(
-      prefs['motherTongue'] ?? prefs['motherTongues'] ?? prefs['language'],
-    );
-
-    // Education level — single string OR list
-    final Set<String> allowedEducation = _toStringSet(
-      prefs['educationLevel'] ?? prefs['education'],
-    );
 
     return matches.where((item) {
       final uid = (item['uid'] ?? '').toString();
@@ -414,51 +379,17 @@ class _SwipePageState extends State<SwipePage> {
         if (mt != motherTongueFilter.trim().toLowerCase()) return false;
       }
 
-      // ─ Gender (Profile Prefs) ────────────────────────────────────────────
+      // ─ Gender (opposite of current user) ───────────────────────────────
       if (genderFilter == 'All' && allowedGenders.isNotEmpty) {
         final profileGenderNorm = _normalizeGender(itemGender);
         final allowedNorm = allowedGenders.map(_normalizeGender).toSet();
         if (!allowedNorm.contains(profileGenderNorm)) return false;
       }
 
-      // ─ Height (Profile Prefs) ────────────────────────────────────────────
-      final height = _parseInt(item['height'] ?? item['heightCm']);
-      if (height != null) {
-        if (heightMin != null && height < heightMin) return false;
-        if (heightMax != null && height > heightMax) return false;
-      }
-
-      // ─ Religion ──────────────────────────────────────────────────────────
-      if (allowedReligions.isNotEmpty) {
+      // ─ Religion (Edit Profile preferredReligion only) ──────────────────
+      if (!noReligionPref.contains(preferredReligion)) {
         final r = (item['religion'] ?? '').toString().trim().toLowerCase();
-        if (!allowedReligions.any((a) => a == r)) return false;
-      }
-
-      // ─ Country ───────────────────────────────────────────────────────────
-      if (allowedCountries.isNotEmpty) {
-        final c = (item['country'] ?? item['location'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        if (!allowedCountries.any((a) => c.contains(a))) return false;
-      }
-
-      // ─ Mother tongue ─────────────────────────────────────────────────────
-      if (motherTongueFilter.isEmpty && allowedTongues.isNotEmpty) {
-        final t = (item['motherTongue'] ?? item['primaryLanguage'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        if (!allowedTongues.any((a) => a == t)) return false;
-      }
-
-      // ─ Education ─────────────────────────────────────────────────────────
-      if (allowedEducation.isNotEmpty) {
-        final e = (item['educationLevel'] ?? item['education'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        if (!allowedEducation.any((a) => a == e)) return false;
+        if (r != preferredReligion) return false;
       }
 
       // ─ Ignored / hidden ──────────────────────────────────────────────────
@@ -504,6 +435,16 @@ class _SwipePageState extends State<SwipePage> {
 
   /// Normalises gender strings so that 'Man'/'Male'/'m' all become 'male'
   /// and 'Woman'/'Female'/'f' all become 'female'.
+  bool _interestStatusBlocksDiscover(
+    String? sentStatus,
+    String? receivedStatus,
+  ) {
+    final ss = (sentStatus ?? '').toLowerCase();
+    final rs = (receivedStatus ?? '').toLowerCase();
+    const blocked = {'pending', 'accepted', 'replied'};
+    return blocked.contains(ss) || blocked.contains(rs);
+  }
+
   String _normalizeGender(String raw) {
     final g = raw.trim().toLowerCase();
     if (g == 'male' || g == 'man' || g == 'm') return 'male';
@@ -511,26 +452,13 @@ class _SwipePageState extends State<SwipePage> {
     return g;
   }
 
-  /// Converts a dynamic value to a lower-cased Set<String>.
-  /// Accepts a single String or a List of Strings.
-  Set<String> _toStringSet(dynamic v) {
-    if (v == null) return {};
-    if (v is String) {
-      final s = v.trim().toLowerCase();
-      return s.isEmpty ? {} : {s};
-    }
-    if (v is List) {
-      return v
-          .map((e) => e.toString().trim().toLowerCase())
-          .where((e) => e.isNotEmpty)
-          .toSet();
-    }
-    return {};
-  }
-
   Future<void> _loadProfiles() async {
     if (!mounted) return;
-    setState(() => _isLoading = true);
+    // Only show a loading spinner on the very first load when we have no profiles yet.
+    // After that, updates happen silently so the UI stays responsive.
+    if (!_discoverStreamStarted && _profiles.isEmpty) {
+      setState(() => _isLoading = true);
+    }
 
     try {
       await _syncDiscoverFilterLimits();
@@ -558,70 +486,148 @@ class _SwipePageState extends State<SwipePage> {
       });
 
       await _loadExclusionLists();
-
-      final targetGenders = _getTargetGenders(_currentUser!);
-      final fetched = <UserModel>[];
-      final seen = <String>{};
-
-      if (targetGenders.length == 1) {
-        final query = await FirebaseFirestore.instance
-            .collection('users')
-            .where('gender', isEqualTo: targetGenders.first)
-            .limit(150)
-            .get();
-
-        for (final doc in query.docs) {
-          final data = doc.data();
-          // Filter registrationCompleted in Dart — avoids needing a composite index
-          if (data['registrationCompleted'] != true) continue;
-          final user = UserModel.fromMap(<String, dynamic>{
-            ...data,
-            'uid': doc.id,
-          });
-          if (seen.add(user.uid)) fetched.add(user);
-        }
-      } else {
-        for (final gender in targetGenders) {
-          final query = await FirebaseFirestore.instance
-              .collection('users')
-              .where('gender', isEqualTo: gender)
-              .limit(150)
-              .get();
-
-          for (final doc in query.docs) {
-            final data = doc.data();
-            // Filter registrationCompleted in Dart — avoids needing a composite index
-            if (data['registrationCompleted'] != true) continue;
-            final user = UserModel.fromMap(<String, dynamic>{
-              ...data,
-              'uid': doc.id,
-            });
-            if (seen.add(user.uid)) fetched.add(user);
-          }
-        }
-      }
-
-      if (kDebugMode)
-        debugPrint('SwipePage: fetched=${fetched.length} candidates');
-      final filtered = _applyDartFilters(fetched, _currentUser!);
-      if (kDebugMode)
-        debugPrint('SwipePage: after dartFilter=${filtered.length}');
-      final ranked = _rankUsers(filtered, _currentUser!);
-      final boosted = _applySubscriptionBoost(ranked, _currentUser!);
-      if (kDebugMode)
-        debugPrint(
-          'SwipePage: showing ${boosted.length} profiles (plan=${_currentUser!.subscriptionPlan})',
-        );
-
-      if (!mounted) return;
-      setState(() {
-        _profiles = boosted;
-        _isLoading = false;
-      });
+      _startDiscoverStream();
+      _refilterDiscoverFeed();
     } catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
       debugPrint('Load profiles error: $e');
+    }
+  }
+
+  void _startDiscoverStream() {
+    if (_discoverStreamStarted || _currentUser == null) return;
+    _discoverStreamStarted = true;
+
+    _discoverSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .where('registrationCompleted', isEqualTo: true)
+        .limit(250)
+        .snapshots()
+        .listen(
+      _onDiscoverSnapshot,
+      onError: (e) {
+        debugPrint('Discover stream error: $e');
+        if (mounted) setState(() => _isLoading = false);
+      },
+    );
+  }
+
+  void _onDiscoverSnapshot(QuerySnapshot<Map<String, dynamic>> snapshot) {
+    if (!mounted || _currentUser == null) return;
+
+    final targetNorm = _getTargetGenders(_currentUser!)
+        .map(_normalizeGender)
+        .toSet();
+    final fetched = <UserModel>[];
+    final seen = <String>{};
+
+    for (final doc in snapshot.docs) {
+      if (doc.id == _currentUser!.uid) continue;
+      final data = doc.data();
+      if (DeletedUserHelper.isDeleted(data)) continue;
+
+      UserModel user;
+      try {
+        user = UserModel.fromMap(<String, dynamic>{...data, 'uid': doc.id});
+      } catch (e, st) {
+        debugPrint('SwipePage: skip profile ${doc.id}: $e\n$st');
+        continue;
+      }
+      if (!user.registrationCompleted) continue;
+      if (user.isDeleted || user.status.toLowerCase() == 'deleted') continue;
+
+      if (targetNorm.isNotEmpty) {
+        final g = _normalizeGender(user.gender);
+        if (!targetNorm.contains(g)) continue;
+      }
+
+      if (seen.add(user.uid)) fetched.add(user);
+    }
+
+    _lastRawCandidates = fetched;
+    if (kDebugMode) {
+      debugPrint('SwipePage: stream fetched=${fetched.length} candidates');
+    }
+    final filtered = _applyDartFilters(fetched, _currentUser!);
+    final ranked = _rankUsers(filtered, _currentUser!);
+    final boosted = _applySubscriptionBoost(ranked, _currentUser!);
+    _mergeDiscoverProfiles(boosted);
+  }
+
+  void _refilterDiscoverFeed() {
+    if (_currentUser == null || _lastRawCandidates.isEmpty) return;
+    final filtered = _applyDartFilters(_lastRawCandidates, _currentUser!);
+    final ranked = _rankUsers(filtered, _currentUser!);
+    final boosted = _applySubscriptionBoost(ranked, _currentUser!);
+    _mergeDiscoverProfiles(boosted);
+  }
+
+  /// Updates the swipe stack without resetting position when possible.
+  void _mergeDiscoverProfiles(List<UserModel> incoming) {
+    if (!mounted) return;
+
+    if (incoming.isEmpty && _profiles.isEmpty) {
+      setState(() {
+        _profiles = [];
+        _isLoading = false;
+      });
+      return;
+    }
+
+    final incomingByUid = {for (final p in incoming) p.uid: p};
+    String? currentUid;
+    if (_profiles.isNotEmpty && _currentPage < _profiles.length) {
+      currentUid = _profiles[_currentPage].uid;
+    }
+
+    final kept = <UserModel>[];
+    for (final p in _profiles) {
+      final updated = incomingByUid[p.uid];
+      if (updated != null) kept.add(updated);
+    }
+
+    final keptSet = kept.map((p) => p.uid).toSet();
+    final added = incoming.where((p) => !keptSet.contains(p.uid)).toList();
+    final merged = [...kept, ...added];
+
+    var newPage = _currentPage;
+    if (currentUid != null) {
+      final idx = merged.indexWhere((p) => p.uid == currentUid);
+      newPage = idx >= 0 ? idx : newPage.clamp(0, merged.isEmpty ? 0 : merged.length - 1);
+    } else if (merged.isNotEmpty) {
+      newPage = 0;
+    }
+
+    final pageChanged = newPage != _currentPage;
+    setState(() {
+      _profiles = merged;
+      _isLoading = false;
+      _currentPage = newPage;
+    });
+
+    // Eagerly pre-cache the first 3 cards as soon as we have data
+    if (merged.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        for (int i = 0; i < merged.length && i < 3; i++) {
+          final photos = _photosOf(merged[i].toMap()..['uid'] = merged[i].uid);
+          for (final url in photos.take(2)) {
+            precacheImage(
+              CachedNetworkImageProvider(url),
+              context,
+            );
+          }
+        }
+      });
+    }
+
+    if (pageChanged && _pageController.hasClients && merged.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_pageController.hasClients) return;
+        final safePage = newPage.clamp(0, merged.length - 1);
+        _pageController.jumpToPage(safePage);
+      });
     }
   }
 
@@ -878,7 +884,8 @@ class _SwipePageState extends State<SwipePage> {
                         .where((e) => e.isNotEmpty)
                         .toSet();
 
-                    if (_isLoading) {
+                    // Show loading indicator only on fresh start with no profiles yet
+                    if (_isLoading && _profiles.isEmpty) {
                       return const Center(
                         child: CircularProgressIndicator(
                           color: AppColors.goldMedium,
@@ -912,9 +919,7 @@ class _SwipePageState extends State<SwipePage> {
                               await SubscriptionLimitsService.instance
                                   .canSwipe();
                           if (!swipeCheck.allowed) {
-                            if (context.mounted) {
-                              _showSwipeUpgradeSheet(context);
-                            }
+                            _showSwipeUpgradeSheet();
                             _pageController.jumpToPage(_currentPage);
                             return;
                           }
@@ -929,25 +934,40 @@ class _SwipePageState extends State<SwipePage> {
                       itemBuilder: (context, index) {
                         final item = matches[index];
                         final uid = (item['uid'] ?? '').toString();
+                        final interestLocked = _isInterestLocked(uid) ||
+                            _interestStatusBlocksDiscover(
+                              sentStatus[uid],
+                              recvStatus[uid],
+                            );
                         return _ReelCard(
                           key: ValueKey(uid),
                           match: item,
                           photos: _photosOf(item),
                           interestStatus: sentStatus[uid] ?? '',
+                          interestLocked: interestLocked,
                           isSaved: savedIds.contains(uid),
-                          onTap: () {
+                          onTap: () async {
                             if (uid.isNotEmpty) {
                               MatchService.instance.recordProfileView(
                                 viewedUserId: uid,
                               );
                             }
-                            Navigator.push(
+                            final interestSent = await Navigator.push<bool>(
                               context,
                               MaterialPageRoute(
-                                builder: (_) =>
-                                    MatchProfileDetailPage(profile: item),
+                                builder: (_) => MatchProfileDetailPage(
+                                  profile: item,
+                                  popOnInterestSent: true,
+                                ),
                               ),
                             );
+                            if (interestSent == true && mounted) {
+                              likedUids.add(uid);
+                              _interestActionLocks.remove(uid);
+                              _showMessage('Interest sent! 💛');
+                              setState(() {});
+                              _nextCard(matches);
+                            }
                           },
                           onDismiss: () async {
                             if (uid.isEmpty) return;
@@ -959,8 +979,8 @@ class _SwipePageState extends State<SwipePage> {
                             await UserService.instance.updateCurrentUserProfile(
                               {'ignoredMatchIds': curIgnored.toList()},
                             );
-                            if (!context.mounted) return;
-                            showLinearMessage(context, 'Profile ignored.');
+                            if (!mounted) return;
+                            _showMessage('Profile ignored.');
                             _nextCard(matches);
                           },
                           onToggleSave: () async {
@@ -969,33 +989,26 @@ class _SwipePageState extends State<SwipePage> {
                                 ((profile['savedMatchIds'] ?? []) as List)
                                     .map((e) => e.toString())
                                     .toSet();
-                            if (cur.contains(uid)) {
+                            final wasSaved = cur.contains(uid);
+                            if (wasSaved) {
                               cur.remove(uid);
-                              showLinearMessage(context, 'Removed from saved.');
                             } else {
                               cur.add(uid);
-                              showLinearMessage(context, 'Profile saved!');
                             }
                             await UserService.instance.updateCurrentUserProfile(
                               {'savedMatchIds': cur.toList()},
                             );
+                            if (!mounted) return;
+                            _showMessage(
+                              wasSaved
+                                  ? 'Removed from saved.'
+                                  : 'Profile saved!',
+                            );
                           },
-                          onLike: () async {
-                            if (uid.isEmpty) return;
-                            HapticFeedback.mediumImpact();
-                            final result = await InterestService.instance
-                                .sendInterest(toUserId: uid);
-                            if (!context.mounted) return;
-                            if (result ==
-                                InterestSendResult.trialLimitReached) {
-                              _showSwipeUpgradeSheet(context);
-                              return;
-                            }
-                            await _onLike(uid);
-                            likedUids.add(uid);
-                            showLinearMessage(context, 'Interest sent! 💛');
-                            _nextCard(matches);
-                          },
+                          onLike: () => _sendInterestFromSwipe(
+                            uid: uid,
+                            matches: matches,
+                          ),
                         );
                       },
                     );
@@ -1007,6 +1020,60 @@ class _SwipePageState extends State<SwipePage> {
         ),
       ),
     );
+  }
+
+  void _showMessage(String message, {bool isError = false}) {
+    if (!mounted) return;
+    showLinearMessage(context, message, isError: isError);
+  }
+
+  bool _isInterestLocked(String uid) {
+    if (uid.isEmpty) return true;
+    return likedUids.contains(uid) || _interestActionLocks.contains(uid);
+  }
+
+  Future<void> _sendInterestFromSwipe({
+    required String uid,
+    required List<Map<String, dynamic>> matches,
+  }) async {
+    if (_isInterestLocked(uid)) return;
+
+    _interestActionLocks.add(uid);
+    likedUids.add(uid);
+    if (mounted) setState(() {});
+
+    try {
+      HapticFeedback.mediumImpact();
+      final result =
+          await InterestService.instance.sendInterest(toUserId: uid);
+      if (!mounted) return;
+
+      if (result == InterestSendResult.trialLimitReached) {
+        likedUids.remove(uid);
+        _showSwipeUpgradeSheet();
+        return;
+      }
+
+      if (result == InterestSendResult.sent) {
+        await _onLike(uid);
+        if (!mounted) return;
+        _showMessage('Interest sent! 💛');
+      } else if (result == InterestSendResult.pending) {
+        _showMessage('Interest already pending');
+      } else if (result == InterestSendResult.alreadyAccepted) {
+        _showMessage('Already connected! You can message now.');
+      }
+
+      _nextCard(matches);
+    } catch (e) {
+      likedUids.remove(uid);
+      if (mounted) {
+        _showMessage('Could not send interest. Please try again.', isError: true);
+      }
+    } finally {
+      _interestActionLocks.remove(uid);
+      if (mounted) setState(() {});
+    }
   }
 
   void _nextCard(List<Map<String, dynamic>> matches) {
@@ -1096,7 +1163,8 @@ class _SwipePageState extends State<SwipePage> {
     );
   }
 
-  void _showSwipeUpgradeSheet(BuildContext context) {
+  void _showSwipeUpgradeSheet() {
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -1903,17 +1971,19 @@ class _ReelCard extends StatefulWidget {
   final Map<String, dynamic> match;
   final List<String> photos;
   final String interestStatus;
+  final bool interestLocked;
   final bool isSaved;
   final VoidCallback onTap;
   final VoidCallback onDismiss;
   final VoidCallback onToggleSave;
-  final VoidCallback onLike;
+  final Future<void> Function() onLike;
 
   const _ReelCard({
     super.key,
     required this.match,
     required this.photos,
     required this.interestStatus,
+    this.interestLocked = false,
     required this.isSaved,
     required this.onTap,
     required this.onDismiss,
@@ -1931,6 +2001,7 @@ class _ReelCardState extends State<_ReelCard>
   late final Animation<double> _heartScale;
   final PageController _photoController = PageController();
   int _photoIndex = 0;
+  bool _sendingInterest = false;
 
   @override
   void initState() {
@@ -1972,6 +2043,7 @@ class _ReelCardState extends State<_ReelCard>
   bool _isVerifiedMatch() {
     final p = widget.match;
     return p['isVerified'] == true ||
+        p['idVerified'] == true ||
         p['profileVerified'] == true ||
         (p['verificationStatus']?.toString().toLowerCase() == 'approved');
   }
@@ -2011,16 +2083,11 @@ class _ReelCardState extends State<_ReelCard>
         .toString()
         .trim();
     final traits = _traits();
-    // Verified only when admin has explicitly approved the user's ID.
-    final isVerified =
-        widget.match['isVerified'] == true ||
-        widget.match['profileVerified'] == true ||
-        widget.match['verificationStatus']?.toString().toLowerCase() ==
-            'approved';
-    final hasLiked = [
-      'pending',
-      'sent',
-    ].contains(widget.interestStatus.toLowerCase());
+    final isVerified = _isVerifiedMatch();
+    final status = widget.interestStatus.toLowerCase();
+    final hasLiked = widget.interestLocked ||
+        _sendingInterest ||
+        ['pending', 'sent', 'accepted', 'replied'].contains(status);
 
     final hidePhotos = widget.match['showPhotosToEveryone'] == false;
 
@@ -2057,16 +2124,11 @@ class _ReelCardState extends State<_ReelCard>
                   ? CachedNetworkImage(
                       imageUrl: url,
                       fit: BoxFit.cover,
-                      fadeInDuration: const Duration(milliseconds: 200),
-                      placeholder: (_, __) => Container(
-                        color: const Color(0xFF111111),
-                        child: const Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.goldMedium,
-                            strokeWidth: 2,
-                          ),
-                        ),
-                      ),
+                      // Very fast fade so the transition feels polished
+                      fadeInDuration: const Duration(milliseconds: 150),
+                      fadeOutDuration: const Duration(milliseconds: 50),
+                      // Shimmer-style placeholder — no spinner, no blank white
+                      placeholder: (_, __) => _ShimmerPlaceholder(),
                       errorWidget: (_, __, ___) => _noPhoto(),
                     )
                   : _noPhoto(),
@@ -2122,22 +2184,6 @@ class _ReelCardState extends State<_ReelCard>
             ),
           ),
 
-        // ─── Verified badge ───
-        if (isVerified && !_isUpgradePage)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 56,
-            right: 20,
-            child: Container(
-              width: 34,
-              height: 34,
-              decoration: const BoxDecoration(
-                color: Color(0xFF4A90E2),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.check, color: Colors.white, size: 20),
-            ),
-          ),
-
         // ─── Bottom info (hidden on upgrade page) ───
         if (!_isUpgradePage)
           Positioned(
@@ -2168,12 +2214,12 @@ class _ReelCardState extends State<_ReelCard>
                             ),
                           ),
                         ),
-                        if (_isVerifiedMatch()) ...[
+                        if (isVerified) ...[
                           const SizedBox(width: 8),
                           const Icon(
                             Icons.verified,
-                            color: Color(0xFF4A90E2),
-                            size: 20,
+                            color: AppColors.goldMedium,
+                            size: 22,
                           ),
                         ],
                       ],
@@ -2254,10 +2300,17 @@ class _ReelCardState extends State<_ReelCard>
                             size: 58,
                             iconSize: 26,
                             glowing: true,
-                            onTap: () {
+                            onTap: () async {
                               if (hasLiked) return;
+                              setState(() => _sendingInterest = true);
                               _heartController.forward(from: 0);
-                              widget.onLike();
+                              try {
+                                await widget.onLike();
+                              } finally {
+                                if (mounted) {
+                                  setState(() => _sendingInterest = false);
+                                }
+                              }
                             },
                           ),
                         ),
@@ -2449,6 +2502,59 @@ class _ActionBtn extends StatelessWidget {
       child: Icon(icon, color: iconColor, size: iconSize),
     ),
   );
+}
+
+// ─── Shimmer placeholder — shown while an image is loading — no spinner — ───
+class _ShimmerPlaceholder extends StatefulWidget {
+  @override
+  State<_ShimmerPlaceholder> createState() => _ShimmerPlaceholderState();
+}
+
+class _ShimmerPlaceholderState extends State<_ShimmerPlaceholder>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _anim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _anim,
+      builder: (_, __) => Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFF1A1A1A),
+              Color.lerp(
+                const Color(0xFF1A1A1A),
+                const Color(0xFF2E2E2E),
+                _anim.value,
+              )!,
+              const Color(0xFF1A1A1A),
+            ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ─── Empty state ───

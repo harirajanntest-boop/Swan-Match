@@ -59,10 +59,67 @@ class StripeService {
 
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
 
-  /// Swan Match Premium — Stripe price IDs
-  static const String premiumMonthlyPriceId = 'price_1TKOrRE3Rb5ApPY7fOuscBJK';
-  static const String premium6MonthPriceId = 'price_1TQBjHE3Rb5ApPY7CSk2jPPy';
-  static const String premium1YearPriceId = 'price_1TQBknE3Rb5ApPY7oldut4en';
+  /// Loaded from `getSubscriptionPriceIds` (monthly ID lives in Firebase secret).
+  static String _premiumMonthlyPriceId = '';
+  static String _premium6MonthPriceId = '';
+  static String _premium1YearPriceId = '';
+  static bool _priceIdsLoaded = false;
+  static Future<void>? _priceIdsLoadFuture;
+
+  /// True after [ensurePriceIdsLoaded] succeeds.
+  static bool get arePriceIdsLoaded => _priceIdsLoaded;
+
+  static String get premiumMonthlyPriceId => _requirePriceId(_premiumMonthlyPriceId);
+  static String get premium6MonthPriceId => _requirePriceId(_premium6MonthPriceId);
+  static String get premium1YearPriceId => _requirePriceId(_premium1YearPriceId);
+
+  static String _requirePriceId(String id) {
+    if (!_priceIdsLoaded || id.isEmpty) {
+      throw StateError(
+        'Stripe price IDs not loaded. Call StripeService.ensurePriceIdsLoaded() first.',
+      );
+    }
+    return id;
+  }
+
+  /// Fetches price IDs from Cloud Functions (monthly from STRIPE_PRICE_MONTHLY secret).
+  static Future<void> ensurePriceIdsLoaded() {
+    _priceIdsLoadFuture ??= _loadPriceIds();
+    return _priceIdsLoadFuture!;
+  }
+
+  static Future<void> _loadPriceIds() async {
+    if (_priceIdsLoaded) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      await user.getIdToken(true);
+    }
+
+    final callable = FirebaseFunctions.instance.httpsCallable(
+      'getSubscriptionPriceIds',
+      options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
+    );
+    final result = await callable.call<Map<String, dynamic>>();
+    _premiumMonthlyPriceId = (result.data['monthly'] as String?)?.trim() ?? '';
+    _premium6MonthPriceId = (result.data['sixMonth'] as String?)?.trim() ?? '';
+    _premium1YearPriceId = (result.data['yearly'] as String?)?.trim() ?? '';
+
+    if (_premiumMonthlyPriceId.isEmpty) {
+      throw 'Monthly subscription price is not configured on the server.';
+    }
+    _priceIdsLoaded = true;
+  }
+
+  /// Stored on the user doc as `subscriptionName` for admin dashboards.
+  /// `subscriptionPlan` remains `premium` / `trial` / `free`.
+  static String subscriptionNameForPriceId(String priceId) {
+    if (!_priceIdsLoaded) return '';
+    if (priceId == _premiumMonthlyPriceId) return 'Monthly';
+    if (priceId == _premium6MonthPriceId) return 'Six Month';
+    if (priceId == _premium1YearPriceId) return 'Yearly';
+    return '';
+  }
 
   /// Deep-link return URLs so the app reopens after Stripe checkout.
   static const String _successUrl = 'swanmatch://payment-success';

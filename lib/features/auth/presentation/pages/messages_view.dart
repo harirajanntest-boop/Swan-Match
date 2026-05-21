@@ -1,5 +1,4 @@
 import 'dart:ui';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/constants/colors.dart';
@@ -65,6 +64,10 @@ class _MessagesViewState extends State<MessagesView>
     super.dispose();
   }
 
+  bool _isInitialLoad(AsyncSnapshot<dynamic> snap) {
+    return snap.connectionState == ConnectionState.waiting && !snap.hasData;
+  }
+
   @override
   Widget build(BuildContext context) {
     return FadeTransition(
@@ -91,8 +94,7 @@ class _MessagesViewState extends State<MessagesView>
               child: StreamBuilder<List<Map<String, dynamic>>>(
                 stream: _myChatsStream,
                 builder: (context, chatsSnapshot) {
-                  if (chatsSnapshot.connectionState ==
-                      ConnectionState.waiting) {
+                  if (_isInitialLoad(chatsSnapshot)) {
                     return const Center(
                       child: CircularProgressIndicator(
                         color: AppColors.goldMedium,
@@ -104,25 +106,9 @@ class _MessagesViewState extends State<MessagesView>
                   return StreamBuilder<List<dynamic>>(
                     stream: _mySentInterestsStream,
                     builder: (context, sentSnapshot) {
-                      if (sentSnapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            color: AppColors.goldMedium,
-                          ),
-                        );
-                      }
                       return StreamBuilder<List<dynamic>>(
                         stream: _interestsForMeStream,
                         builder: (context, receivedSnapshot) {
-                          if (receivedSnapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(
-                                color: AppColors.goldMedium,
-                              ),
-                            );
-                          }
                           final sent = sentSnapshot.data ?? const <dynamic>[];
                           final received =
                               receivedSnapshot.data ?? const <dynamic>[];
@@ -185,7 +171,9 @@ class _MessagesViewState extends State<MessagesView>
     final disconnectedUserIds = <String>{};
     for (final item in [...sent, ...received]) {
       final status = (item.status ?? '').toString().toLowerCase();
-      if (status == 'blocked') {
+      if (status == 'blocked' ||
+          status == 'declined' ||
+          status == 'rejected') {
         final toUid = (item.toUserId ?? '').toString();
         final fromUid = (item.fromUserId ?? '').toString();
         if (toUid.isNotEmpty && toUid != currentUid)
@@ -368,53 +356,33 @@ class _ChatThreadTile extends StatelessWidget {
 
   const _ChatThreadTile({required this.chat, required this.otherUserId});
 
+  String _photoFromProfile(Map<String, dynamic> profile) {
+    final photos = profile['photos'] ?? profile['images'];
+    if (photos is List && photos.isNotEmpty) {
+      return photos.first.toString();
+    }
+    return (profile['profilePicture'] ?? profile['photoUrl'] ?? '').toString();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: otherUserId.isEmpty
-          ? Future.value(null)
-          : UserService.instance.getUserProfile(otherUserId),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.03),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
-            ),
-            child: const Row(
-              children: [
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: AppColors.goldMedium,
-                  ),
-                ),
-                SizedBox(width: 12),
-                Text(
-                  'Loading chat...',
-                  style: TextStyle(color: Colors.white70),
-                ),
-              ],
-            ),
-          );
-        }
+    if (otherUserId.isEmpty) return const SizedBox.shrink();
 
+    final lastMessage = (chat['lastMessage'] ?? '').toString();
+
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: UserService.instance.watchUserProfile(otherUserId),
+      builder: (context, snapshot) {
         final profile = snapshot.data ?? const <String, dynamic>{};
         final isDeletedUser = DeletedUserHelper.isDeleted(
-          snapshot.data == null ? null : profile,
+          snapshot.hasData ? profile : null,
         );
         final name = isDeletedUser
             ? 'Deleted Account'
-            : (profile['name'] ?? 'Member').toString();
+            : (profile['name'] ?? profile['firstName'] ?? 'Member').toString();
         final city = isDeletedUser
             ? 'This account no longer exists'
             : (profile['city'] ?? '').toString();
-        final lastMessage = (chat['lastMessage'] ?? '').toString();
 
         return _buildChatTile(
           context,
@@ -424,6 +392,7 @@ class _ChatThreadTile extends StatelessWidget {
           lastMessage,
           otherUserId,
           isDeletedUser,
+          photoUrl: _photoFromProfile(profile),
         );
       },
     );
@@ -436,16 +405,9 @@ class _ChatThreadTile extends StatelessWidget {
     String city,
     String lastMessage,
     String otherUserId,
-    bool isDeletedUser,
-  ) {
-    // Get photo URL from either photoUrl field or photos array
-    String photoUrl = (profile['photoUrl'] ?? '').toString();
-    if (photoUrl.isEmpty &&
-        profile['photos'] is List &&
-        (profile['photos'] as List).isNotEmpty) {
-      photoUrl = (profile['photos'] as List).first.toString();
-    }
-
+    bool isDeletedUser, {
+    String photoUrl = '',
+  }) {
     Future<void> openConversation() async {
       if (otherUserId.isEmpty) {
         showLinearMessage(context, 'Chat user unavailable.', isError: true);
@@ -597,6 +559,7 @@ class _ChatThreadTile extends StatelessWidget {
                           ),
                           // Verified badge — admin must have approved the ID
                           if (profile['isVerified'] == true ||
+                              profile['idVerified'] == true ||
                               profile['profileVerified'] == true ||
                               profile['verificationStatus']
                                       ?.toString()

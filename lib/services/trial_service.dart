@@ -115,6 +115,7 @@ class TrialService {
         await FirebaseFirestore.instance.collection('users').doc(uid).update({
           'subscriptionStatus': 'expired',
           'subscriptionPlan': 'free',
+          'subscriptionName': FieldValue.delete(),
         });
         return TrialStatus.trialExpired;
       }

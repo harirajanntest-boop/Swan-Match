@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../core/utils/stream_utils.dart';
-import 'app_notification_service.dart';
 import '../models/message_model.dart';
 import 'subscription_limits_service.dart';
 
@@ -79,19 +78,7 @@ class ChatService {
 		);
 
 		await SubscriptionLimitsService.instance.recordMessagePartner(receiverId);
-
-		final senderProfile = await _firestore.collection('users').doc(sender.uid).get();
-		final senderName = (senderProfile.data()?['name'] ?? 'Someone').toString();
-		await AppNotificationService.instance.createNotification(
-			toUserId: receiverId,
-			title: senderName,
-			message: text.trim(),
-			type: 'interaction',
-			meta: <String, dynamic>{
-				'chatId': chatId,
-				'event': 'new_message',
-			},
-		);
+		// Chat push is sent by Cloud Function `onMessageCreated` on the message doc.
 		return true;
 	}
 

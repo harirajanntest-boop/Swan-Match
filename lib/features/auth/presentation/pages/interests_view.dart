@@ -259,7 +259,8 @@ class _MatchListTab extends StatelessWidget {
     return StreamBuilder<List<InterestModel>>(
       stream: stream,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
           return const Center(
             child: CircularProgressIndicator(
               color: AppColors.goldMedium,
@@ -323,7 +324,7 @@ class _MatchListTab extends StatelessWidget {
 // ─── CONNECTIONS TAB — accepted from both sent & received streams ──────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-class _ConnectionsTab extends StatelessWidget {
+class _ConnectionsTab extends StatefulWidget {
   final Stream<List<InterestModel>> receivedStream;
   final Stream<List<InterestModel>> sentStream;
 
@@ -333,15 +334,43 @@ class _ConnectionsTab extends StatelessWidget {
   });
 
   @override
+  State<_ConnectionsTab> createState() => _ConnectionsTabState();
+}
+
+class _ConnectionsTabState extends State<_ConnectionsTab> {
+  /// Optimistically hide connections right after disconnect.
+  final Set<String> _removedUserIds = {};
+
+  Future<void> _disconnectConnection({
+    required String interestId,
+    required String otherUserId,
+  }) async {
+    setState(() => _removedUserIds.add(otherUserId));
+    try {
+      await InterestService.instance.updateInterestStatus(
+        interestId: interestId,
+        status: 'declined',
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() => _removedUserIds.remove(otherUserId));
+      }
+    }
+  }
+
+  bool _isInitialLoad(AsyncSnapshot<List<InterestModel>> snap) {
+    return snap.connectionState == ConnectionState.waiting && !snap.hasData;
+  }
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<List<InterestModel>>(
-      stream: receivedStream,
+      stream: widget.receivedStream,
       builder: (context, receivedSnap) {
         return StreamBuilder<List<InterestModel>>(
-          stream: sentStream,
+          stream: widget.sentStream,
           builder: (context, sentSnap) {
-            if (receivedSnap.connectionState == ConnectionState.waiting &&
-                sentSnap.connectionState == ConnectionState.waiting) {
+            if (_isInitialLoad(receivedSnap) && _isInitialLoad(sentSnap)) {
               return const Center(
                 child: CircularProgressIndicator(
                   color: AppColors.goldMedium,
@@ -356,18 +385,19 @@ class _ConnectionsTab extends StatelessWidget {
             // Only accepted, merged, deduplicated by the other user
             final byOtherUser = <String, InterestModel>{};
 
-            for (final item in received.where(
-              (i) => i.status.toLowerCase() == 'accepted',
-            )) {
+            bool isActiveConnection(InterestModel i) {
+              final s = i.status.toLowerCase();
+              return s == 'accepted' || s == 'replied';
+            }
+
+            for (final item in received.where(isActiveConnection)) {
               final key = item.fromUserId; // the sender (the other person)
               final prev = byOtherUser[key];
               if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
                 byOtherUser[key] = item;
               }
             }
-            for (final item in sent.where(
-              (i) => i.status.toLowerCase() == 'accepted',
-            )) {
+            for (final item in sent.where(isActiveConnection)) {
               final key = item.toUserId;
               final prev = byOtherUser[key];
               if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
@@ -375,7 +405,14 @@ class _ConnectionsTab extends StatelessWidget {
               }
             }
 
-            final sorted = byOtherUser.values.toList()
+            final sorted = byOtherUser.values
+                .where((item) {
+                  final otherId = received.any((r) => r.id == item.id)
+                      ? item.fromUserId
+                      : item.toUserId;
+                  return !_removedUserIds.contains(otherId);
+                })
+                .toList()
               ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
             if (sorted.isEmpty) {
@@ -399,9 +436,14 @@ class _ConnectionsTab extends StatelessWidget {
                     ? item.fromUserId
                     : item.toUserId;
                 return _MatchRow(
+                  key: ValueKey(otherUserId),
                   interest: item,
                   otherUserId: otherUserId,
                   isReceived: isReceived,
+                  onDisconnect: () => _disconnectConnection(
+                    interestId: item.id,
+                    otherUserId: otherUserId,
+                  ),
                 );
               },
             );
@@ -420,11 +462,14 @@ class _MatchRow extends StatefulWidget {
   final InterestModel interest;
   final String otherUserId;
   final bool isReceived;
+  final Future<void> Function()? onDisconnect;
 
   const _MatchRow({
+    super.key,
     required this.interest,
     required this.otherUserId,
     required this.isReceived,
+    this.onDisconnect,
   });
 
   @override
@@ -432,21 +477,13 @@ class _MatchRow extends StatefulWidget {
 }
 
 class _MatchRowState extends State<_MatchRow> {
-  /// Cached future — created once in initState so rebuilds do NOT re-fire Firestore.
-  late final Future<Map<String, dynamic>?> _profileFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _profileFuture = UserService.instance.getUserProfile(widget.otherUserId);
-  }
-
   String _getPhotoUrl(Map<String, dynamic> profile) {
-    final photos = profile['photos'];
+    final photos = profile['photos'] ?? profile['images'];
     if (photos is List && photos.isNotEmpty) {
       return photos.first.toString();
     }
-    return (profile['photoUrl'] ??
+    return (profile['profilePicture'] ??
+            profile['photoUrl'] ??
             profile['profilePhoto'] ??
             profile['profilePic'] ??
             '')
@@ -455,8 +492,8 @@ class _MatchRowState extends State<_MatchRow> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Map<String, dynamic>?>(
-      future: _profileFuture,
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: UserService.instance.watchUserProfile(widget.otherUserId),
       builder: (context, snapshot) {
         final profile = snapshot.data ?? <String, dynamic>{};
         final isDeletedUser = DeletedUserHelper.isDeleted(
@@ -570,11 +607,7 @@ class _MatchRowState extends State<_MatchRow> {
                     ),
                   );
                   if (confirm == true) {
-                    await InterestService.instance.updateInterestStatus(
-                      interestId: widget.interest.id,
-                      status: 'declined',
-                    );
-                    if (!context.mounted) return;
+                    await widget.onDisconnect?.call();
                   }
                 }
               : null,
@@ -675,6 +708,7 @@ class _MatchRowState extends State<_MatchRow> {
                           ),
                           // Verified badge — admin must have approved the ID
                           if (profile['isVerified'] == true ||
+                              profile['idVerified'] == true ||
                               profile['profileVerified'] == true ||
                               profile['verificationStatus']
                                       ?.toString()
@@ -760,7 +794,7 @@ class _MatchRowState extends State<_MatchRow> {
                             return;
                           }
 
-                          if (!context.mounted) return;
+                          // Show match screen even if this list row unmounts.
                           await ItsAMatchOverlay.showAfterAccept(
                             navigator: navigator,
                             otherUserId: widget.otherUserId,

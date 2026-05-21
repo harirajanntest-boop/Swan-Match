@@ -13,8 +13,14 @@ import 'subscription_page.dart';
 
 class MatchProfileDetailPage extends StatefulWidget {
   final Map<String, dynamic> profile;
+  /// When true, pops with `true` after a successful interest send (swipe flow).
+  final bool popOnInterestSent;
 
-  const MatchProfileDetailPage({super.key, required this.profile});
+  const MatchProfileDetailPage({
+    super.key,
+    required this.profile,
+    this.popOnInterestSent = false,
+  });
 
   @override
   State<MatchProfileDetailPage> createState() => _MatchProfileDetailPageState();
@@ -26,6 +32,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
   late final Stream<Set<String>> _acceptedStream;
 
   bool _isSending = false;
+  bool _connectInFlight = false;
 
   @override
   void initState() {
@@ -109,6 +116,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
   /// Verified only when admin has approved the ID.
   bool get _isVerified =>
       widget.profile['isVerified'] == true ||
+      widget.profile['idVerified'] == true ||
       widget.profile['profileVerified'] == true ||
       widget.profile['verificationStatus']?.toString().toLowerCase() ==
           'approved';
@@ -215,27 +223,46 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                 isSending: _isSending,
                 userName: name,
                 onConnect: () async {
-                  if (uid.isEmpty || isPending || isAccepted || _isSending)
-                    return;
-                  HapticFeedback.mediumImpact();
-                  setState(() => _isSending = true);
-                  final result = await InterestService.instance.sendInterest(
-                    toUserId: uid,
-                  );
-                  if (!mounted) return;
-                  setState(() => _isSending = false);
-                  if (result == InterestSendResult.trialLimitReached) {
-                    _showUpgradeSheet(context);
+                  if (uid.isEmpty ||
+                      isPending ||
+                      isAccepted ||
+                      _isSending ||
+                      _connectInFlight) {
                     return;
                   }
-                  showLinearMessage(
-                    context,
-                    result == InterestSendResult.pending
-                        ? 'Interest already pending'
-                        : result == InterestSendResult.alreadyAccepted
-                        ? 'Already connected! You can message now.'
-                        : 'Interest sent! 💛',
-                  );
+                  _connectInFlight = true;
+                  HapticFeedback.mediumImpact();
+                  setState(() => _isSending = true);
+                  try {
+                    final result = await InterestService.instance.sendInterest(
+                      toUserId: uid,
+                    );
+                    if (!mounted) return;
+                    if (result == InterestSendResult.trialLimitReached) {
+                      _showUpgradeSheet(context);
+                      return;
+                    }
+                    final sent = result == InterestSendResult.sent ||
+                        result == InterestSendResult.pending ||
+                        result == InterestSendResult.alreadyAccepted;
+                    if (!sent) return;
+
+                    if (widget.popOnInterestSent) {
+                      if (mounted) Navigator.pop(context, true);
+                    } else {
+                      showLinearMessage(
+                        context,
+                        result == InterestSendResult.pending
+                            ? 'Interest already pending'
+                            : result == InterestSendResult.alreadyAccepted
+                            ? 'Already connected! You can message now.'
+                            : 'Interest sent! 💛',
+                      );
+                    }
+                  } finally {
+                    _connectInFlight = false;
+                    if (mounted) setState(() => _isSending = false);
+                  }
                 },
                 onChat: () {
                   Navigator.push(
@@ -622,7 +649,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                             const SizedBox(width: 8),
                             const Icon(
                               Icons.verified,
-                              color: Color(0xFF4A90E2),
+                              color: AppColors.goldMedium,
                               size: 22,
                             ),
                           ],

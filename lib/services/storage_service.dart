@@ -27,4 +27,24 @@ class StorageService {
 
 		return ref.getDownloadURL();
 	}
+
+	Future<String> uploadVerificationFile({
+		required String uid,
+		required File file,
+		required String kind,
+	}) async {
+		final ref = _storage
+				.ref()
+				.child('users')
+				.child(uid)
+				.child('verification')
+				.child('${kind}_${DateTime.now().millisecondsSinceEpoch}.jpg');
+
+		await ref.putFile(
+				file,
+				SettableMetadata(contentType: 'image/jpeg'),
+		);
+
+		return ref.getDownloadURL();
+	}
 }

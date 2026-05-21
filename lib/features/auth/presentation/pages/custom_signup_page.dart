@@ -79,6 +79,23 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       final profile = await UserService.instance.getUserProfile(user.uid);
       if (!mounted) return;
 
+      if (profile != null &&
+          UserService.instance.isAccountSuspended(profile)) {
+        await FirebaseAuth.instance.signOut();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Your account has been suspended due to your actions. '
+              'For more information, contact swanmatch.com.',
+            ),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 6),
+          ),
+        );
+        return;
+      }
+
       if (profile != null && profile['registrationCompleted'] == true) {
         // User has completed all details → Dashboard
         Navigator.pushAndRemoveUntil(

@@ -23,8 +23,8 @@ class _OnboardingStep4CulturalState extends State<OnboardingStep4Cultural> {
   late double _familyValues;
 
   final List<String> _religionOptions = [
-    'Christianity', 'Islam', 'Hinduism', 'Buddhism', 'Judaism',
-    'Sikhism', 'Spiritual but not religious', 'Agnostic', 'Atheist', 'Other',
+    'Christianity', 'Catholic', 'Islam', 'Hinduism', 'Buddhism', 'Judaism',
+    'Sikhism', 'Spiritual but not religious', 'Agnostic', 'Other',
   ];
 
   final List<String> _spiritualOptions = [

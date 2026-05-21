@@ -1,5 +1,7 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
 import '../../../../services/user_service.dart';
@@ -240,6 +242,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data['registrationCompleted'] = true;
       data['onboardingStep'] = _totalSteps;
       data['subscriptionPlan'] = 'free';
+      data['subscriptionName'] = 'Free';
 
       // ── Verification is ALWAYS pending on registration.
       //    Only the Admin Dashboard can promote this to 'approved'.
@@ -248,6 +251,9 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data['profileVerified'] = false;
       data['profileApprovalStatus'] = 'pending';
       data['verificationStatus'] = 'pending'; // admin sets to 'approved'
+      if (verificationUrl.isNotEmpty || idUrl.isNotEmpty) {
+        data['verificationSubmittedAt'] = FieldValue.serverTimestamp();
+      }
 
       final visibility =
           (_onboardingData.profileVisibility).toString().trim();
@@ -292,61 +298,107 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
     return Scaffold(
       backgroundColor: OnboardingColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            // ─── Header: Back + Step counter + Progress bar ────────────
-            _buildHeader(),
-            // ─── Page content ──────────────────────────────────────────
-            Expanded(
-              child: PageView(
-                controller: _pageController,
-                physics: const NeverScrollableScrollPhysics(),
-                children: [
-                  OnboardingStep1Identity(
-                    data: _onboardingData,
-                    onNext: _goToNext,
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Column(
+              children: [
+                _buildHeader(),
+                Expanded(
+                  child: PageView(
+                    controller: _pageController,
+                    physics: const NeverScrollableScrollPhysics(),
+                    children: [
+                      OnboardingStep1Identity(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                      ),
+                      OnboardingStep2Status(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep3Lifestyle(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep4Cultural(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep5Personality(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep6Preferences(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep7Verification(
+                        data: _onboardingData,
+                        onNext: _goToNext,
+                        onBack: _goBack,
+                      ),
+                      OnboardingStep8Exclusivity(
+                        data: _onboardingData,
+                        onComplete: _completeOnboarding,
+                        onBack: _goBack,
+                        isLoading: _isCompleting,
+                      ),
+                    ],
                   ),
-                  OnboardingStep2Status(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep3Lifestyle(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep4Cultural(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep5Personality(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep6Preferences(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep7Verification(
-                    data: _onboardingData,
-                    onNext: _goToNext,
-                    onBack: _goBack,
-                  ),
-                  OnboardingStep8Exclusivity(
-                    data: _onboardingData,
-                    onComplete: _completeOnboarding,
-                    onBack: _goBack,
-                    isLoading: _isCompleting,
-                  ),
-                ],
+                ),
+              ],
+            ),
+          ),
+          if (_isCompleting) _buildPreparingOverlay(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreparingOverlay() {
+    return Positioned.fill(
+      child: AbsorbPointer(
+        child: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+            child: Container(
+              color: OnboardingColors.background.withOpacity(0.92),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(
+                      color: OnboardingColors.primaryGold,
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Preparing your profile…',
+                      style: TextStyle(
+                        color: OnboardingColors.textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'This will only take a moment',
+                      style: TextStyle(
+                        color: OnboardingColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

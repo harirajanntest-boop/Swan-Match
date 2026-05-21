@@ -349,6 +349,9 @@ class UserModel {
 			'age': age,
 			'subscriptionPlan': subscriptionPlan,
 			'profileVerified': profileVerified,
+			'isVerified': profileVerified || idVerified,
+			'verificationStatus':
+				profileApprovalStatus == 'approved' ? 'approved' : '',
 			'verificationPhotoUrl': verificationPhotoUrl,
 			'registrationCompleted': registrationCompleted,
 			'partnerPreference': partnerPreference,
@@ -408,6 +411,54 @@ class UserModel {
 		};
 	}
 
+	/// Parses Firestore/onboarding values that may be bool, string, or number.
+	static bool parseBool(dynamic value, {bool fallback = false}) {
+		if (value == null) return fallback;
+		if (value is bool) return value;
+		if (value is num) return value != 0;
+		final normalized = value.toString().trim().toLowerCase();
+		if (normalized == 'true' ||
+			normalized == 'yes' ||
+			normalized == '1' ||
+			normalized == 'y') {
+			return true;
+		}
+		if (normalized == 'false' ||
+			normalized == 'no' ||
+			normalized == '0' ||
+			normalized == 'n') {
+			return false;
+		}
+		return fallback;
+	}
+
+	static bool? parseBoolNullable(dynamic value) {
+		if (value == null) return null;
+		if (value is bool) return value;
+		if (value is num) return value != 0;
+		final normalized = value.toString().trim().toLowerCase();
+		if (normalized.isEmpty ||
+			normalized == 'null' ||
+			normalized == 'not set' ||
+			normalized == 'n/a' ||
+			normalized == '+ add details') {
+			return null;
+		}
+		if (normalized == 'true' ||
+			normalized == 'yes' ||
+			normalized == '1' ||
+			normalized == 'y') {
+			return true;
+		}
+		if (normalized == 'false' ||
+			normalized == 'no' ||
+			normalized == '0' ||
+			normalized == 'n') {
+			return false;
+		}
+		return null;
+	}
+
 	factory UserModel.fromMap(Map<String, dynamic> map) {
 		DateTime? readDate(dynamic value) {
 			if (value is Timestamp) return value.toDate();
@@ -429,7 +480,7 @@ class UserModel {
 			email: (map['email'] ?? '') as String,
 			phoneNumber: (map['phoneNumber'] ?? '') as String,
 			gender: (map['gender'] ?? '') as String,
-			showGender: (map['showGender'] ?? true) as bool,
+			showGender: parseBool(map['showGender'], fallback: true),
 			dateOfBirth: readDate(map['dateOfBirth']),
 			bio: (map['bio'] ?? '') as String,
 			photos: ((map['photos'] ?? <dynamic>[]) as List<dynamic>)
@@ -448,9 +499,11 @@ class UserModel {
 			country: (map['country'] ?? '') as String,
 			age: toInt(map['age']),
 			subscriptionPlan: (map['subscriptionPlan'] ?? 'free') as String,
-			profileVerified: (map['profileVerified'] ?? map['isVerified'] ?? false) as bool,
+			profileVerified: parseBool(
+				map['profileVerified'] ?? map['isVerified'],
+			),
 			verificationPhotoUrl: (map['verificationPhotoUrl'] ?? '') as String,
-			registrationCompleted: (map['registrationCompleted'] ?? false) as bool,
+			registrationCompleted: parseBool(map['registrationCompleted']),
 			partnerPreference: map['partnerPreference'] is String ? map['partnerPreference'] as String : '',
 			minAgePreference: toInt(map['minAgePreference'], 18),
 			maxAgePreference: toInt(map['maxAgePreference'], 99),
@@ -471,9 +524,9 @@ class UserModel {
 			zodiac: (map['zodiac'] ?? '') as String,
 			// New fields
 			maritalStatus: (map['maritalStatus'] ?? '') as String,
-			hasChildren: map['hasChildren'] as bool?,
+			hasChildren: parseBoolNullable(map['hasChildren']),
 			childrenDetails: (map['childrenDetails'] ?? '') as String,
-			willingToRelocate: map['willingToRelocate'] as bool?,
+			willingToRelocate: parseBoolNullable(map['willingToRelocate']),
 			industry: (map['industry'] ?? '') as String,
 			incomeRange: (map['incomeRange'] ?? '') as String,
 			netWorthRange: (map['netWorthRange'] ?? '') as String,
@@ -500,17 +553,17 @@ class UserModel {
 					.map((item) => item.toString())
 					.toList(),
 			preferredReligion: (map['preferredReligion'] ?? '') as String,
-			idVerified: (map['idVerified'] ?? false) as bool,
+			idVerified: parseBool(map['idVerified']),
 			idVerificationUrl: (map['idVerificationUrl'] ?? '') as String,
-			incomeVerified: (map['incomeVerified'] ?? false) as bool,
-			professionalVerified: (map['professionalVerified'] ?? false) as bool,
+			incomeVerified: parseBool(map['incomeVerified']),
+			professionalVerified: parseBool(map['professionalVerified']),
 			profileApprovalStatus: (map['profileApprovalStatus'] ?? 'pending') as String,
 			inviteCode: (map['inviteCode'] ?? '') as String,
 			profileVisibility: (map['profileVisibility'] ?? 'Public') as String,
 			showProfileToEveryone: map['showProfileToEveryone'] != false,
 			showPhotosToEveryone: map['showPhotosToEveryone'] != false,
 			onboardingStep: toInt(map['onboardingStep']),
-			isDeleted: (map['isDeleted'] ?? false) as bool,
+			isDeleted: parseBool(map['isDeleted']),
 			status: (map['status'] ?? '') as String,
 			deletedAt: readDate(map['deletedAt']),
 			scheduledHardDeleteAt: readDate(map['scheduledHardDeleteAt']),

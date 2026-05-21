@@ -17,6 +17,13 @@ class UserService {
 
   String? get currentUid => _auth.currentUser?.uid;
 
+  /// True when admin set `account` to `Suspended` on the user document.
+  bool isAccountSuspended(Map<String, dynamic>? profile) {
+    if (profile == null) return false;
+    final status = (profile['account'] ?? '').toString().trim().toLowerCase();
+    return status == 'suspended';
+  }
+
   DocumentReference<Map<String, dynamic>> _userRef(String uid) {
     return _firestore.collection('users').doc(uid);
   }

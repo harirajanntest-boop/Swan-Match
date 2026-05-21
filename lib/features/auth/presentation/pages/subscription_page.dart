@@ -494,7 +494,7 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                                 ),
                               );
 
-                              // Start Stripe subscription
+                              await StripeService.ensurePriceIdsLoaded();
                               await StripeService.instance.startSubscription(
                                 priceId: StripeService.premiumMonthlyPriceId,
                               );
@@ -590,11 +590,21 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _profileSubscription = UserService.instance
-        .watchCurrentUserProfile()
-        .listen(_syncPremiumFromProfile);
-    _checkCurrentPremiumStatus();
-    _loadPrices();
+    _initStripePricing();
+  }
+
+  Future<void> _initStripePricing() async {
+    try {
+      await StripeService.ensurePriceIdsLoaded();
+      if (!mounted) return;
+      _profileSubscription ??= UserService.instance
+          .watchCurrentUserProfile()
+          .listen(_syncPremiumFromProfile);
+      _checkCurrentPremiumStatus();
+      await _loadPrices();
+    } catch (_) {
+      if (mounted) setState(() => _pricesLoading = false);
+    }
   }
 
   @override
@@ -667,15 +677,23 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
 
     int? selectedIndex;
     if (isPaid) {
-      if (priceId == StripeService.premiumMonthlyPriceId ||
-          currentPlanTitle == '1 Month') {
+      if (currentPlanTitle == '1 Month' ||
+          currentPlanTitle == 'Monthly') {
         selectedIndex = 0;
-      } else if (priceId == StripeService.premium6MonthPriceId ||
-          currentPlanTitle == '6 Months') {
+      } else if (currentPlanTitle == '6 Months' ||
+          currentPlanTitle == 'Six Month') {
         selectedIndex = 1;
-      } else if (priceId == StripeService.premium1YearPriceId ||
-          currentPlanTitle == '12 Months') {
+      } else if (currentPlanTitle == '12 Months' ||
+          currentPlanTitle == 'Yearly') {
         selectedIndex = 2;
+      } else if (StripeService.arePriceIdsLoaded) {
+        if (priceId == StripeService.premiumMonthlyPriceId) {
+          selectedIndex = 0;
+        } else if (priceId == StripeService.premium6MonthPriceId) {
+          selectedIndex = 1;
+        } else if (priceId == StripeService.premium1YearPriceId) {
+          selectedIndex = 2;
+        }
       }
     }
 
@@ -762,20 +780,29 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   }
 
   String _planTitleForPriceId(String priceId) {
-    if (priceId == StripeService.premiumMonthlyPriceId) return '1 Month';
-    if (priceId == StripeService.premium6MonthPriceId) return '6 Months';
-    if (priceId == StripeService.premium1YearPriceId) return '12 Months';
+    final adminName = StripeService.subscriptionNameForPriceId(priceId);
+    if (adminName.isNotEmpty) return adminName;
+    if (priceId == StripeService.premiumMonthlyPriceId) return 'Monthly';
+    if (priceId == StripeService.premium6MonthPriceId) return 'Six Month';
+    if (priceId == StripeService.premium1YearPriceId) return 'Yearly';
     return '';
   }
 
   String _inferCurrentPlanTitle(Map<String, dynamic>? profile) {
     if (profile == null) return '';
 
+    final storedName = (profile['subscriptionName'] ?? '').toString().trim();
+    if (storedName.isNotEmpty) return storedName;
+
     final priceId = _subscriptionPriceId(profile);
     final directPlan = _planTitleForPriceId(priceId);
     if (directPlan.isNotEmpty) return directPlan;
 
     final sub = (profile['subscription'] as Map?)?.cast<String, dynamic>();
+    final nestedName = (sub?['name'] ?? sub?['subscriptionName'] ?? '')
+        .toString()
+        .trim();
+    if (nestedName.isNotEmpty) return nestedName;
 
     final candidates = [
       profile['subscriptionPlan'],
@@ -1013,6 +1040,12 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
           _currentPriceId = _subscriptionPriceId(refreshed);
           _currentPlanTitle = _inferCurrentPlanTitle(refreshed);
         });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Purchase restored successfully.'),
+            backgroundColor: Colors.green,
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1121,8 +1154,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                         'See Who Liked You',
                         'Advanced Filters',
                         'Priority Profile Boost',
-                        'Ad-Free Experience',
-                        'Chat & Video Call Unlock',
+                        'Chat Area Unlocked',
                       ].map((f) => Padding(
                         padding: const EdgeInsets.symmetric(vertical: 7),
                         child: Row(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:async';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
@@ -75,9 +76,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   String _photoUrl(Map<String, dynamic> p) {
-    final photos = p['photos'];
-    if (photos is List && photos.isNotEmpty) return photos.first.toString();
-    return (p['photoUrl'] ?? '').toString();
+    final photos = p['photos'] ?? p['images'];
+    if (photos is List && photos.isNotEmpty) {
+      final first = photos.first.toString().trim();
+      if (first.isNotEmpty) return first;
+    }
+    final pic = (p['profilePicture'] ??
+            p['photoUrl'] ??
+            p['profilePic'] ??
+            '')
+        .toString()
+        .trim();
+    return pic;
   }
 
   int _photoCount(Map<String, dynamic> p) {
@@ -89,6 +99,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// Checking `isVerified` (admin field), `profileVerified`, or `verificationStatus == 'approved'`.
   bool _isVerified(Map<String, dynamic> p) =>
       p['isVerified'] == true ||
+      p['idVerified'] == true ||
       p['profileVerified'] == true ||
       (p['verificationStatus']?.toString().toLowerCase() == 'approved');
 
@@ -163,6 +174,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } finally {
       if (mounted) {
         setState(() => _isLoggingOut = false);
+      }
+    }
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not launch link.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not launch link.')));
       }
     }
   }
@@ -281,7 +313,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       const SizedBox(width: 6),
                       const Icon(
                         Icons.verified,
-                        color: Color(0xFF4A90E2),
+                        color: AppColors.goldMedium,
                         size: 20,
                       ),
                     ],
@@ -479,11 +511,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             TextButton(
-                              onPressed: () {},
+                              onPressed: () => _launchUrl("https://www.swan-match.com/terms"),
                               child: const Text('Terms of Service', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
                             ),
                             TextButton(
-                              onPressed: () {},
+                              onPressed: () => _launchUrl("https://www.swan-match.com/privacy"),
                               child: const Text('Privacy Policy', style: TextStyle(color: Colors.white38, fontSize: 12, decoration: TextDecoration.underline, decorationColor: Colors.white38)),
                             ),
                           ],

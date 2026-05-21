@@ -7,7 +7,6 @@ import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/services/payment_flow_service.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
-import 'package:swam_match_app/services/notification_service.dart' as v1;
 import 'package:swam_match_app/features/auth/presentation/pages/payment_status_page.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
@@ -15,11 +14,6 @@ import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.d
 import 'package:google_fonts/google_fonts.dart';
 import 'package:swam_match_app/services/stripe_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
-
-@pragma('vm:entry-point')
-Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -118,8 +112,7 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
       options: DefaultFirebaseOptions.currentPlatform,
     );
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    PushNotificationService.instance.initialize().catchError((e) => debugPrint('PushNotification error: $e'));
-    v1.NotificationService.instance.initialize().catchError((e) => debugPrint('v1.NotificationService error: $e'));
+    await PushNotificationService.instance.initialize();
   }
 
   @override

@@ -651,8 +651,6 @@ class _EditProfilePageState extends State<EditProfilePage>
           return const ['Male', 'Female', 'Other'];
         case 'Show Gender':
           return const ['Yes', 'No'];
-        case 'Partner Preference':
-          return const ['Male', 'Female', 'Both'];
       }
     }
 
@@ -902,8 +900,6 @@ class _EditProfilePageState extends State<EditProfilePage>
           return {'key': 'gender'};
         case 'Show Gender on Profile':
           return {'key': 'showGender'};
-        case 'Partner Preference':
-          return {'key': 'partnerPreference'};
       }
     }
 
@@ -926,8 +922,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       switch (label) {
         case 'City':
           return {'key': 'city'};
-        case 'State':
-          return {'key': 'state'};
         case 'Country':
           return {'key': 'country'};
         case 'Distance Preference':
@@ -941,8 +935,6 @@ class _EditProfilePageState extends State<EditProfilePage>
           return {'key': 'educationLevel'};
         case 'Highest Qualification':
           return {'key': 'highestQualification'};
-        case 'University':
-          return {'key': 'university'};
         case 'Profession':
           return {'key': 'profession'};
         case 'Industry':
@@ -1084,7 +1076,6 @@ class _EditProfilePageState extends State<EditProfilePage>
         "Gender": value('gender'),
         "Show Gender on Profile": value('showGender') == 'true' ? 'Yes' : 'No',
         "Age": _formatAge(profile['dateOfBirth'], fallbackAge: profile['age']),
-        "Partner Preference": value('partnerPreference'),
       },
       // ── Step 2: Status & Intent ──────────────────────────────────────────────
       "Status & Intent": {
@@ -1097,7 +1088,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       // ── Location ─────────────────────────────────────────────────────────────
       "Location": {
         "City": value('city'),
-        "State": value('state'),
         "Country": value('country'),
         "Distance Preference": '${value('distanceKm', fallback: '50')} km',
       },
@@ -1105,7 +1095,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       "Education & Profession": {
         "Education Level": value('educationLevel'),
         "Highest Qualification": value('highestQualification'),
-        "University": value('university'),
         "Profession": value('profession'),
         "Industry": value('industry'),
       },

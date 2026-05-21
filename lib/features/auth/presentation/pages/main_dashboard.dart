@@ -10,6 +10,7 @@ import '../../../../services/interest_service.dart';
 import '../../../../services/trial_service.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/account_suspension_helper.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import 'swipe_page.dart';
 import 'interests_view.dart';
@@ -51,13 +52,14 @@ class _MainDashboardState extends State<MainDashboard> {
     _currentIndex = widget.initialIndex;
     _pendingProfileToOpen = widget.initialProfileToOpen;
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        UserService.instance.updateOnlineStatus(true);
-        _checkAndShowLinkingPopup();
-        _syncSubscriptionStatus();
-        _checkAndShowTrialExpiryBanner();
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final blocked = await AccountSuspensionHelper.blockIfSuspended(context);
+      if (blocked || !mounted) return;
+      UserService.instance.updateOnlineStatus(true);
+      _checkAndShowLinkingPopup();
+      _syncSubscriptionStatus();
+      _checkAndShowTrialExpiryBanner();
     });
 
     // Periodically check trial status every 10 seconds
@@ -1309,6 +1311,9 @@ class _EditorialMatchCard extends StatelessWidget {
     final isPending = normalizedStatus == 'pending';
     final isAccepted = normalizedStatus == 'accepted' || normalizedStatus == 'replied';
     final isRejected = normalizedStatus == 'declined' || normalizedStatus == 'rejected';
+    final isVerified = match['isVerified'] == true ||
+      match['profileVerified'] == true ||
+      match['verificationStatus']?.toString().toLowerCase() == 'approved';
 
     return GestureDetector(
       onTap: () => onTap?.call(match),
@@ -1382,7 +1387,6 @@ class _EditorialMatchCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                Positioned(top: 20, left: 20, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: Colors.blue.shade900.withOpacity(0.8), borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.blue.shade300.withOpacity(0.5))), child: const Row(children: [Icon(Icons.verified, color: Colors.white, size: 14), SizedBox(width: 4), Text("Verified", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))]))),
                 ],
               ),
             ),
@@ -1402,15 +1406,29 @@ class _EditorialMatchCard extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Expanded(
-                              child: Text(
-                                name,
-                                style: const TextStyle(
-                                  color: AppColors.goldLight,
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.5,
-                                ),
-                                overflow: TextOverflow.ellipsis,
+                              child: Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      name,
+                                      style: const TextStyle(
+                                        color: AppColors.goldLight,
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.w600,
+                                        letterSpacing: 0.5,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (isVerified) ...[
+                                    const SizedBox(width: 6),
+                                    const Icon(
+                                      Icons.verified,
+                                      color: AppColors.goldMedium,
+                                      size: 18,
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                             Row(
@@ -1595,26 +1613,24 @@ class _UpgradePlansPage extends StatefulWidget {
 class _UpgradePlansPageState extends State<_UpgradePlansPage> {
   bool _isLoading = false;
 
-  static const _priceId = StripeService.premiumMonthlyPriceId;
-
   static const _features = [
     'Unlimited Send Interest',
     'See Who Liked You',
     'Advanced Filters',
     'Priority Profile Boost',
-    'Ad-Free Experience',
-    'Chat & Video Call Unlock',
+    'Chat Area Unlocked'
   ];
 
   Future<void> _onSubscribe() async {
     setState(() => _isLoading = true);
     try {
+      await StripeService.ensurePriceIdsLoaded();
       await PaymentFlowService.markCheckoutStarted();
 
       const successUrl = 'swanmatch://payment-success';
       const cancelUrl  = 'https://swanmatch.page.link/payment-cancel';
       await StripeService.instance.startSubscription(
-        priceId: _priceId,
+        priceId: StripeService.premiumMonthlyPriceId,
         successUrl: successUrl,
         cancelUrl: cancelUrl,
       );

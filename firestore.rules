@@ -2,84 +2,136 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     function isAdmin() {
-      return request.auth != null && (
+      return isSignedIn() && (
         request.auth.token.email == "sasikumar.s9951@gmail.com" ||
         request.auth.token.email == "admin@gmail.com" ||
         request.auth.token.email.matches(".*@swanmatch\\.com$")
       );
     }
 
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isInterestParticipant(data) {
+      return isSignedIn() && (
+        request.auth.uid == data.fromUserId ||
+        request.auth.uid == data.toUserId
+      );
+    }
+
+    function isChatParticipant(data) {
+      return isSignedIn() && request.auth.uid in data.participants;
+    }
+
+    function chatIdInvolvesUser(chatId) {
+      return isSignedIn() && (
+        chatId.matches('^' + request.auth.uid + '_.*') ||
+        chatId.matches('.*_' + request.auth.uid + '$')
+      );
+    }
+
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null 
-        && (request.auth.uid == userId || isAdmin());
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId) || isAdmin();
 
       match /meta/{docId} {
-        allow read, write: if request.auth != null 
-          && (request.auth.uid == userId || isAdmin());
+        allow read, write: if isOwner(userId) || isAdmin();
       }
     }
 
     match /likes/{userId} {
-      allow read, write: if request.auth != null 
-        && request.auth.uid == userId;
+      allow read, write: if isOwner(userId);
       match /likedUsers/{likedUserId} {
-        allow read, write: if request.auth != null 
-          && (request.auth.uid == userId || request.auth.uid == likedUserId);
+        allow read: if isOwner(userId) || request.auth.uid == likedUserId;
+        allow write: if isOwner(userId) || request.auth.uid == likedUserId;
       }
     }
 
     match /rejections/{userId} {
-      allow read, write: if request.auth != null 
-        && request.auth.uid == userId;
+      allow read, write: if isOwner(userId);
       match /rejectedUsers/{rejectedUserId} {
-        allow read, write: if request.auth != null 
-          && (request.auth.uid == userId || request.auth.uid == rejectedUserId);
+        allow read, write: if isOwner(userId) || request.auth.uid == rejectedUserId;
       }
     }
 
     match /matches/{matchId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if chatIdInvolvesUser(matchId) || isAdmin();
     }
 
     match /messages/{chatId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
       match /messages/{messageId} {
-        allow read, write: if request.auth != null;
+        allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
       }
     }
 
     match /chats/{chatId} {
-      allow read, write: if request.auth != null;
+      allow read: if isSignedIn() && (
+        (resource.data.keys().hasAll(['participants']) &&
+          isChatParticipant(resource.data)) ||
+        chatIdInvolvesUser(chatId) ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && isChatParticipant(request.resource.data);
+      allow update, delete: if isSignedIn() && (
+        isChatParticipant(resource.data) || isAdmin()
+      );
       match /messages/{messageId} {
-        allow read, write: if request.auth != null;
+        allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
       }
     }
 
     match /interests/{interestId} {
-      allow read, write: if request.auth != null;
+      allow read: if isSignedIn() && (
+        isInterestParticipant(resource.data) || isAdmin()
+      );
+      allow create: if isSignedIn() &&
+        request.auth.uid == request.resource.data.fromUserId &&
+        request.resource.data.toUserId is string &&
+        request.resource.data.toUserId != request.auth.uid;
+      allow update, delete: if isSignedIn() && (
+        isInterestParticipant(resource.data) || isAdmin()
+      );
     }
 
     match /notifications/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, update, delete: if isSignedIn() && (
+        resource.data.toUserId == request.auth.uid || isAdmin()
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.fromUserId == request.auth.uid &&
+        request.resource.data.toUserId is string &&
+        request.resource.data.toUserId != request.auth.uid;
     }
 
     match /reports/{reportId} {
-      allow read, write: if request.auth != null;
+      allow create: if isSignedIn() &&
+        request.resource.data.reportedBy == request.auth.uid &&
+        request.resource.data.reportedUid is string;
+      allow read: if isAdmin() ||
+        (isSignedIn() && resource.data.reportedBy == request.auth.uid);
+      allow update, delete: if isAdmin();
     }
 
     match /config/{configId} {
-      allow read: if request.auth != null;
+      allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
     match /profileViews/{docId} {
-      allow read, write: if request.auth != null;
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
     }
 
     match /user_lookup/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isSignedIn();
     }
   }
 }

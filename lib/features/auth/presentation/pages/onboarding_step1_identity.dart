@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
 
@@ -166,6 +168,27 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.red[700]),
     );
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not launch link.')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not launch link.')));
+      }
+    }
   }
 
   @override
@@ -507,11 +530,13 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                               TextSpan(
                                 text: 'Terms of Service',
                                 style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
+                                recognizer: TapGestureRecognizer()..onTap = () => _launchUrl('https://www.swan-match.com/terms'),
                               ),
                               const TextSpan(text: ' and '),
                               TextSpan(
                                 text: 'Privacy Policy',
                                 style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
+                                recognizer: TapGestureRecognizer()..onTap = () => _launchUrl('https://www.swan-match.com/privacy'),
                               ),
                               const TextSpan(text: '.'),
                             ],

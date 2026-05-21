@@ -1,8 +1,14 @@
+import 'dart:io';
 import 'dart:ui';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../../../core/constants/colors.dart';
-import 'subscription_page.dart';
+import '../../../../services/storage_service.dart';
+import '../../../../services/user_service.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 class VerifyProfilePage extends StatefulWidget {
   const VerifyProfilePage({super.key});
@@ -16,6 +22,25 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
   late final AnimationController _entryController;
   late final Animation<double> _fadeAnim;
   late final Animation<Offset> _slideAnim;
+
+  final ImagePicker _picker = ImagePicker();
+  File? _selfieFile;
+  File? _idFile;
+  bool _isSubmitting = false;
+
+  bool _isVerified(Map<String, dynamic> profile) {
+    return profile['isVerified'] == true ||
+        profile['idVerified'] == true ||
+        profile['profileVerified'] == true ||
+        (profile['verificationStatus']?.toString().toLowerCase() == 'approved');
+  }
+
+  bool _reuploadEnabled(Map<String, dynamic> profile) {
+    final value = profile['reuplaoded'];
+    if (value == true) return true;
+    if (value is String && value.trim().toLowerCase() == 'true') return true;
+    return false;
+  }
 
   @override
   void initState() {
@@ -32,11 +57,11 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
     );
     _slideAnim =
         Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(
-          CurvedAnimation(
-            parent: _entryController,
-            curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic),
-          ),
-        );
+      CurvedAnimation(
+        parent: _entryController,
+        curve: const Interval(0.0, 0.8, curve: Curves.easeOutCubic),
+      ),
+    );
 
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) _entryController.forward();
@@ -49,15 +74,97 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
     super.dispose();
   }
 
-  Future<void> _makeCall(String phoneNumber) async {
-    final Uri url = Uri(scheme: 'tel', path: phoneNumber);
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url);
-    } else {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Could not open phone dialer.")),
+  Future<void> _takeSelfie() async {
+    if (_isSubmitting) return;
+    try {
+      final photo = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+        preferredCameraDevice: CameraDevice.front,
       );
+      if (photo != null && mounted) {
+        setState(() => _selfieFile = File(photo.path));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _pickGovernmentId() async {
+    if (_isSubmitting) return;
+    try {
+      final image = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 85,
+      );
+      if (image != null && mounted) {
+        setState(() => _idFile = File(image.path));
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _submitReupload() async {
+    if (_isSubmitting) return;
+
+    if (_selfieFile == null) {
+      showLinearMessage(context, 'Please take a new selfie.', isError: true);
+      return;
+    }
+    if (_idFile == null) {
+      showLinearMessage(
+        context,
+        'Please upload your government ID.',
+        isError: true,
+      );
+      return;
+    }
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      final selfieUrl = await StorageService.instance.uploadVerificationFile(
+        uid: uid,
+        file: _selfieFile!,
+        kind: 'selfie',
+      );
+      final idUrl = await StorageService.instance.uploadVerificationFile(
+        uid: uid,
+        file: _idFile!,
+        kind: 'government_id',
+      );
+
+      await UserService.instance.updateCurrentUserProfile({
+        'verificationPhotoUrl': selfieUrl,
+        'idVerificationUrl': idUrl,
+        'verificationSubmittedAt': FieldValue.serverTimestamp(),
+        'verificationStatus': 'pending',
+        'profileApprovalStatus': 'pending',
+        'isVerified': false,
+        'idVerified': false,
+        'profileVerified': false,
+        'reuplaoded': false,
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _selfieFile = null;
+        _idFile = null;
+      });
+      showLinearMessage(
+        context,
+        'Documents submitted. Our team will review them shortly.',
+      );
+    } catch (e) {
+      if (mounted) {
+        showLinearMessage(
+          context,
+          'Upload failed. Please try again.',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
 
@@ -77,7 +184,7 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
           onPressed: () => Navigator.pop(context),
         ),
         title: const Text(
-          "Trust & Safety",
+          'Trust & Safety',
           style: TextStyle(
             color: Colors.white,
             letterSpacing: 1,
@@ -86,402 +193,414 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
         ),
         centerTitle: true,
       ),
-      body: FadeTransition(
-        opacity: _fadeAnim,
-        child: SlideTransition(
-          position: _slideAnim,
-          child: Column(
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 40,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // ─── Glowing Premium Shield Icon ───
-                      Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Ambient Glow
-                          Container(
-                            width: 150,
-                            height: 150,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color:
-                                      AppColors.goldMedium.withOpacity(0.15),
-                                  blurRadius: 50,
-                                  spreadRadius: 15,
-                                ),
-                              ],
-                            ),
-                          ),
-                          // Frosted Glass Ring
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(75),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(
-                                sigmaX: 10,
-                                sigmaY: 10,
-                              ),
-                              child: Container(
-                                width: 130,
-                                height: 130,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: Colors.white.withOpacity(0.05),
-                                  border: Border.all(
-                                    color:
-                                        AppColors.goldMedium.withOpacity(0.3),
-                                    width: 1.5,
-                                  ),
-                                ),
-                                child: const Center(
-                                  child: Icon(
-                                    Icons.verified_user_outlined,
-                                    color: AppColors.goldLight,
-                                    size: 60,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          // Green checkmark badge
-                          Positioned(
-                            bottom: 10,
-                            right: 15,
-                            child: Container(
-                              padding: const EdgeInsets.all(4),
-                              decoration: BoxDecoration(
-                                color: AppColors.obsidian,
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: AppColors.obsidian,
-                                  width: 2,
-                                ),
-                              ),
-                              child: const Icon(
-                                Icons.check_circle,
-                                color: Colors.greenAccent,
-                                size: 28,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+      body: StreamBuilder<Map<String, dynamic>?>(
+        stream: UserService.instance.watchCurrentUserProfile(),
+        builder: (context, snapshot) {
+          final profile = snapshot.data ?? const <String, dynamic>{};
+          final isVerified = _isVerified(profile);
+          final showReupload = _reuploadEnabled(profile) && !isVerified;
 
-                      const SizedBox(height: 40),
-
-                      // ─── Title & Description ───
-                      const Text(
-                        "Verify your profile",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        "Verified profiles receive 3x more matches. Choose a verification option below.",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.6),
-                          fontSize: 14,
-                          height: 1.5,
-                        ),
-                      ),
-
-                      const SizedBox(height: 36),
-
-                      // ─── SECTION LABEL ───
-                      Row(
-                        children: [
-                          Container(
-                            width: 3,
-                            height: 16,
-                            decoration: BoxDecoration(
-                              color: AppColors.goldMedium,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            "Verification Options",
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.85),
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 16),
-
-                      // ─── OPTION 1 : Subscribe to get Verified Badge ───
-                      _SubscriptionVerifyCard(
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const SubscriptionPage(),
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 24),
-                    ],
-                  ),
-                ),
-              ),
-
-              // ─── Footer Support Area ───
-              Container(
+          return FadeTransition(
+            opacity: _fadeAnim,
+            child: SlideTransition(
+              position: _slideAnim,
+              child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(
-                  vertical: 24,
-                  horizontal: 20,
-                ),
-                decoration: BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: Colors.white.withOpacity(0.05)),
-                  ),
+                  horizontal: 24,
+                  vertical: 40,
                 ),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          "Need Help? Call us: ",
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.6),
-                            fontSize: 13,
-                          ),
-                        ),
-                        const Icon(
-                          Icons.phone,
-                          color: AppColors.goldMedium,
-                          size: 14,
-                        ),
-                        const SizedBox(width: 4),
-                        GestureDetector(
-                          onTap: () => _makeCall("+919962043543"),
-                          child: const Text(
-                            "91-9962043543",
-                            style: TextStyle(
-                              color: AppColors.goldLight,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                              decoration: TextDecoration.underline,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      "Working hours (8 AM - 8 PM IST)",
+                    _VerificationHero(isVerified: isVerified),
+                    const SizedBox(height: 32),
+                    const Text(
+                      'Verify your profile',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.4),
-                        fontSize: 11,
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Verification is handled by our Trust & Safety team. '
+                      'Once approved, you will receive the Verified badge.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.6),
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    _TeamVerificationCard(
+                      isVerified: isVerified,
+                      submittedAt: profile['verificationSubmittedAt'],
+                    ),
+                    if (showReupload) ...[
+                      const SizedBox(height: 28),
+                      _ReuploadSection(
+                        selfieFile: _selfieFile,
+                        idFile: _idFile,
+                        isSubmitting: _isSubmitting,
+                        onTakeSelfie: _takeSelfie,
+                        onPickId: _pickGovernmentId,
+                        onSubmit: _submitReupload,
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _VerificationHero extends StatelessWidget {
+  final bool isVerified;
+
+  const _VerificationHero({required this.isVerified});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 130,
+          height: 130,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.goldMedium.withOpacity(0.15),
+                blurRadius: 50,
+                spreadRadius: 12,
+              ),
+            ],
+          ),
+        ),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(65),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.05),
+                border: Border.all(
+                  color: AppColors.goldMedium.withOpacity(0.35),
+                  width: 1.5,
+                ),
+              ),
+              child: Icon(
+                isVerified ? Icons.verified : Icons.verified_user_outlined,
+                color: isVerified ? Colors.greenAccent : AppColors.goldLight,
+                size: 56,
+              ),
+            ),
+          ),
+        ),
+        if (isVerified)
+          Positioned(
+            bottom: 4,
+            right: 8,
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: const BoxDecoration(
+                color: AppColors.obsidian,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.check_circle,
+                color: Colors.greenAccent,
+                size: 26,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TeamVerificationCard extends StatelessWidget {
+  final bool isVerified;
+  final dynamic submittedAt;
+
+  const _TeamVerificationCard({
+    required this.isVerified,
+    required this.submittedAt,
+  });
+
+  String? _formattedSubmittedAt() {
+    if (submittedAt == null) return null;
+    try {
+      DateTime? dt;
+      if (submittedAt is Timestamp) {
+        dt = submittedAt.toDate();
+      } else if (submittedAt is DateTime) {
+        dt = submittedAt;
+      }
+      if (dt == null) return null;
+      return '${dt.day}/${dt.month}/${dt.year}';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final submittedLabel = _formattedSubmittedAt();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        color: Colors.white.withOpacity(0.04),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Team Verification',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _StatusChip(
+            label: isVerified ? 'Status: Verified' : 'Status: Pending review',
+            isPositive: isVerified,
+          ),
+          if (submittedLabel != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              'Submitted on $submittedLabel',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.55),
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final String label;
+  final bool isPositive;
+
+  const _StatusChip({required this.label, required this.isPositive});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: isPositive
+            ? Colors.greenAccent.withOpacity(0.15)
+            : AppColors.goldMedium.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isPositive
+              ? Colors.greenAccent.withOpacity(0.6)
+              : AppColors.goldMedium.withOpacity(0.6),
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: isPositive ? Colors.greenAccent : AppColors.goldMedium,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _ReuploadSection extends StatelessWidget {
+  final File? selfieFile;
+  final File? idFile;
+  final bool isSubmitting;
+  final VoidCallback onTakeSelfie;
+  final VoidCallback onPickId;
+  final VoidCallback onSubmit;
+
+  const _ReuploadSection({
+    required this.selfieFile,
+    required this.idFile,
+    required this.isSubmitting,
+    required this.onTakeSelfie,
+    required this.onPickId,
+    required this.onSubmit,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        color: AppColors.goldMedium.withOpacity(0.06),
+        border: Border.all(color: AppColors.goldMedium.withOpacity(0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Re-upload verification',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Our team requested new documents. Submit a fresh selfie and government ID.',
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.65),
+              fontSize: 13,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 18),
+          _UploadTile(
+            label: 'Selfie',
+            subtitle: selfieFile != null ? 'Ready to upload' : 'Take a photo',
+            icon: Icons.camera_alt_outlined,
+            preview: selfieFile,
+            onTap: isSubmitting ? null : onTakeSelfie,
+          ),
+          const SizedBox(height: 12),
+          _UploadTile(
+            label: 'Government ID',
+            subtitle: idFile != null ? 'Ready to upload' : 'Choose from gallery',
+            icon: Icons.badge_outlined,
+            preview: idFile,
+            onTap: isSubmitting ? null : onPickId,
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: isSubmitting ? null : onSubmit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.goldMedium,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(28),
+                ),
+              ),
+              child: isSubmitting
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.black,
+                      ),
+                    )
+                  : const Text(
+                      'Submit for review',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UploadTile extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final IconData icon;
+  final File? preview;
+  final VoidCallback? onTap;
+
+  const _UploadTile({
+    required this.label,
+    required this.subtitle,
+    required this.icon,
+    required this.preview,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white.withOpacity(0.04),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: preview != null
+                    ? Image.file(
+                        preview!,
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                      )
+                    : Container(
+                        width: 52,
+                        height: 52,
+                        color: Colors.white.withOpacity(0.06),
+                        child: Icon(icon, color: AppColors.goldMedium),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.55),
+                        fontSize: 12,
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Subscription Verify Card ─────────────────────────────────────────────────
-class _SubscriptionVerifyCard extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _SubscriptionVerifyCard({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            colors: [
-              AppColors.goldDark.withOpacity(0.85),
-              const Color(0xFF8B6914),
-              AppColors.goldMedium.withOpacity(0.9),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.goldMedium.withOpacity(0.35),
-              blurRadius: 20,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Top row: Badge + label ──
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.workspace_premium,
-                      color: Colors.white,
-                      size: 26,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          "Get Verified Badge",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 17,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          "Subscribe to a premium plan",
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.8),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  // Verified badge chip
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.green.shade600,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.verified, color: Colors.white, size: 14),
-                        SizedBox(width: 4),
-                        Text(
-                          "Badge",
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 18),
-
-              // ── Perks row ──
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: const [
-                  _PerkChip(label: "✓  Verified badge on profile"),
-                  _PerkChip(label: "✓  3× more matches"),
-                  _PerkChip(label: "✓  Priority in search"),
-                  _PerkChip(label: "✓  Access premium features"),
-                ],
-              ),
-
-              const SizedBox(height: 20),
-
-              // ── CTA button ──
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: onTap,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.black.withOpacity(0.55),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(30),
-                      side: const BorderSide(
-                        color: Colors.white54,
-                        width: 1,
-                      ),
-                    ),
-                    textStyle: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  child: const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.star, size: 18),
-                      SizedBox(width: 8),
-                      Text("View Subscription Plans"),
-                      SizedBox(width: 6),
-                      Icon(Icons.arrow_forward_ios, size: 13),
-                    ],
-                  ),
-                ),
+              Icon(
+                Icons.chevron_right,
+                color: Colors.white.withOpacity(0.35),
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PerkChip extends StatelessWidget {
-  final String label;
-  const _PerkChip({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w500,
         ),
       ),
     );
