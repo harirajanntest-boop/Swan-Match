@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -98,12 +99,14 @@ class UserService {
   /// Invalidate cache entry when a profile is updated.
   void _invalidateCache(String uid) => _profileCache.remove(uid);
 
-  Future<Map<String, dynamic>?> getUserProfile(String uid) async {
-    if (_profileCache.containsKey(uid)) return _profileCache[uid];
+  Future<Map<String, dynamic>?> getUserProfile(String uid, {bool forceRefresh = false}) async {
+    if (!forceRefresh && _profileCache.containsKey(uid)) return _profileCache[uid];
     final snapshot = await _userRef(uid).get();
     final data = snapshot.data();
     if (data != null) {
       _profileCache[uid] = <String, dynamic>{...data, 'uid': uid};
+    } else {
+      _profileCache.remove(uid);
     }
     return _profileCache[uid];
   }
@@ -383,29 +386,13 @@ class UserService {
     await _removeFromConnections(currentUser.uid, uid);
   }
 
-  /// Reports a user: creates a document in the /reports collection (writable
-  /// by any signed-in user) and permanently blocks them in the reporter's doc.
+  /// Reports a user via Cloud Function (rate limited: 5/hr per user).
   Future<void> reportUser(String targetUid, {String reason = ''}) async {
-    final currentUser = _auth.currentUser;
-    if (currentUser == null) return;
-
-    // Write report to a dedicated /reports collection (no permission issue)
-    await _firestore.collection('reports').add({
+    final functions = FirebaseFunctions.instance;
+    await functions.httpsCallable('submitReport').call({
       'reportedUid': targetUid,
-      'reportedBy': currentUser.uid,
       'reason': reason,
-      'reportedAt': FieldValue.serverTimestamp(),
-      'isReported': true,
     });
-
-    // Only update the current user's OWN document — this is always allowed
-    await _userRef(currentUser.uid).update({
-      'blockedUids': FieldValue.arrayUnion([targetUid]),
-      'reportedUids': FieldValue.arrayUnion([targetUid]),
-    });
-
-    // Remove from connections (interests) immediately
-    await _removeFromConnections(currentUser.uid, targetUid);
   }
 
   /// Marks all interest documents between [myUid] and [otherUid] as 'blocked'
@@ -666,7 +653,9 @@ class UserService {
             matches = true;
           }
 
-          if (matches && data['registrationCompleted'] == true) {
+          if (matches && 
+              data['registrationCompleted'] == true && 
+              data['profileApprovalStatus'] == 'approved') {
             users.add(<String, dynamic>{...data, 'uid': doc.id});
           }
         }

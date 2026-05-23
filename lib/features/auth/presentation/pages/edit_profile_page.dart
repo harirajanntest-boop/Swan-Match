@@ -458,9 +458,10 @@ class _EditProfilePageState extends State<EditProfilePage>
         'photos': photos,
         'profilePicture': chosen,
         'photoUrl': chosen,
+        'profileApprovalStatus': 'pending', // Demote to pending for re-moderation
       });
       if (mounted) {
-        showLinearMessage(context, 'Profile picture updated!');
+        showLinearMessage(context, 'Profile picture updated! Status is pending moderation.');
       }
     } catch (e) {
       if (mounted) {
@@ -512,10 +513,11 @@ class _EditProfilePageState extends State<EditProfilePage>
       await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
         'photos': existingPhotos,
         'profilePicture': photoUrl,
+        'profileApprovalStatus': 'pending', // Demote to pending for re-moderation
       });
 
       if (!mounted) return;
-      showLinearMessage(context, 'Profile photo updated successfully.');
+      showLinearMessage(context, 'Profile photo updated successfully! Pending admin approval.');
     } catch (_) {
       if (!mounted) return;
       showLinearMessage(
@@ -574,7 +576,10 @@ class _EditProfilePageState extends State<EditProfilePage>
     existingPhotos.removeAt(index);
 
     // If we removed the first photo, update profilePicture too
-    final updates = <String, dynamic>{'photos': existingPhotos};
+    final updates = <String, dynamic>{
+      'photos': existingPhotos,
+      'profileApprovalStatus': 'pending', // Demote to pending for re-moderation
+    };
     if (index == 0) {
       updates['profilePicture'] = existingPhotos.isNotEmpty
           ? existingPhotos.first
@@ -585,7 +590,7 @@ class _EditProfilePageState extends State<EditProfilePage>
     try {
       await UserService.instance.updateCurrentUserProfile(updates);
       if (!mounted) return;
-      showLinearMessage(context, 'Photo removed.');
+      showLinearMessage(context, 'Photo removed. Status is pending moderation.');
     } catch (_) {
       if (!mounted) return;
       showLinearMessage(context, 'Failed to remove photo.', isError: true);
@@ -624,9 +629,12 @@ class _EditProfilePageState extends State<EditProfilePage>
 
     setState(() => _isUploadingPhoto = true);
     try {
-      await UserService.instance.updateCurrentUserProfile({'photoUrl': null});
+      await UserService.instance.updateCurrentUserProfile({
+        'photoUrl': null,
+        'profileApprovalStatus': 'pending', // Demote to pending for re-moderation
+      });
       if (!mounted) return;
-      showLinearMessage(context, 'Profile photo removed.');
+      showLinearMessage(context, 'Profile photo removed. Status is pending moderation.');
     } catch (e) {
       if (!mounted) return;
       showLinearMessage(context, 'Failed to delete photo.', isError: true);

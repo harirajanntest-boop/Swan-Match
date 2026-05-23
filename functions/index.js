@@ -203,6 +203,24 @@ const stripeWebhookSecret = defineSecret('STRIPE_WEBHOOK_SECRET');
 /** Monthly plan ($19.99) — set via: firebase functions:secrets:set STRIPE_PRICE_MONTHLY */
 const stripePriceMonthly = defineSecret('STRIPE_PRICE_MONTHLY');
 
+async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
+  const rateKey = key || uid;
+  if (!rateKey) return;
+  const db = admin.firestore();
+  const docRef = db.collection('_rateLimits').doc(`${rateKey}_${action}`);
+  const now = Date.now();
+  await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(docRef);
+    let data = doc.exists ? doc.data() : { timestamps: [] };
+    let validTimestamps = (data.timestamps || []).filter(t => now - t < windowMs);
+    if (validTimestamps.length >= maxRequests) {
+      throw new HttpsError('resource-exhausted', 'Rate limit exceeded. Please try again later.');
+    }
+    validTimestamps.push(now);
+    transaction.set(docRef, { timestamps: validTimestamps }, { merge: true });
+  });
+}
+
 // 6-month / yearly IDs (Stripe Dashboard). Monthly is only in STRIPE_PRICE_MONTHLY secret.
 const PREMIUM_PRICE_IDS_FIXED = {
   sixMonth: 'price_1TQBjHE3Rb5ApPY7CSk2jPPy',
@@ -256,6 +274,8 @@ exports.checkPhoneExists = onCall(async (request) => {
     throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
 
+  await enforceRateLimit(request.auth.uid, 'checkPhoneExists', 5, 60 * 1000); // 5 requests per minute
+
   const phoneNumber = request.data.phoneNumber;
   if (!phoneNumber) {
     throw new HttpsError('invalid-argument', 'The function must be called with one argument "phoneNumber" containing the phone number to check.');
@@ -282,6 +302,8 @@ exports.createCheckoutSession = onCall(
     throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
   }
 
+  await enforceRateLimit(request.auth.uid, 'createCheckout', 5, 60 * 1000); // 5 requests per minute
+
   const { priceId, successUrl, cancelUrl } = request.data;
   if (!priceId) {
     throw new HttpsError('invalid-argument', 'The function must be called with "priceId".');
@@ -303,7 +325,6 @@ exports.createCheckoutSession = onCall(
     console.error('[createCheckoutSession] STRIPE_SECRET_KEY secret is empty!');
     throw new HttpsError('internal', 'Payment service is not configured.');
   }
-  console.log(`[createCheckoutSession] Stripe key prefix: ${rawSecret.trim().substring(0, 7)}...`);
 
   const stripe = require('stripe')(rawSecret.trim());
 
@@ -383,7 +404,6 @@ exports.handleStripeWebhook = onRequest(
     console.log('Has rawBody:', !!req.rawBody);
     console.log('rawBody type:', typeof req.rawBody);
     console.log('Has webhookSecret:', !!stripeWebhookSecret.value());
-    console.log('webhookSecret starts with whsec_:', stripeWebhookSecret.value()?.startsWith('whsec_'));
 
     const sig = req.headers['stripe-signature'];
     const webhookSecretValue = stripeWebhookSecret.value();
@@ -613,6 +633,8 @@ exports.verifySubscription = onCall(
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
+  await enforceRateLimit(request.auth.uid, 'verifySubscription', 10, 60 * 1000); // 10 requests per minute
+
   const uid = request.auth.uid;
   console.log(`[verifySubscription] Checking premium for uid=${uid}`);
 
@@ -753,6 +775,8 @@ exports.getStripePrices = onCall(
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
 
+  await enforceRateLimit(request.auth.uid, 'getStripePrices', 20, 60 * 1000); // 20 requests per minute
+
   const { priceIds } = request.data;
   if (!Array.isArray(priceIds) || priceIds.length === 0) {
     throw new HttpsError('invalid-argument', '"priceIds" must be a non-empty array.');
@@ -846,8 +870,21 @@ exports.getStripePrices = onCall(
  * Replaces client-side service account usage for security
  */
 exports.sendNotification = onCall(async (request) => {
+  // MUST BE AUTHENTICATED
   if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'User must be authenticated.');
+    throw new HttpsError('unauthenticated', 'Must be signed in to send a notification.');
+  }
+
+  await enforceRateLimit(request.auth.uid, 'sendNotification', 10, 60 * 1000); // 10 requests per minute
+
+  // RESTRICT: ONLY ADMINS CAN USE THIS FUNCTION
+  const email = request.auth.token.email || '';
+  const isAdmin = email === "sasikumar.s9951@gmail.com" || 
+                  email === "admin@gmail.com" || 
+                  email.endsWith("@swanmatch.com");
+                  
+  if (!isAdmin) {
+    throw new HttpsError('permission-denied', 'Only administrators can send notifications.');
   }
 
   const { fcmToken, title, body, data } = request.data;
@@ -896,6 +933,8 @@ exports.createPortalSession = onCall({ secrets: [stripeSecretKey] }, async (requ
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
   }
+
+  await enforceRateLimit(request.auth.uid, 'createPortalSession', 5, 60 * 1000); // 5 requests per minute
 
   const uid = request.auth.uid;
   const rawSecret = stripeSecretKey.value();
@@ -1001,6 +1040,11 @@ exports.hardDeleteExpiredAccounts = onSchedule(
 exports.checkAuthProviders = onCall(async (request) => {
   const email = request.data.email;
 
+  // Rate limit: 10 requests per minute per email address (prevents email enumeration abuse)
+  if (email && typeof email === 'string') {
+    await enforceRateLimit(null, 'checkAuthProviders', 10, 60 * 1000, `email_${email.toLowerCase().trim()}`);
+  }
+
   if (!email || typeof email !== 'string') {
     throw new HttpsError('invalid-argument', 'The function must be called with a valid "email".');
   }
@@ -1050,6 +1094,476 @@ exports.onUserSoftDeleted = onDocumentUpdated('users/{uid}', async (event) => {
         console.error(`[onUserSoftDeleted] Error deleting Auth for ${uid}:`, error);
       }
     }
+  }
+});
+
+// ─── Login Throttling ────────────────────────────────────────────────────────
+// In-memory tracker (resets on cold start, acceptable for throttling purposes).
+// Key = normalized email, value = array of recent timestamps within window.
+const loginAttempts = {};
+
+/**
+ * trackLoginAttempt — called from the client BEFORE signInWithEmailAndPassword.
+ * Throws resource-exhausted if the user has exceeded the max attempts within
+ * the sliding window. This prevents brute-force password guessing.
+ */
+exports.trackLoginAttempt = onCall(async (request) => {
+  const { email } = request.data;
+  if (!email || typeof email !== 'string') {
+    throw new HttpsError('invalid-argument', 'Email is required.');
+  }
+
+  const key = email.toLowerCase().trim();
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000; // 15-minute sliding window
+  const maxAttempts = 5;            // 5 failed attempts allowed
+
+  // Clean old entries
+  if (!loginAttempts[key]) loginAttempts[key] = [];
+  loginAttempts[key] = loginAttempts[key].filter(t => now - t < windowMs);
+
+  const count = loginAttempts[key].length;
+
+  if (count >= maxAttempts) {
+    throw new HttpsError(
+      'resource-exhausted',
+      'Too many login attempts. Please try again later.'
+    );
+  }
+
+  // Record this attempt (caller should only call after a FAILED login)
+  // Successful logins reset via trackLoginSuccess
+  return { allowed: true, attempts: count, remaining: maxAttempts - count };
+});
+
+/**
+ * trackLoginSuccess — called from the client after a SUCCESSFUL login.
+ * Clears the attempt counter for that email so previous failures are forgotten.
+ */
+exports.trackLoginSuccess = onCall(async (request) => {
+  const { email } = request.data;
+  if (!email || typeof email !== 'string') return { cleared: false };
+  const key = email.toLowerCase().trim();
+  delete loginAttempts[key];
+  return { cleared: true };
+});
+
+/**
+ * trackLoginFailure — called from the client after a FAILED login.
+ * Increments the attempt counter for that email.
+ */
+exports.trackLoginFailure = onCall(async (request) => {
+  const { email } = request.data;
+  if (!email || typeof email !== 'string') return { recorded: false };
+
+  const key = email.toLowerCase().trim();
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+
+  if (!loginAttempts[key]) loginAttempts[key] = [];
+  loginAttempts[key] = loginAttempts[key].filter(t => now - t < windowMs);
+  loginAttempts[key].push(now);
+
+  return { recorded: true, attempts: loginAttempts[key].length };
+});
+
+// ─── Signup Velocity Tracking ────────────────────────────────────────────────
+// Tracks signup IP addresses to detect bulk account creation.
+
+exports.trackSignup = onCall(async (request) => {
+  const ip = request.rawRequest?.ip || 'unknown';
+  const db = admin.firestore();
+  const ref = db.collection('_signupTracker').doc(ip);
+  const now = Date.now();
+  const hourAgo = now - 3600000;
+
+  await db.runTransaction(async (transaction) => {
+    const doc = await transaction.get(ref);
+    const data = doc.exists ? doc.data() : { timestamps: [] };
+    const recent = (data.timestamps || []).filter(t => now - t < 3600000);
+    recent.push(now);
+    transaction.set(ref, { timestamps: recent }, { merge: true });
+
+    // If >3 signups in an hour from same IP → flag for admin
+    if (recent.length > 3) {
+      await db.collection('_flaggedSignups').add({
+        ip,
+        count: recent.length,
+        firstAt: new Date(recent[0]).toISOString(),
+        lastAt: new Date(now).toISOString(),
+        detectedAt: new Date().toISOString(),
+      });
+    }
+  });
+
+  return { tracked: true };
+});
+
+// ============================================================================
+// ADMIN FUNCTIONS
+// ============================================================================
+
+function isAdminAuth(request) {
+  return request.auth && (
+    request.auth.token.email === 'sasikumar.s9951@gmail.com' ||
+    request.auth.token.email === 'admin@gmail.com' ||
+    (request.auth.token.email || '').endsWith('@swanmatch.com')
+  );
+}
+
+/** Log an admin action to the audit log. */
+async function logAdminAction(adminUid, action, targetUid, details) {
+  await admin.firestore().collection('admin_audit_logs').add({
+    adminUid,
+    action,
+    targetUid: targetUid || null,
+    details: details || '',
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+/** Admin suspend a user. */
+exports.adminSuspendUser = onCall(async (request) => {
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  const { uid, reason } = request.data;
+  if (!uid) throw new HttpsError('invalid-argument', 'uid required');
+
+  await admin.firestore().collection('users').doc(uid).update({
+    account: 'Suspended',
+    suspensionReason: reason || 'Violation of terms',
+    suspendedAt: admin.firestore.FieldValue.serverTimestamp(),
+    suspendedBy: request.auth.uid,
+  });
+
+  await logAdminAction(request.auth.uid, 'suspend_user', uid, reason || 'Violation of terms');
+
+  return { success: true };
+});
+
+/** Admin unsuspend a user. */
+exports.adminUnsuspendUser = onCall(async (request) => {
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  const { uid } = request.data;
+  if (!uid) throw new HttpsError('invalid-argument', 'uid required');
+
+  await admin.firestore().collection('users').doc(uid).update({
+    account: 'Active',
+    suspensionReason: admin.firestore.FieldValue.delete(),
+    suspendedAt: admin.firestore.FieldValue.delete(),
+    suspendedBy: admin.firestore.FieldValue.delete(),
+    unsuspendedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  await logAdminAction(request.auth.uid, 'unsuspend_user', uid, '');
+
+  return { success: true };
+});
+
+/** Admin warn a user. */
+exports.adminWarnUser = onCall(async (request) => {
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  const { uid, message } = request.data;
+  if (!uid || !message) throw new HttpsError('invalid-argument', 'uid and message required');
+
+  const warning = {
+    message,
+    issuedBy: request.auth.uid,
+    issuedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  await admin.firestore().collection('users').doc(uid).update({
+    warnings: admin.firestore.FieldValue.arrayUnion(warning),
+  });
+
+  await logAdminAction(request.auth.uid, 'warn_user', uid, message);
+
+  return { success: true };
+});
+
+/** Admin resolve an appeal. */
+exports.adminResolveAppeal = onCall(async (request) => {
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  const { appealId, status, note } = request.data;
+  if (!appealId || !status) throw new HttpsError('invalid-argument', 'appealId and status required');
+
+  await admin.firestore().collection('appeals').doc(appealId).update({
+    status,
+    adminNote: note || '',
+    resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+    resolvedBy: request.auth.uid,
+  });
+
+  await logAdminAction(request.auth.uid, 'resolve_appeal', null, `appealId=${appealId}, status=${status}, note=${note || ''}`);
+
+  return { success: true };
+});
+
+// ============================================================================
+// APPEALS
+// ============================================================================
+
+/** Submit an appeal (signed-in users only, including suspended). */
+exports.submitAppeal = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+
+  const uid = request.auth.uid;
+
+  const { reason } = request.data;
+  if (!reason || typeof reason !== 'string' || reason.trim().length < 10) {
+    throw new HttpsError('invalid-argument', 'Please provide a detailed reason (min 10 characters).');
+  }
+  if (reason.length > 2000) {
+    throw new HttpsError('invalid-argument', 'Reason too long (max 2000 characters).');
+  }
+
+  const db = admin.firestore();
+
+  // Rate limit: check existing appeals for this user
+  const existing = await db.collection('appeals')
+    .where('userId', '==', uid)
+    .get();
+
+  // Max 3 total appeals per user
+  if (existing.size >= 3) {
+    throw new HttpsError('failed-precondition', 'You have reached the maximum of 3 appeals. Please contact support@swanmatch.com.');
+  }
+
+  // Only 1 pending appeal at a time
+  const hasPending = existing.docs.some(doc => doc.data().status === 'pending');
+  if (hasPending) {
+    throw new HttpsError('failed-precondition', 'You already have a pending appeal. Please wait for a response before submitting a new one.');
+  }
+
+  await db.collection('appeals').add({
+    userId: uid,
+    userEmail: request.auth.token.email || '',
+    reason: reason.trim(),
+    status: 'pending',
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true };
+});
+
+// ============================================================================
+// REPORTS (with rate limiting)
+// ============================================================================
+
+/** Submit a report. Rate limited: 5 reports per hour per user. */
+exports.submitReport = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+
+  await enforceRateLimit(request.auth.uid, 'submitReport', 5, 3600 * 1000);
+
+  const { reportedUid, reason } = request.data;
+  const reporterUid = request.auth.uid;
+
+  if (!reportedUid || typeof reportedUid !== 'string') {
+    throw new HttpsError('invalid-argument', 'reportedUid is required.');
+  }
+  if (reportedUid === reporterUid) {
+    throw new HttpsError('invalid-argument', 'Cannot report yourself.');
+  }
+  if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'Reason is required.');
+  }
+  if (reason.length > 500) {
+    throw new HttpsError('invalid-argument', 'Reason too long (max 500 characters).');
+  }
+
+  const db = admin.firestore();
+
+  // Create report
+  await db.collection('reports').add({
+    reportedUid,
+    reportedBy: reporterUid,
+    reason: reason.trim(),
+    reportedAt: admin.firestore.FieldValue.serverTimestamp(),
+    isReported: true,
+    status: 'pending',
+  });
+
+  // Update reporter's blockedUids and reportedUids
+  await db.collection('users').doc(reporterUid).update({
+    blockedUids: admin.firestore.FieldValue.arrayUnion([reportedUid]),
+    reportedUids: admin.firestore.FieldValue.arrayUnion([reportedUid]),
+  });
+
+  // Remove connections (interests, likes, matches, chat)
+  try {
+    // Mark interests as blocked
+    const sentInterests = await db.collection('interests')
+      .where('fromUserId', '==', reporterUid)
+      .where('toUserId', '==', reportedUid)
+      .get();
+    const receivedInterests = await db.collection('interests')
+      .where('fromUserId', '==', reportedUid)
+      .where('toUserId', '==', reporterUid)
+      .get();
+
+    const batch = db.batch();
+    for (const doc of [...sentInterests.docs, ...receivedInterests.docs]) {
+      batch.update(doc.ref, {
+        status: 'blocked',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // Delete likes (both directions)
+    batch.delete(db.collection('likes').doc(reporterUid).collection('likedUsers').doc(reportedUid));
+    batch.delete(db.collection('likes').doc(reportedUid).collection('likedUsers').doc(reporterUid));
+
+    // Delete match
+    const matchId = reporterUid < reportedUid ? `${reporterUid}_${reportedUid}` : `${reportedUid}_${reporterUid}`;
+    batch.delete(db.collection('matches').doc(matchId));
+
+    await batch.commit();
+
+    // Delete chat thread
+    const chatId = [reporterUid, reportedUid].sort().join('_');
+    const chatRef = db.collection('chats').doc(chatId);
+    const msgs = await chatRef.collection('messages').get();
+    const msgBatch = db.batch();
+    for (const m of msgs.docs) {
+      msgBatch.delete(m.ref);
+    }
+    await msgBatch.commit();
+    await chatRef.delete();
+  } catch (err) {
+    console.error(`[submitReport] Connection cleanup error: ${err.message}`);
+  }
+
+  return { success: true };
+});
+
+// ============================================================================
+// AUTO-SUSPEND ON REPORTS
+// ============================================================================
+
+/** When a report is created, check if the reported user has 3+ reports and auto-suspend. */
+exports.onReportCreated = onDocumentCreated('reports/{reportId}', async (event) => {
+  const report = event.data?.data();
+  if (!report) return;
+
+  const reportedUid = report.reportedUid;
+  if (!reportedUid) return;
+
+  try {
+    const snapshot = await admin.firestore()
+      .collection('reports')
+      .where('reportedUid', '==', reportedUid)
+      .get();
+
+    const reportCount = snapshot.size;
+
+    // Auto-suspend at 3 reports
+    if (reportCount >= 3) {
+      await admin.firestore().collection('users').doc(reportedUid).update({
+        account: 'Suspended',
+        suspensionReason: `Auto-suspended: received ${reportCount} reports`,
+        suspendedAt: admin.firestore.FieldValue.serverTimestamp(),
+        suspendedBy: 'system',
+      });
+
+      await logAdminAction('system', 'auto_suspend', reportedUid, `Auto-suspended: ${reportCount} reports`);
+      console.log(`[autoSuspend] User ${reportedUid} suspended after ${reportCount} reports`);
+    }
+
+    // Send notification to reporter thanking them
+    const reporterId = report.reportedBy;
+    if (reporterId) {
+      await admin.firestore().collection('notifications').add({
+        toUserId: reporterId,
+        fromUserId: 'system',
+        title: 'Report Received',
+        message: 'Thank you for your report. Our moderation team will review it and take appropriate action.',
+        type: 'report',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.error(`[onReportCreated] Error: ${err.message}`);
+  }
+});
+
+// ============================================================================
+// SECURITY HARDENING: IP & DEVICE MONITORING
+// ============================================================================
+
+/** Captures secure client connection IP and logs device hardware metadata. */
+exports.logSessionActivity = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'The function must be called while authenticated.');
+  }
+
+  const uid = request.auth.uid;
+  
+  // Extract secure un-fakeable client IP address directly from connection headers
+  const ip = request.rawRequest.ip || request.rawRequest.headers['x-forwarded-for'] || 'unknown';
+
+  const { model, osVersion, brand, deviceId, sessionTrigger } = request.data;
+
+  if (!model || !deviceId) {
+    throw new HttpsError('invalid-argument', 'Missing hardware model or device identifier.');
+  }
+
+  const db = admin.firestore();
+
+  try {
+    // 1. Check if the device is currently associated with any banned/suspended users
+    const bannedDevices = await db.collection('users')
+      .where('lastLoginDeviceId', '==', deviceId)
+      .where('account', '==', 'Suspended')
+      .limit(1)
+      .get();
+
+    if (!bannedDevices.empty) {
+      console.warn(`[logSessionActivity] WARNING: Banned device login attempt: deviceId=${deviceId} uid=${uid}`);
+      // Mark this account as flagged for matching a banned device fingerprint
+      await db.collection('users').doc(uid).update({
+        deviceMatchesSuspendedFingerprint: true,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // 2. Securely append to the securityLogs subcollection
+    const logRef = db.collection('users').doc(uid).collection('securityLogs').doc();
+    await logRef.set({
+      ipAddress: ip,
+      deviceModel: model,
+      brand: brand || 'unknown',
+      osVersion: osVersion || 'unknown',
+      deviceId: deviceId,
+      sessionTrigger: sessionTrigger || 'app_start',
+      lastActive: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 3. Keep lightweight, readable last login info directly on the primary user document
+    await db.collection('users').doc(uid).update({
+      lastLoginIp: ip,
+      lastLoginDeviceId: deviceId,
+      lastLoginDeviceModel: model,
+      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`[logSessionActivity] Logged session for uid=${uid} deviceId=${deviceId} IP=${ip} trigger=${sessionTrigger}`);
+    return { success: true };
+  } catch (err) {
+    console.error(`[logSessionActivity] Error: ${err.message}`);
+    throw new HttpsError('internal', `Security logging failed: ${err.message}`);
   }
 });
 

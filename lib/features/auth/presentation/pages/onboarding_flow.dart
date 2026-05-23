@@ -4,8 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'dart:io';
+import 'dart:async';
 import '../../../../services/user_service.dart';
 import '../../../../services/storage_service.dart';
+import '../../../../services/security_monitoring_service.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
 import 'onboarding_step1_identity.dart';
@@ -33,6 +35,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   bool _isLoading = false;
   bool _isCompleting = false;
   OnboardingData _onboardingData = OnboardingData();
+  String _preparingText = 'Analyzing relationship intent…';
 
   static const int _totalSteps = 8;
 
@@ -129,6 +132,23 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data.remove('verificationPhotoUrl');
       data.remove('idVerificationUrl');
 
+      // Remove all restricted keys to comply with Firestore rules
+      data.remove('account');
+      data.remove('isVerified');
+      data.remove('verificationStatus');
+      data.remove('stripeCustomerId');
+      data.remove('stripeSubscriptionId');
+      data.remove('lastCheckoutSessionId');
+      data.remove('lastInvoiceId');
+      data.remove('subscription');
+      data.remove('paymentStatus');
+      data.remove('customerEmail');
+      data.remove('customerName');
+      data.remove('billingPeriodStart');
+      data.remove('billingPeriodEnd');
+      data.remove('subscriptionPriceId');
+      data.remove('subscriptionName');
+
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
     } catch (e) {
       debugPrint('Error saving progress: $e');
@@ -159,8 +179,12 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
   // ─── Complete onboarding: upload photos + save all data ─────────────────
   Future<void> _completeOnboarding() async {
-    setState(() => _isCompleting = true);
+    setState(() {
+      _isCompleting = true;
+      _preparingText = 'Analyzing relationship intent…';
+    });
 
+    Timer? cycleTimer;
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) {
@@ -169,63 +193,120 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         return;
       }
 
-      // Upload photos to Firebase Storage
-      final List<String> uploadedUrls = [];
-      String profilePictureUrl = '';
+      // Start the artificial premium delay (31 seconds)
+      final delayFuture = Future.delayed(const Duration(seconds: 31));
 
+      // Start a timer to cycle through premium matching preparation stages
+      int elapsedSeconds = 0;
+      cycleTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        elapsedSeconds++;
+        if (!mounted) {
+          timer.cancel();
+          return;
+        }
+        setState(() {
+          if (elapsedSeconds >= 24) {
+            _preparingText = 'Constructing your exclusive profile…';
+          } else if (elapsedSeconds >= 18) {
+            _preparingText = 'Calibrating the match engine…';
+          } else if (elapsedSeconds >= 12) {
+            _preparingText = 'Securing identity & verification data…';
+          } else if (elapsedSeconds >= 6) {
+            _preparingText = 'Scanning partner preferences…';
+          }
+        });
+      });
+
+      // ─── Parallelize All Uploads ───
+
+      // 1. Prepare profile photo upload tasks
+      final List<Future<String?>> photoUploadTasks = [];
       for (int i = 0; i < _onboardingData.photos.length; i++) {
         final photoPath = _onboardingData.photos[i];
-        final file = File(photoPath);
-
-        if (await file.exists()) {
-          try {
-            final url = await StorageService.instance.uploadProfilePhoto(
-              uid: user.uid,
-              file: file,
-            );
-            uploadedUrls.add(url);
-            if (i == 0) profilePictureUrl = url;
-          } catch (e) {
-            debugPrint('Error uploading photo $i: $e');
-          }
-        } else if (photoPath.startsWith('http')) {
-          // Already a URL (from previous upload)
-          uploadedUrls.add(photoPath);
-          if (i == 0) profilePictureUrl = photoPath;
+        if (photoPath.startsWith('http')) {
+          photoUploadTasks.add(Future.value(photoPath));
+        } else {
+          final file = File(photoPath);
+          photoUploadTasks.add(
+            file.exists().then((exists) async {
+              if (exists) {
+                try {
+                  return await StorageService.instance.uploadProfilePhoto(
+                    uid: user.uid,
+                    file: file,
+                  );
+                } catch (e) {
+                  debugPrint('Error uploading photo $i: $e');
+                  return null;
+                }
+              }
+              return null;
+            }),
+          );
         }
       }
 
-      // Upload verification selfie
-      String verificationUrl = '';
+      // 2. Prepare verification selfie upload task
+      Future<String?> selfieUploadTask = Future.value('');
       if (_onboardingData.verificationPhotoUrl.isNotEmpty) {
         final selfieFile = File(_onboardingData.verificationPhotoUrl);
-        if (await selfieFile.exists()) {
-          try {
-            verificationUrl = await StorageService.instance.uploadProfilePhoto(
-              uid: user.uid,
-              file: selfieFile,
-            );
-          } catch (e) {
-            debugPrint('Error uploading selfie: $e');
-          }
+        if (selfieFile.path.startsWith('http')) {
+          selfieUploadTask = Future.value(selfieFile.path);
+        } else {
+          selfieUploadTask = selfieFile.exists().then((exists) async {
+            if (exists) {
+              try {
+                return await StorageService.instance.uploadProfilePhoto(
+                  uid: user.uid,
+                  file: selfieFile,
+                );
+              } catch (e) {
+                debugPrint('Error uploading selfie: $e');
+                return '';
+              }
+            }
+            return '';
+          });
         }
       }
 
-      // Upload ID if provided
-      String idUrl = '';
+      // 3. Prepare ID verification upload task
+      Future<String?> idUploadTask = Future.value('');
       if (_onboardingData.idVerificationUrl.isNotEmpty) {
         final idFile = File(_onboardingData.idVerificationUrl);
-        if (await idFile.exists()) {
-          try {
-            idUrl = await StorageService.instance.uploadProfilePhoto(
-              uid: user.uid,
-              file: idFile,
-            );
-          } catch (e) {
-            debugPrint('Error uploading ID: $e');
-          }
+        if (idFile.path.startsWith('http')) {
+          idUploadTask = Future.value(idFile.path);
+        } else {
+          idUploadTask = idFile.exists().then((exists) async {
+            if (exists) {
+              try {
+                return await StorageService.instance.uploadProfilePhoto(
+                  uid: user.uid,
+                  file: idFile,
+                );
+              } catch (e) {
+                debugPrint('Error uploading ID: $e');
+                return '';
+              }
+            }
+            return '';
+          });
         }
       }
+
+      // 4. Run all uploads in parallel
+      final results = await Future.wait([
+        Future.wait(photoUploadTasks),
+        selfieUploadTask,
+        idUploadTask,
+      ]);
+
+      final List<String?> rawPhotoUrls = results[0] as List<String?>;
+      final String verificationUrl = (results[1] as String?) ?? '';
+      final String idUrl = (results[2] as String?) ?? '';
+
+      final List<String> uploadedUrls = rawPhotoUrls.whereType<String>().toList();
+      String profilePictureUrl = uploadedUrls.isNotEmpty ? uploadedUrls.first : '';
 
       // Build final profile data
       final data = _onboardingData.toMap();
@@ -241,16 +322,25 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data['highestQualification'] = _onboardingData.educationLevel;
       data['registrationCompleted'] = true;
       data['onboardingStep'] = _totalSteps;
-      data['subscriptionPlan'] = 'free';
-      data['subscriptionName'] = 'Free';
 
-      // ── Verification is ALWAYS pending on registration.
-      //    Only the Admin Dashboard can promote this to 'approved'.
-      data['isVerified'] = false;
-      data['idVerified'] = false;
-      data['profileVerified'] = false;
-      data['profileApprovalStatus'] = 'pending';
-      data['verificationStatus'] = 'pending'; // admin sets to 'approved'
+      // Note: We omit 'isVerified', 'verificationStatus', 'subscriptionName' from the update payload.
+      // They are already initialized as defaults during signup.
+      data.remove('account');
+      data.remove('isVerified');
+      data.remove('verificationStatus');
+      data.remove('stripeCustomerId');
+      data.remove('stripeSubscriptionId');
+      data.remove('lastCheckoutSessionId');
+      data.remove('lastInvoiceId');
+      data.remove('subscription');
+      data.remove('paymentStatus');
+      data.remove('customerEmail');
+      data.remove('customerName');
+      data.remove('billingPeriodStart');
+      data.remove('billingPeriodEnd');
+      data.remove('subscriptionPriceId');
+      data.remove('subscriptionName');
+
       if (verificationUrl.isNotEmpty || idUrl.isNotEmpty) {
         data['verificationSubmittedAt'] = FieldValue.serverTimestamp();
       }
@@ -264,6 +354,12 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       // Save to Firestore
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
 
+      // Trigger secure background session tracking upon onboarding completion
+      unawaited(SecurityMonitoringService.instance.logSessionActivity('onboarding_completed'));
+
+      // Wait for the full 31 seconds duration to complete to build premium anticipation
+      await delayFuture;
+
       // Navigate to the free trial offer page instead of directly to dashboard
       if (mounted) {
         Navigator.of(context).pushAndRemoveUntil(
@@ -273,7 +369,9 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       }
     } catch (e) {
       debugPrint('Onboarding completion error: $e');
-      _showError('Something went wrong. Please try again.');
+      _showError('Onboarding completion error: $e');
+    } finally {
+      cycleTimer?.cancel();
     }
     if (mounted) setState(() => _isCompleting = false);
   }
@@ -370,31 +468,36 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             child: Container(
               color: OnboardingColors.background.withOpacity(0.92),
               child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(
-                      color: OnboardingColors.primaryGold,
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'Preparing your profile…',
-                      style: TextStyle(
-                        color: OnboardingColors.textPrimary,
-                        fontSize: 20,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.3,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 40),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(
+                        color: OnboardingColors.primaryGold,
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'This will only take a moment',
-                      style: TextStyle(
-                        color: OnboardingColors.textSecondary,
-                        fontSize: 14,
+                      const SizedBox(height: 32),
+                      Text(
+                        _preparingText,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: OnboardingColors.textPrimary,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Swan is customizing your luxury match ecosystem',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: OnboardingColors.textSecondary,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

@@ -1,15 +1,17 @@
 import 'dart:async';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'custom_login_page.dart';
+import 'package:swam_match_app/services/auth_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
+import 'package:swam_match_app/shared/widgets/gold_button.dart';
+import 'custom_login_page.dart';
+import 'verify_email_page.dart';
 import 'onboarding_flow.dart';
 import 'main_dashboard.dart';
 import 'intro_onboarding_screens.dart';
-import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -51,7 +53,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     if (user != null) {
       // Check if user has completed registration
       try {
-        final profile = await UserService.instance.getUserProfile(user.uid);
+        final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
         if (!mounted) return;
         if (profile != null &&
             UserService.instance.isAccountSuspended(profile)) {
@@ -66,27 +68,28 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
               transitionDuration: const Duration(milliseconds: 800),
             ),
           );
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            showDialog<void>(
-              context: context,
-              barrierDismissible: false,
-              builder: (ctx) => AlertDialog(
-                title: const Text('Account Suspended'),
-                content: const Text(AccountSuspensionHelper.message),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: const Text('OK'),
-                  ),
-                ],
-              ),
-            );
-          });
           return;
         }
 
         if (profile != null && profile['registrationCompleted'] == true) {
+          // Email verification gate: skip for OAuth providers
+          final providers = List<String>.from(profile['providers'] ?? []);
+          final hasOAuth = providers.any((p) => p == 'google.com' || p == 'apple.com');
+          if (!hasOAuth) {
+            final emailVerified = await AuthService.instance.checkEmailVerified();
+            if (!emailVerified) {
+            if (!mounted) return;
+            Navigator.pushReplacement(
+              context,
+              PageRouteBuilder(
+                pageBuilder: (ctx, anim, sec) => const VerifyEmailPage(),
+                transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+                transitionDuration: const Duration(milliseconds: 800),
+              ),
+            );
+            return;
+          }
+          }
           Navigator.pushReplacement(
             context,
             PageRouteBuilder(

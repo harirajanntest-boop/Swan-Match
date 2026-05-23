@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../core/utils/stream_utils.dart';
+import 'user_service.dart';
 
 class MatchService {
   MatchService._();
@@ -194,9 +195,20 @@ class MatchService {
     if (profile['isDeleted'] == true) return false;
     if (profile['status']?.toString().toLowerCase() == 'deleted') return false;
     if (profile['showProfileToEveryone'] == false) return false;
+
+    // IMAGE MODERATION: Only show approved profiles to others
+    final approvalStatus = (profile['profileApprovalStatus'] ?? 'pending').toString().toLowerCase();
+    if (approvalStatus != 'approved') return false;
+
     final visibility = (profile['profileVisibility'] ?? 'Public').toString();
     if (visibility == 'Private') return false;
     if (visibility == 'Curated Matches Only') return false;
+    // Profile completion filter: hide incomplete profiles (< 60%)
+    final completion = UserService.instance.calculateProfileCompletion(profile);
+    if (completion < 0.6) return false;
+    // Suspension filter: hide suspended accounts from feeds
+    final account = (profile['account'] ?? '').toString().toLowerCase();
+    if (account == 'suspended') return false;
     return true;
   }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/services/auth_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
@@ -9,6 +10,7 @@ import 'package:swam_match_app/features/auth/presentation/pages/custom_login_pag
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/dob_verification_screen.dart';
+import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
 
 class CustomSignupPage extends StatefulWidget {
   const CustomSignupPage({super.key});
@@ -76,23 +78,12 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   Future<void> _routeUser(User user) async {
     if (!mounted) return;
     try {
-      final profile = await UserService.instance.getUserProfile(user.uid);
-      if (!mounted) return;
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null &&
           UserService.instance.isAccountSuspended(profile)) {
-        await FirebaseAuth.instance.signOut();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Your account has been suspended due to your actions. '
-              'For more information, contact swanmatch.com.',
-            ),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 6),
-          ),
-        );
+        await AccountSuspensionHelper.blockIfSuspended(context);
         return;
       }
 
@@ -112,6 +103,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
         );
       }
     } catch (e) {
+      print('DEBUG _routeUser error: $e');
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(
         context,
@@ -119,6 +111,14 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
         (route) => false,
       );
     }
+  }
+
+  bool _isSuspiciousName(String name) {
+    final patterns = [
+      RegExp(r'^(test|asdf|qwerty|user|anon|abc|demo|fake)\d*$', caseSensitive: false),
+      RegExp(r'(.)\1{4,}'), // repeated char more than 4 times
+    ];
+    return patterns.any((p) => p.hasMatch(name.trim()));
   }
 
   // ─── Email / Password Sign Up ───
@@ -129,6 +129,11 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
 
     if (name.isEmpty || email.isEmpty || password.isEmpty) {
       _showError('Please fill in all fields.');
+      return;
+    }
+
+    if (_isSuspiciousName(name)) {
+      _showError('Please enter your real full name.');
       return;
     }
 
@@ -159,6 +164,16 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       final user = credential.user;
 
       if (user != null) {
+        // Track signup for velocity detection
+        try {
+          await FirebaseFunctions.instance
+              .httpsCallable('trackSignup')
+              .call({});
+        } catch (_) {}
+
+        // Send verification email
+        await AuthService.instance.sendVerificationEmail();
+
         // Create Firestore Profile
         await UserService.instance.upsertUserProfile(
           uid: user.uid,
@@ -171,10 +186,41 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
             'registrationCompleted': false,
             'createdAt': DateTime.now(),
             'updatedAt': DateTime.now(),
+            'isVerified': false,
+            'idVerified': false,
+            'profileVerified': false,
+            'profileApprovalStatus': 'pending',
+            'verificationStatus': 'pending',
+            'subscriptionPlan': 'free',
+            'subscriptionName': 'Free',
+            'account': 'active',
           },
         );
 
         if (!mounted) return;
+        // Show verification notice before proceeding
+        final proceed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.onyx,
+            title: const Text('Verify Your Email', style: TextStyle(color: Colors.white)),
+            content: const Text(
+              'We sent a verification link to your email. '
+              'Please verify before accessing the app. '
+              'You can still complete your profile in the meantime.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Continue', style: TextStyle(color: AppColors.goldMedium)),
+              ),
+            ],
+          ),
+        );
+
+        if (!mounted || proceed != true) return;
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (_) => const OnboardingFlow()),
@@ -216,7 +262,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       }
 
       // Step 2: Check if user already has a profile
-      final profile = await UserService.instance.getUserProfile(user.uid);
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null) {
         // Existing User
@@ -335,6 +381,14 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
           'registrationCompleted': false,
           'createdAt': DateTime.now(),
           'updatedAt': DateTime.now(),
+          'isVerified': false,
+          'idVerified': false,
+          'profileVerified': false,
+          'profileApprovalStatus': 'pending',
+          'verificationStatus': 'pending',
+          'subscriptionPlan': 'free',
+          'subscriptionName': 'Free',
+          'account': 'active',
         },
       );
       if (mounted) {
@@ -419,6 +473,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
                 controller: _nameController,
                 hintText: "Full Name",
                 keyboardType: TextInputType.name,
+                maxLength: 50,
               ),
               const SizedBox(height: 10),
 
@@ -427,6 +482,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
                 controller: _emailController,
                 hintText: "Email",
                 keyboardType: TextInputType.emailAddress,
+                maxLength: 254,
               ),
               const SizedBox(height: 10),
 
@@ -598,6 +654,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     bool obscureText = false,
     TextInputType? keyboardType,
     Widget? suffixIcon,
+    int? maxLength,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -609,6 +666,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
         controller: controller,
         obscureText: obscureText,
         keyboardType: keyboardType,
+        maxLength: maxLength,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
           hintText: hintText,
@@ -619,6 +677,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
             vertical: 18,
           ),
           suffixIcon: suffixIcon,
+          counterText: '',
         ),
       ),
     );

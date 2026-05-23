@@ -29,7 +29,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
   DateTime? _dateOfBirth;
   String? _gender;
   final ImagePicker _picker = ImagePicker();
-  List<File> _localPhotos = [];
+  List<String> _localPhotos = [];
   bool _termsAccepted = false;
 
   final List<String> _genders = [
@@ -50,7 +50,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     _dateOfBirth = widget.data.dateOfBirth;
     _gender = widget.data.gender.isNotEmpty ? widget.data.gender : null;
     if (widget.data.photos.isNotEmpty) {
-      _localPhotos = widget.data.photos.map((p) => File(p)).toList();
+      _localPhotos = List<String>.from(widget.data.photos);
     }
   }
 
@@ -109,7 +109,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
         source: ImageSource.gallery,
         imageQuality: 80,
       );
-      if (image != null) setState(() => _localPhotos.add(File(image.path)));
+      if (image != null) setState(() => _localPhotos.add(image.path));
     } catch (_) {}
   }
 
@@ -156,9 +156,9 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     widget.data.city = city;
     widget.data.country = country;
     widget.data.termsAccepted = _termsAccepted;
-    widget.data.photos = _localPhotos.map((f) => f.path).toList();
+    widget.data.photos = List<String>.from(_localPhotos);
     widget.data.profilePicture = _localPhotos.isNotEmpty
-        ? _localPhotos.first.path
+        ? _localPhotos.first
         : '';
 
     widget.onNext();
@@ -229,6 +229,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           label: 'FIRST NAME',
                           hint: 'First name',
                           controller: _firstNameCtrl,
+                          maxLength: 50,
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -237,6 +238,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           label: 'LAST NAME',
                           hint: 'Last name',
                           controller: _lastNameCtrl,
+                          maxLength: 50,
                         ),
                       ),
                     ],
@@ -345,6 +347,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           label: 'CITY',
                           hint: 'Your city',
                           controller: _cityCtrl,
+                          maxLength: 100,
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -353,6 +356,7 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           label: 'COUNTRY',
                           hint: 'Your country',
                           controller: _countryCtrl,
+                          maxLength: 100,
                         ),
                       ),
                     ],
@@ -407,12 +411,19 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                           children: [
                             ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.file(
-                                _localPhotos[index],
-                                fit: BoxFit.cover,
-                                width: double.infinity,
-                                height: double.infinity,
-                              ),
+                              child: _localPhotos[index].startsWith('http')
+                                  ? Image.network(
+                                      _localPhotos[index],
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                      height: double.infinity,
+                                    )
+                                  : Image.file(
+                                      File(_localPhotos[index]),
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                      height: double.infinity,
+                                    ),
                             ),
                             Positioned(
                               top: 4,

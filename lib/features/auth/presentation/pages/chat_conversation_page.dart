@@ -282,6 +282,7 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                         TextField(
                           controller: reasonController,
                           maxLines: 3,
+                          maxLength: 500,
                           style: const TextStyle(color: Colors.white, fontSize: 14),
                           decoration: InputDecoration(
                             hintText: 'Please describe the issue...',
@@ -338,6 +339,14 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                   reasonController.dispose();
                 });
                 if (shouldReport && mounted) {
+                  if (reason.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('You must provide a reason to report someone.'),
+                      ),
+                    );
+                    return;
+                  }
                   try {
                     await UserService.instance.reportUser(
                       widget.otherUserId,

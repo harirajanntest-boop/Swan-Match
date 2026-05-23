@@ -56,6 +56,8 @@ class _MainDashboardState extends State<MainDashboard> {
       if (!mounted) return;
       final blocked = await AccountSuspensionHelper.blockIfSuspended(context);
       if (blocked || !mounted) return;
+      await AccountSuspensionHelper.showAppealApprovedIfNeeded(context);
+      if (!mounted) return;
       UserService.instance.updateOnlineStatus(true);
       _checkAndShowLinkingPopup();
       _syncSubscriptionStatus();

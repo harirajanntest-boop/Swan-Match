@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:swam_match_app/firebase_options.dart';
 
 import 'chat_presence_service.dart';
+import 'security_monitoring_service.dart';
 
 /// Background/terminated handler — must be top-level and registered once in main().
 @pragma('vm:entry-point')
@@ -93,6 +94,8 @@ class PushNotificationService {
     _authSubscription = _auth.authStateChanges().listen((user) async {
       if (user != null) {
         await _persistToken();
+        // Trigger secure background session tracking upon login/app start
+        unawaited(SecurityMonitoringService.instance.logSessionActivity('app_start'));
       }
     });
 

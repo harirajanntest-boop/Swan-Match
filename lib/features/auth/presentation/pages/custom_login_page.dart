@@ -8,6 +8,7 @@ import 'package:swam_match_app/services/user_service.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/custom_signup_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
+import 'package:swam_match_app/features/auth/presentation/pages/verify_email_page.dart';
 import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
 import 'forgot_password_page.dart';
 
@@ -48,17 +49,32 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
   Future<void> _routeUser(User user) async {
     if (!mounted) return;
     try {
-      final profile = await UserService.instance.getUserProfile(user.uid);
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
       if (!mounted) return;
 
       if (profile != null &&
           UserService.instance.isAccountSuspended(profile)) {
-        await FirebaseAuth.instance.signOut();
-        _showError(AccountSuspensionHelper.message);
+        if (!mounted) return;
+        await AccountSuspensionHelper.blockIfSuspended(context);
         return;
       }
 
       if (profile != null && profile['registrationCompleted'] == true) {
+        // Email verification gate (skip for OAuth providers)
+        final providers = List<String>.from(profile['providers'] ?? []);
+        final hasOAuth = providers.any((p) => p == 'google.com' || p == 'apple.com');
+        if (!hasOAuth) {
+          final emailVerified = await AuthService.instance.checkEmailVerified();
+          if (!emailVerified) {
+            if (!mounted) return;
+            Navigator.pushAndRemoveUntil(
+              context,
+              MaterialPageRoute(builder: (_) => const VerifyEmailPage()),
+              (route) => false,
+            );
+            return;
+          }
+        }
         // User has completed all details → Dashboard
         Navigator.pushAndRemoveUntil(
           context,
@@ -74,6 +90,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         );
       }
     } catch (e) {
+      print('DEBUG _routeUser error: $e');
       if (!mounted) return;
       // On error, default to details screen
       Navigator.pushAndRemoveUntil(
@@ -97,6 +114,9 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     setState(() => _isLoading = true);
 
     try {
+      // Login throttling check before attempting sign-in
+      await AuthService.instance.checkLoginThrottle(email);
+
       final credential = await AuthService.instance.signInWithEmailAndPassword(
         email: email,
         password: password,
@@ -106,9 +126,13 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         _showError('Login failed. Please try again.');
         return;
       }
+      // Report successful login to clear throttle counter
+      await AuthService.instance.reportLoginSuccess(email);
       await _routeUser(user);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
+      // Report failed login attempt
+      await AuthService.instance.reportLoginFailure(email);
       if (e.code == 'invalid-credential' ||
           e.code == 'wrong-password' ||
           e.code == 'user-not-found') {
@@ -131,6 +155,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       _showError(AuthService.instance.readableAuthError(e));
     } catch (e) {
       if (!mounted) return;
+      await AuthService.instance.reportLoginFailure(email);
       _showError(AuthService.instance.readableAuthError(e));
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -157,7 +182,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       }
 
       // Step 2: Check if user already has a profile
-      final profile = await UserService.instance.getUserProfile(user.uid);
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null) {
         // Existing User
@@ -382,6 +407,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
                 controller: _emailController,
                 hintText: "Email",
                 keyboardType: TextInputType.emailAddress,
+                maxLength: 254,
               ),
               const SizedBox(height: 12),
 
@@ -547,6 +573,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     bool obscureText = false,
     TextInputType? keyboardType,
     Widget? suffixIcon,
+    int? maxLength,
   }) {
     return Container(
       decoration: BoxDecoration(
@@ -558,6 +585,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         controller: controller,
         obscureText: obscureText,
         keyboardType: keyboardType,
+        maxLength: maxLength,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
           hintText: hintText,
@@ -568,6 +596,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
             vertical: 18,
           ),
           suffixIcon: suffixIcon,
+          counterText: '',
         ),
       ),
     );

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import 'push_notification_service.dart';
 import 'user_service.dart';
@@ -185,6 +186,14 @@ class AuthService {
         'phoneNumber': user.phoneNumber ?? sanitizedData['phoneNumber'] ?? '',
         'createdAt': DateTime.now(),
         'updatedAt': DateTime.now(),
+        'isVerified': false,
+        'idVerified': false,
+        'profileVerified': false,
+        'profileApprovalStatus': 'pending',
+        'verificationStatus': 'pending',
+        'subscriptionPlan': 'free',
+        'subscriptionName': 'Free',
+        'account': 'active',
       },
     );
     await UserService.instance.syncAuthProviders();
@@ -683,6 +692,57 @@ class AuthService {
     } catch (_) {
       return '';
     }
+  }
+
+  // ─── Login Throttling ─────────────────────────────────────────────────────
+  Future<void> checkLoginThrottle(String email) async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('trackLoginAttempt')
+          .call({'email': email});
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'resource-exhausted') {
+        throw FirebaseAuthException(
+          code: 'too-many-requests',
+          message: 'Too many login attempts. Please try again in 15 minutes.',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> reportLoginSuccess(String email) async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('trackLoginSuccess')
+          .call({'email': email});
+    } catch (_) {}
+  }
+
+  Future<void> reportLoginFailure(String email) async {
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('trackLoginFailure')
+          .call({'email': email});
+    } catch (_) {}
+  }
+
+  // ─── Email Verification ──────────────────────────────────────────────────
+  Future<void> sendVerificationEmail() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    if (!user.emailVerified) {
+      await user.sendEmailVerification();
+    }
+  }
+
+  bool get isEmailVerified => _auth.currentUser?.emailVerified ?? false;
+
+  Future<bool> checkEmailVerified() async {
+    final user = _auth.currentUser;
+    if (user == null) return false;
+    await user.reload();
+    return user.emailVerified;
   }
 }
 

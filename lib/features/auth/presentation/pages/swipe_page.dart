@@ -527,6 +527,10 @@ class _SwipePageState extends State<SwipePage> {
       final data = doc.data();
       if (DeletedUserHelper.isDeleted(data)) continue;
 
+      // Profile completion filter: skip incomplete profiles (< 60%)
+      final completion = UserService.instance.calculateProfileCompletion(data);
+      if (completion < _minProfileCompletion) continue;
+
       UserModel user;
       try {
         user = UserModel.fromMap(<String, dynamic>{...data, 'uid': doc.id});
@@ -536,6 +540,9 @@ class _SwipePageState extends State<SwipePage> {
       }
       if (!user.registrationCompleted) continue;
       if (user.isDeleted || user.status.toLowerCase() == 'deleted') continue;
+
+      // IMAGE MODERATION: Filter out pending/rejected users from the Discover stream
+      if (user.profileApprovalStatus.toLowerCase() != 'approved') continue;
 
       if (targetNorm.isNotEmpty) {
         final g = _normalizeGender(user.gender);
@@ -630,6 +637,8 @@ class _SwipePageState extends State<SwipePage> {
       });
     }
   }
+
+  static const double _minProfileCompletion = 0.6; // 60% minimum to appear in feed
 
   List<UserModel> _applyDartFilters(
     List<UserModel> users,

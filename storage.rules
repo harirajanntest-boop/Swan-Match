@@ -1,12 +1,36 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    match /users/{userId}/{allPaths=**} {
-      // Allow users to upload their own photos
-      allow write: if request.auth != null && request.auth.uid == userId;
-      // Allow authenticated users to view photos (required for swipe/matching functionality)
-      // App logic controls which photos are shown based on registration status and matching criteria
-      allow read: if request.auth != null;
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email == "sasikumar.s9951@gmail.com" ||
+        request.auth.token.email == "admin@gmail.com" ||
+        request.auth.token.email.matches(".*@swanmatch\\.com$")
+      );
+    }
+
+    match /users/{userId} {
+      match /profile/{allPaths=**} {
+        // Public profile photos: Anyone authenticated can read
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == userId
+                     && request.resource.size < 5 * 1024 * 1024
+                     && request.resource.contentType.matches('image/.*');
+      }
+      match /verification/{allPaths=**} {
+        // Sensitive verification uploads: Only owner or admin can read
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        allow write: if request.auth != null && request.auth.uid == userId
+                     && request.resource.size < 5 * 1024 * 1024
+                     && request.resource.contentType.matches('image/.*');
+      }
+      match /{allPaths=**} {
+        // Fallback for any other user-specific uploads
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if request.auth != null && request.auth.uid == userId
+                     && request.resource.size < 5 * 1024 * 1024
+                     && request.resource.contentType.matches('image/.*');
+      }
     }
     
     // Default deny for everything else

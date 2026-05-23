@@ -48,7 +48,6 @@ class _FreeTrialPageState extends State<FreeTrialPage>
       final trialEndDate = DateTime.now().add(const Duration(days: 7));
       await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
         'subscriptionPlan': 'trial',
-        'subscriptionName': 'Free Trial',
         'subscriptionStatus': 'trialing',
         'freeTrialEndsAt': Timestamp.fromDate(trialEndDate),
         'freeTrialStartedAt': Timestamp.now(),

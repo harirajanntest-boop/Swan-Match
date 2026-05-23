@@ -2,6 +2,7 @@ import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
@@ -111,6 +112,16 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+    
+    try {
+      await FirebaseAppCheck.instance.activate(
+        androidProvider: AndroidProvider.playIntegrity,
+        appleProvider: AppleProvider.appAttest,
+      );
+    } catch (e) {
+      debugPrint("App Check initialization error: $e");
+    }
+
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
     await PushNotificationService.instance.initialize();
   }

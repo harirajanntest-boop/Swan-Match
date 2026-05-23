@@ -482,6 +482,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                                 TextField(
                                   controller: reasonController,
                                   maxLines: 3,
+                                  maxLength: 500,
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 14,
@@ -543,6 +544,15 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                           reasonController.dispose();
                         });
                         if (shouldReport) {
+                          if (reason.isEmpty) {
+                            if (!context.mounted) return;
+                            showLinearMessage(
+                              context,
+                              'You must provide a reason to report someone.',
+                              isError: true,
+                            );
+                            return;
+                          }
                           try {
                             await UserService.instance.reportUser(
                               uid,

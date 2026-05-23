@@ -151,6 +151,14 @@ class _DobVerificationScreenState extends State<DobVerificationScreen> {
               'registrationCompleted': false,
               'createdAt': DateTime.now(),
               'updatedAt': DateTime.now(),
+              'isVerified': false,
+              'idVerified': false,
+              'profileVerified': false,
+              'profileApprovalStatus': 'pending',
+              'verificationStatus': 'pending',
+              'subscriptionPlan': 'free',
+              'subscriptionName': 'Free',
+              'account': 'active',
             },
           );
         }
@@ -159,7 +167,7 @@ class _DobVerificationScreenState extends State<DobVerificationScreen> {
       else if (AuthService.instance.hasPendingCredentials) {
         final credential = await AuthService.instance.completeDelayedSignIn();
         user = credential.user;
-
+ 
         if (user != null) {
           final profile = await UserService.instance.getUserProfile(user.uid);
           
@@ -178,6 +186,14 @@ class _DobVerificationScreenState extends State<DobVerificationScreen> {
                 'registrationCompleted': false,
                 'createdAt': DateTime.now(),
                 'updatedAt': DateTime.now(),
+                'isVerified': false,
+                'idVerified': false,
+                'profileVerified': false,
+                'profileApprovalStatus': 'pending',
+                'verificationStatus': 'pending',
+                'subscriptionPlan': 'free',
+                'subscriptionName': 'Free',
+                'account': 'active',
               },
             );
           }

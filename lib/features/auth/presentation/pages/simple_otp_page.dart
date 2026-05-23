@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/account_suspension_helper.dart';
 import 'main_dashboard.dart';
 import 'onboarding_flow.dart';
 
@@ -114,13 +115,20 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
           
           // Now check if user has completed onboarding
           try {
-            final userDoc = await UserService.instance.getUserProfile(user.uid);
+            final userDoc = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
             
             if (userDoc != null) {
               print('DEBUG: User profile found: $userDoc');
               print('DEBUG: registrationCompleted value: ${userDoc['registrationCompleted']}');
               
               if (userDoc['registrationCompleted'] == true) {
+                // Check suspension before routing
+                if (UserService.instance.isAccountSuspended(userDoc)) {
+                  if (mounted) {
+                    await AccountSuspensionHelper.blockIfSuspended(context);
+                  }
+                  return;
+                }
                 // User has account + completed onboarding → Go to swipe page
                 print('DEBUG: User has completed onboarding, going to dashboard');
                 if (mounted) {
@@ -132,6 +140,13 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
                 }
                 return;
               } else {
+                // Also check suspension even for incomplete profiles
+                if (UserService.instance.isAccountSuspended(userDoc)) {
+                  if (mounted) {
+                    await AccountSuspensionHelper.blockIfSuspended(context);
+                  }
+                  return;
+                }
                 // User has account + NOT completed onboarding → Go to onboarding to complete it
                 print('DEBUG: User exists but hasn\'t completed onboarding, proceeding to onboarding');
                 if (mounted) {
@@ -189,7 +204,7 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
       final user = credential.user!;
       
       // Check if user exists in database
-      final userDoc = await UserService.instance.getUserProfile(user.uid);
+      final userDoc = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
       
       if (userDoc == null) {
         // New user - create account and go to onboarding
@@ -200,6 +215,14 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
             'email': '',
             'phoneNumber': widget.phoneNumber,
             'registrationCompleted': false,
+            'isVerified': false,
+            'idVerified': false,
+            'profileVerified': false,
+            'profileApprovalStatus': 'pending',
+            'verificationStatus': 'pending',
+            'subscriptionPlan': 'free',
+            'subscriptionName': 'Free',
+            'account': 'active',
           },
         );
         
@@ -216,6 +239,14 @@ class _SimpleOtpPageState extends State<SimpleOtpPage> {
           'lastLoginAt': DateTime.now(),
         });
         
+        // Check suspension before routing
+        if (UserService.instance.isAccountSuspended(userDoc)) {
+          if (mounted) {
+            await AccountSuspensionHelper.blockIfSuspended(context);
+          }
+          return;
+        }
+
         if (userDoc['registrationCompleted'] == true) {
           if (mounted) {
             Navigator.pushAndRemoveUntil(

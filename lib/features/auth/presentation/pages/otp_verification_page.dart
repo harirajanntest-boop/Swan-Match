@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/registration_draft_service.dart';
 import '../../../../services/user_service.dart';
+import '../../../../shared/helpers/account_suspension_helper.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
 import 'onboarding_flow.dart';
@@ -270,6 +272,18 @@ class _OtpVerificationPageState extends State<OtpVerificationPage>
         await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
           'lastLoginAt': DateTime.now(),
         });
+
+        // Check suspension
+        final profile = await UserService.instance.getUserProfile(
+          FirebaseAuth.instance.currentUser!.uid,
+        );
+        if (profile != null &&
+            UserService.instance.isAccountSuspended(profile)) {
+          if (mounted) {
+            await AccountSuspensionHelper.blockIfSuspended(context);
+          }
+          return;
+        }
 
         if (!mounted) return;
         Navigator.pushAndRemoveUntil(

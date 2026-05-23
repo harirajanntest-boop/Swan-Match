@@ -169,6 +169,7 @@ class _OnboardingStep5PersonalityState extends State<OnboardingStep5Personality>
                         TextField(
                           controller: _bioCtrl,
                           maxLines: 5,
+                          maxLength: 2000,
                           style: const TextStyle(color: Colors.white, fontSize: 15, height: 1.5),
                           decoration: const InputDecoration(
                             hintText: 'Tell your story — what makes you unique, your passions, and what you\'re looking for in a partner...',
