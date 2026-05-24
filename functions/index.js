@@ -200,8 +200,10 @@ const { defineSecret } = require('firebase-functions/params');
 // 1. SECRETS
 const stripeSecretKey = defineSecret('STRIPE_SECRET_KEY');
 const stripeWebhookSecret = defineSecret('STRIPE_WEBHOOK_SECRET');
-/** Monthly plan ($19.99) — set via: firebase functions:secrets:set STRIPE_PRICE_MONTHLY */
+/** Pricing secrets — set via: firebase functions:secrets:set STRIPE_PRICE_MONTHLY, etc. */
 const stripePriceMonthly = defineSecret('STRIPE_PRICE_MONTHLY');
+const stripePriceSixMonth = defineSecret('STRIPE_PRICE_SIXMONTH');
+const stripePriceYearly = defineSecret('STRIPE_PRICE_YEARLY');
 /** SMTP credentials for Nodemailer email sending — set via:
  *  firebase functions:secrets:set SMTP_USER
  *  firebase functions:secrets:set SMTP_PASS
@@ -226,20 +228,14 @@ async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
   });
 }
 
-// 6-month / yearly IDs (Stripe Dashboard). Monthly is only in STRIPE_PRICE_MONTHLY secret.
-const PREMIUM_PRICE_IDS_FIXED = {
-  sixMonth: 'price_1TQBjHE3Rb5ApPY7CSk2jPPy',
-  yearly: 'price_1TQBknE3Rb5ApPY7oldut4en',
-};
-
 /** Previous $19.00 monthly price — keep mapping for existing subscribers. */
 const LEGACY_MONTHLY_PRICE_ID = 'price_1TKOrRE3Rb5ApPY7fOuscBJK';
 
 function readPremiumPriceIds() {
   return {
     monthly: (stripePriceMonthly.value() || '').trim(),
-    sixMonth: PREMIUM_PRICE_IDS_FIXED.sixMonth,
-    yearly: PREMIUM_PRICE_IDS_FIXED.yearly,
+    sixMonth: (stripePriceSixMonth.value() || '').trim(),
+    yearly: (stripePriceYearly.value() || '').trim(),
   };
 }
 
@@ -300,7 +296,7 @@ exports.checkPhoneExists = onCall(async (request) => {
  * Expected data: { priceId: string, successUrl: string, cancelUrl: string }
  */
 exports.createCheckoutSession = onCall(
-  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  { secrets: [stripeSecretKey, stripePriceMonthly, stripePriceSixMonth, stripePriceYearly] },
   async (request) => {
   // AUTH GUARD
   if (!request.auth) {
@@ -377,7 +373,7 @@ exports.createCheckoutSession = onCall(
  * Returns configured Stripe price IDs for the client (monthly from Firebase secret).
  */
 exports.getSubscriptionPriceIds = onCall(
-  { secrets: [stripePriceMonthly] },
+  { secrets: [stripePriceMonthly, stripePriceSixMonth, stripePriceYearly] },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -398,7 +394,7 @@ exports.getSubscriptionPriceIds = onCall(
  */
 exports.handleStripeWebhook = onRequest(
   {
-    secrets: [stripeSecretKey, stripeWebhookSecret, stripePriceMonthly],
+    secrets: [stripeSecretKey, stripeWebhookSecret, stripePriceMonthly, stripePriceSixMonth, stripePriceYearly],
     rawBody: true, // Required for Stripe signature verification
   },
   async (req, res) => {
@@ -466,6 +462,29 @@ exports.handleStripeWebhook = onRequest(
 
           if (session.subscription) {
             updateData.stripeSubscriptionId = session.subscription;
+          }
+
+          // Step 17: Subscription abuse monitoring (multi-account sharing check)
+          const abuseQuery = await db.collection('users')
+            .where('stripeCustomerId', '==', session.customer)
+            .get();
+          if (!abuseQuery.empty) {
+            const distinctUids = abuseQuery.docs.map(doc => doc.id).filter(id => id !== uid);
+            if (distinctUids.length > 0) {
+              console.warn(`[subscriptionAbuse] Stripe Customer ID ${session.customer} is shared between current user ${uid} and other users: ${distinctUids.join(', ')}`);
+              
+              updateData.isFlaggedSubscriptionAbuse = true;
+              updateData.subscriptionAbuseReason = `Shared Stripe Customer ID ${session.customer} with: ${distinctUids.join(', ')}`;
+              
+              await db.collection('subscription_abuse_logs').add({
+                stripeCustomerId: session.customer,
+                userId: uid,
+                sharedWithUids: distinctUids,
+                detectedAt: admin.firestore.FieldValue.serverTimestamp()
+              });
+              
+              await logAdminAction('system', 'subscription_abuse_detected', uid, `Shared Stripe Customer ID with ${distinctUids.join(', ')}`);
+            }
           }
 
           await db.collection('users').doc(uid).update(updateData);
@@ -632,7 +651,7 @@ exports.handleStripeWebhook = onRequest(
  * Also writes the authoritative status back to Firestore.
  */
 exports.verifySubscription = onCall(
-  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  { secrets: [stripeSecretKey, stripePriceMonthly, stripePriceSixMonth, stripePriceYearly] },
   async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -774,7 +793,7 @@ exports.verifySubscription = onCall(
  *   intervalCount, formattedAmount, formattedPerMonth, productName } } }
  */
 exports.getStripePrices = onCall(
-  { secrets: [stripeSecretKey, stripePriceMonthly] },
+  { secrets: [stripeSecretKey, stripePriceMonthly, stripePriceSixMonth, stripePriceYearly] },
   async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'User must be authenticated.');
@@ -1112,7 +1131,7 @@ exports.onUserSoftDeleted = onDocumentUpdated('users/{uid}', async (event) => {
  * the sliding window. This prevents brute-force password guessing.
  */
 exports.trackLoginAttempt = onCall(async (request) => {
-  const { email } = request.data;
+  const { email, deviceId, deviceModel, osVersion, platform } = request.data;
   if (!email || typeof email !== 'string') {
     throw new HttpsError('invalid-argument', 'Email is required.');
   }
@@ -1130,6 +1149,23 @@ exports.trackLoginAttempt = onCall(async (request) => {
   const recent = (data.timestamps || []).filter(t => now - t < windowMs);
   const count = recent.length;
 
+  // Retrieve IP and user agent
+  const ip = request.rawRequest?.ip || request.rawRequest?.headers['x-forwarded-for'] || 'unknown';
+  const userAgent = request.rawRequest?.headers['user-agent'] || 'unknown';
+
+  // Persistent audit log of attempt
+  await db.collection('_loginLogs').add({
+    email: key,
+    ip,
+    userAgent,
+    deviceId: deviceId || 'unknown',
+    deviceModel: deviceModel || 'unknown',
+    osVersion: osVersion || 'unknown',
+    platform: platform || 'unknown',
+    status: 'attempt',
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
   if (count >= maxAttempts) {
     throw new HttpsError(
       'resource-exhausted',
@@ -1146,12 +1182,30 @@ exports.trackLoginAttempt = onCall(async (request) => {
  * Clears the attempt counter for that email so previous failures are forgotten.
  */
 exports.trackLoginSuccess = onCall(async (request) => {
-  const { email } = request.data;
+  const { email, deviceId, deviceModel, osVersion, platform } = request.data;
   if (!email || typeof email !== 'string') return { cleared: false };
   const key = email.toLowerCase().trim();
 
   const db = admin.firestore();
   await db.collection('_loginAttempts').doc(key).delete();
+
+  // Retrieve IP and user agent
+  const ip = request.rawRequest?.ip || request.rawRequest?.headers['x-forwarded-for'] || 'unknown';
+  const userAgent = request.rawRequest?.headers['user-agent'] || 'unknown';
+
+  // Audit successful login
+  await db.collection('_loginLogs').add({
+    email: key,
+    ip,
+    userAgent,
+    deviceId: deviceId || 'unknown',
+    deviceModel: deviceModel || 'unknown',
+    osVersion: osVersion || 'unknown',
+    platform: platform || 'unknown',
+    status: 'success',
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
   return { cleared: true };
 });
 
@@ -1160,7 +1214,7 @@ exports.trackLoginSuccess = onCall(async (request) => {
  * Increments the attempt counter for that email.
  */
 exports.trackLoginFailure = onCall(async (request) => {
-  const { email } = request.data;
+  const { email, deviceId, deviceModel, osVersion, platform } = request.data;
   if (!email || typeof email !== 'string') return { recorded: false };
 
   const key = email.toLowerCase().trim();
@@ -1178,6 +1232,23 @@ exports.trackLoginFailure = onCall(async (request) => {
     recent.push(now);
     transaction.set(ref, { timestamps: recent }, { merge: true });
     attemptsCount = recent.length;
+  });
+
+  // Retrieve IP and user agent
+  const ip = request.rawRequest?.ip || request.rawRequest?.headers['x-forwarded-for'] || 'unknown';
+  const userAgent = request.rawRequest?.headers['user-agent'] || 'unknown';
+
+  // Audit failed login
+  await db.collection('_loginLogs').add({
+    email: key,
+    ip,
+    userAgent,
+    deviceId: deviceId || 'unknown',
+    deviceModel: deviceModel || 'unknown',
+    osVersion: osVersion || 'unknown',
+    platform: platform || 'unknown',
+    status: 'failure',
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
   });
 
   return { recorded: true, attempts: attemptsCount };
@@ -1570,18 +1641,27 @@ exports.onReportCreated = onDocumentCreated('reports/{reportId}', async (event) 
       .get();
 
     const reportCount = snapshot.size;
+    const p1Reports = snapshot.docs.filter(doc => {
+      const data = doc.data();
+      return data.priority === 'P1' || data.priority === 1;
+    });
+    const p1Count = p1Reports.length;
 
-    // Auto-suspend at 3 reports
-    if (reportCount >= 3) {
+    // Auto-suspend at 3+ P1 reports OR 5+ total reports
+    if (p1Count >= 3 || reportCount >= 5) {
+      const reason = p1Count >= 3 
+        ? `Auto-suspended: received ${p1Count} P1 (Critical) reports` 
+        : `Auto-suspended: received ${reportCount} total reports`;
+
       await admin.firestore().collection('users').doc(reportedUid).update({
         account: 'Suspended',
-        suspensionReason: `Auto-suspended: received ${reportCount} reports`,
+        suspensionReason: reason,
         suspendedAt: admin.firestore.FieldValue.serverTimestamp(),
         suspendedBy: 'system',
       });
 
-      await logAdminAction('system', 'auto_suspend', reportedUid, `Auto-suspended: ${reportCount} reports`);
-      console.log(`[autoSuspend] User ${reportedUid} suspended after ${reportCount} reports`);
+      await logAdminAction('system', 'auto_suspend', reportedUid, reason);
+      console.log(`[autoSuspend] User ${reportedUid} suspended: ${reason}`);
     }
 
     // Send notification to reporter thanking them
@@ -1700,11 +1780,27 @@ exports.onSupportQueryCreated = onDocumentCreated(
   if (URGENT_KEYWORDS.some(k => combinedText.includes(k))) ticketPriority = 'urgent';
   else if (HIGH_KEYWORDS.some(k => combinedText.includes(k))) ticketPriority = 'high';
 
-  // Update the ticket document with computed priority
+  // SLA tracking durations
+  const slaDurations = {
+    urgent: 2 * 60 * 60 * 1000,   // 2 hours
+    high: 4 * 60 * 60 * 1000,     // 4 hours
+    normal: 24 * 60 * 60 * 1000,  // 24 hours
+  };
+  const now = Date.now();
+  const durationMs = slaDurations[ticketPriority] || slaDurations.normal;
+  const slaDeadline = admin.firestore.Timestamp.fromMillis(now + durationMs);
+
+  // Update the ticket document with computed priority and SLA details
   try {
-    await event.data.ref.update({ priority: ticketPriority });
+    await event.data.ref.update({ 
+      priority: ticketPriority,
+      slaDeadline,
+      slaDurationMs: durationMs,
+      slaExceeded: false,
+      status: 'open'
+    });
   } catch (e) {
-    console.warn('[onSupportQueryCreated] Could not set priority:', e.message);
+    console.warn('[onSupportQueryCreated] Could not set priority/SLA:', e.message);
   }
 
   const smtpHost = 'smtp.gmail.com';
@@ -2547,3 +2643,188 @@ exports.backfillReportPriority = onCall(async (request) => {
   console.log(`[backfillReportPriority] Updated ${updated} of ${snapshot.size} reports.`);
   return { success: true, totalReports: snapshot.size, updated };
 });
+
+// ============================================================================
+// STEP 17: PHOTO HASH DUPLICATE DETECTION
+// ============================================================================
+
+exports.checkPhotoDuplicate = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'User must be authenticated.');
+  }
+
+  const { photoUrl, photoHash } = request.data;
+  if (!photoUrl || !photoHash) {
+    throw new HttpsError('invalid-argument', 'photoUrl and photoHash are required.');
+  }
+
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+
+  // Search for duplicate photo hash from other users
+  const duplicatesSnap = await db.collection('user_photo_hashes')
+    .where('photoHash', '==', photoHash)
+    .get();
+
+  let isDuplicate = false;
+  let duplicatedWithUids = [];
+
+  for (const doc of duplicatesSnap.docs) {
+    const data = doc.data();
+    if (data.userId !== uid) {
+      isDuplicate = true;
+      duplicatedWithUids.push(data.userId);
+    }
+  }
+
+  // Save current photo hash
+  await db.collection('user_photo_hashes').add({
+    userId: uid,
+    photoUrl,
+    photoHash,
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  if (isDuplicate) {
+    // Flag current user as suspicious duplicate/catfish
+    await db.collection('users').doc(uid).update({
+      isFlaggedSuspicious: true,
+      suspiciousReason: `Duplicate photo hash detected: matches user(s) ${duplicatedWithUids.join(', ')}`,
+      flaggedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Also flag the matching other users to alert admin
+    for (const otherUid of duplicatedWithUids) {
+      await db.collection('users').doc(otherUid).update({
+        isFlaggedSuspicious: true,
+        suspiciousReason: `Duplicate photo hash detected: shared with new user ${uid}`,
+        flaggedAt: admin.firestore.FieldValue.serverTimestamp()
+      });
+    }
+
+    // Log duplicate incident
+    await db.collection('duplicate_photo_logs').add({
+      userId: uid,
+      sharedWithUids: duplicatedWithUids,
+      photoHash,
+      photoUrl,
+      detectedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    await logAdminAction('system', 'duplicate_photo_detected', uid, `Duplicate photo hash matches user(s): ${duplicatedWithUids.join(', ')}`);
+  }
+
+  return { isDuplicate, duplicatedWith: duplicatedWithUids };
+});
+
+// ============================================================================
+// STEP 20: MATCH ENGAGEMENT NUDGES (INACTIVITY RECOVERY)
+// ============================================================================
+
+async function processMatchEngagementNudges() {
+  const db = admin.firestore();
+  const nowMs = Date.now();
+  const oneDayAgo = nowMs - 24 * 60 * 60 * 1000;
+  
+  // Find matches older than 24 hours where we haven't sent a nudge
+  const matchesSnap = await db.collection('matches')
+    .where('createdAt', '<=', admin.firestore.Timestamp.fromMillis(oneDayAgo))
+    .get();
+
+  let nudgedCount = 0;
+  
+  for (const doc of matchesSnap.docs) {
+    const matchData = doc.data();
+    const matchId = doc.id;
+    
+    // Check if already nudged
+    if (matchData.nudgeSent) continue;
+    
+    // Query chat messages to verify if the thread is truly idle (0 messages)
+    const messagesSnap = await db.collection('chats').doc(matchId).collection('messages').limit(1).get();
+    if (messagesSnap.empty) {
+      // Chat is idle! Identify users
+      const userIds = matchData.userIds || matchId.split('_');
+      if (userIds.length === 2) {
+        const [uid1, uid2] = userIds;
+        
+        // Retrieve FCM tokens for both users and send a push nudge
+        for (const targetUid of [uid1, uid2]) {
+          const userDoc = await db.collection('users').doc(targetUid).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            const fcmTokens = collectFcmTokens(userData);
+            
+            if (fcmTokens.length > 0) {
+              const otherUid = targetUid === uid1 ? uid2 : uid1;
+              const otherDoc = await db.collection('users').doc(otherUid).get();
+              const otherName = otherDoc.exists ? (otherDoc.data()?.name || otherDoc.data()?.firstName || 'Someone') : 'Someone';
+              
+              const title = 'Yellow Alert! 💛';
+              const body = `You matched with ${otherName}! Don't leave them waiting, send a message to say hello 👋`;
+              
+              const sendPromises = fcmTokens.map(token => 
+                admin.messaging().send({
+                  token,
+                  notification: { title, body },
+                  data: {
+                    click_action: 'FLUTTER_NOTIFICATION_CLICK',
+                    type: 'chat',
+                    chatId: matchId,
+                    senderId: otherUid,
+                    title,
+                    body,
+                  },
+                  android: {
+                    priority: 'high',
+                    notification: { channelId: 'high_importance_channel', sound: 'default' },
+                  },
+                  apns: {
+                    payload: { aps: { sound: 'default', badge: 1 } },
+                  }
+                }).catch(() => null)
+              );
+              await Promise.all(sendPromises);
+            }
+          }
+        }
+        
+        // Mark match as nudged
+        await doc.ref.update({
+          nudgeSent: true,
+          nudgedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        
+        // Log nudge event
+        await db.collection('engagement_nudges').add({
+          matchId,
+          userIds,
+          nudgedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+        
+        nudgedCount++;
+      }
+    }
+  }
+  
+  return { nudgedMatches: nudgedCount };
+}
+
+exports.nudgeMatchEngagement = onCall(async (request) => {
+  // Allow admins or users to invoke nudge checks
+  return await processMatchEngagementNudges();
+});
+
+exports.scheduledMatchEngagementNudge = onSchedule("0 18 * * *", async (event) => {
+  console.log('[scheduledMatchEngagementNudge] Running automated match engagement re-engagement job...');
+  const result = await processMatchEngagementNudges();
+  console.log(`[scheduledMatchEngagementNudge] Completed successfully. Nudged matches: ${result.nudgedMatches}`);
+});
+
+// ============================================================================
+// STEP 16: SERVERLESS IMAGE THUMBNAIL GENERATION (REMOVED TO BYPASS IAM BLOCKS)
+// ============================================================================
+// This feature has been disabled/removed because the mobile application does not reference thumbnailUrl,
+// and Cloud Storage Eventarc triggers require administrative IAM permissions (roles/pubsub.publisher)
+// on the Google Storage service agent, which blocks standard functions deployments.
+

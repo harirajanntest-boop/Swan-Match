@@ -572,6 +572,25 @@ class _ChatThreadTile extends StatelessWidget {
                               size: 14,
                             ),
                           ],
+                          if (lastMessage == 'Interest accepted. Start your chat.') ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.goldMedium.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: AppColors.goldMedium.withValues(alpha: 0.3)),
+                              ),
+                              child: const Text(
+                                'SAY HELLO! 👋',
+                                style: TextStyle(
+                                  color: AppColors.goldMedium,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 4),
@@ -580,8 +599,13 @@ class _ChatThreadTile extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.65),
+                          color: lastMessage == 'Interest accepted. Start your chat.'
+                              ? AppColors.goldMedium
+                              : Colors.white.withValues(alpha: 0.65),
                           fontSize: 13,
+                          fontWeight: lastMessage == 'Interest accepted. Start your chat.'
+                              ? FontWeight.w600
+                              : FontWeight.normal,
                         ),
                       ),
                     ],

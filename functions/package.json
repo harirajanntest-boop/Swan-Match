@@ -7,7 +7,10 @@
   },
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "audit": "npm audit --production",
+    "audit:fix": "npm audit fix --production",
+    "deploy": "npx firebase-tools@latest deploy --only functions --project swan-match"
   },
   "keywords": [],
   "author": "",
