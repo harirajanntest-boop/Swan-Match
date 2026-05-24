@@ -387,11 +387,12 @@ class UserService {
   }
 
   /// Reports a user via Cloud Function (rate limited: 5/hr per user).
-  Future<void> reportUser(String targetUid, {String reason = ''}) async {
+  Future<void> reportUser(String targetUid, {String reason = '', String category = ''}) async {
     final functions = FirebaseFunctions.instance;
     await functions.httpsCallable('submitReport').call({
       'reportedUid': targetUid,
       'reason': reason,
+      'category': category,
     });
   }
 

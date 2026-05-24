@@ -452,100 +452,179 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                         }
                       } else if (val == 'report') {
                         final reasonController = TextEditingController();
+                        String selectedCategory = '';
+                        final categories = [
+                          {'label': '🚨 Harassment / Threats', 'value': 'harassment'},
+                          {'label': '👤 Fake Profile / Catfish', 'value': 'fake_profile'},
+                          {'label': '💰 Scam / Fraud', 'value': 'scam'},
+                          {'label': '🔞 Inappropriate Content', 'value': 'inappropriate'},
+                          {'label': '👶 Underage User', 'value': 'underage'},
+                          {'label': '📩 Spam / Solicitation', 'value': 'spam'},
+                          {'label': '📋 Other', 'value': 'other'},
+                        ];
                         final confirm = await showDialog<bool>(
                           context: context,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: const Color(0xFF1A1A1A),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            title: const Text(
-                              'Report Profile',
-                              style: TextStyle(color: Colors.white),
-                            ),
-                            content: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'Report this profile for abuse? They will be permanently blocked and will never appear in your feed or connections again.',
-                                  style: TextStyle(color: Colors.white70),
+                          builder: (ctx) => StatefulBuilder(
+                            builder: (ctx, setDialogState) => AlertDialog(
+                              backgroundColor: const Color(0xFF1A1A1A),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              title: const Text(
+                                'Report Profile',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              content: SingleChildScrollView(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Report this profile for abuse? They will be permanently blocked and will never appear in your feed or connections again.',
+                                      style: TextStyle(color: Colors.white70),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    const Text(
+                                      'Select a category:',
+                                      style: TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Wrap(
+                                      spacing: 8,
+                                      runSpacing: 8,
+                                      children: categories.map((cat) {
+                                        final isSelected = selectedCategory == cat['value'];
+                                        return GestureDetector(
+                                          onTap: () {
+                                            setDialogState(() {
+                                              selectedCategory = cat['value']!;
+                                            });
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 8,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: isSelected
+                                                  ? Colors.redAccent.withOpacity(0.15)
+                                                  : Colors.white.withOpacity(0.06),
+                                              borderRadius: BorderRadius.circular(20),
+                                              border: Border.all(
+                                                color: isSelected
+                                                    ? Colors.redAccent
+                                                    : Colors.white.withOpacity(0.12),
+                                                width: isSelected ? 1.5 : 1,
+                                              ),
+                                            ),
+                                            child: Text(
+                                              cat['label']!,
+                                              style: TextStyle(
+                                                color: isSelected
+                                                    ? Colors.redAccent
+                                                    : Colors.white70,
+                                                fontSize: 12,
+                                                fontWeight: isSelected
+                                                    ? FontWeight.w600
+                                                    : FontWeight.w400,
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }).toList(),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    const Text(
+                                      'Additional details (required):',
+                                      style: TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    TextField(
+                                      controller: reasonController,
+                                      maxLines: 3,
+                                      maxLength: 500,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                      ),
+                                      decoration: InputDecoration(
+                                        hintText: 'Please describe the issue...',
+                                        hintStyle: TextStyle(
+                                          color: Colors.white.withOpacity(0.3),
+                                          fontSize: 14,
+                                        ),
+                                        counterText: '',
+                                        filled: true,
+                                        fillColor: Colors.white.withOpacity(0.06),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: BorderSide(
+                                            color: Colors.white.withOpacity(0.1),
+                                          ),
+                                        ),
+                                        enabledBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: BorderSide(
+                                            color: Colors.white.withOpacity(0.1),
+                                          ),
+                                        ),
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(12),
+                                          borderSide: const BorderSide(
+                                            color: Colors.redAccent,
+                                          ),
+                                        ),
+                                        contentPadding: const EdgeInsets.all(12),
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 16),
-                                const Text(
-                                  'Reason for reporting:',
-                                  style: TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: Text(
+                                    'Cancel',
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.5),
+                                    ),
                                   ),
                                 ),
-                                const SizedBox(height: 8),
-                                TextField(
-                                  controller: reasonController,
-                                  maxLines: 3,
-                                  maxLength: 500,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 14,
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: 'Please describe the issue...',
-                                    hintStyle: TextStyle(
-                                      color: Colors.white.withOpacity(0.3),
-                                      fontSize: 14,
-                                    ),
-                                    filled: true,
-                                    fillColor: Colors.white.withOpacity(0.06),
-                                    border: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: BorderSide(
-                                        color: Colors.white.withOpacity(0.1),
-                                      ),
-                                    ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: BorderSide(
-                                        color: Colors.white.withOpacity(0.1),
-                                      ),
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: BorderRadius.circular(12),
-                                      borderSide: const BorderSide(
-                                        color: Colors.redAccent,
-                                      ),
-                                    ),
-                                    contentPadding: const EdgeInsets.all(12),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text(
+                                    'Report',
+                                    style: TextStyle(color: Colors.redAccent),
                                   ),
                                 ),
                               ],
                             ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx, false),
-                                child: Text(
-                                  'Cancel',
-                                  style: TextStyle(
-                                    color: Colors.white.withOpacity(0.5),
-                                  ),
-                                ),
-                              ),
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx, true),
-                                child: const Text(
-                                  'Report',
-                                  style: TextStyle(color: Colors.redAccent),
-                                ),
-                              ),
-                            ],
                           ),
                         );
                         final reason = reasonController.text.trim();
                         final shouldReport = confirm == true;
+                        final chosenCategory = selectedCategory;
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           reasonController.dispose();
                         });
                         if (shouldReport) {
+                          if (chosenCategory.isEmpty) {
+                            if (!context.mounted) return;
+                            showLinearMessage(
+                              context,
+                              'Please select a report category.',
+                              isError: true,
+                            );
+                            return;
+                          }
                           if (reason.isEmpty) {
                             if (!context.mounted) return;
                             showLinearMessage(
@@ -559,6 +638,7 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                             await UserService.instance.reportUser(
                               uid,
                               reason: reason,
+                              category: chosenCategory,
                             );
                             if (!context.mounted) return;
                             Navigator.pop(context);
