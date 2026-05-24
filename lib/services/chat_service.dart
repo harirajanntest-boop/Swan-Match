@@ -148,7 +148,7 @@ class ChatService {
 		return blockedUids.contains(senderId);
 	}
 
-	Stream<List<MessageModel>> watchMessages(String otherUserId) {
+	Stream<List<MessageModel>> watchMessages(String otherUserId, {int limitCount = 40}) {
 		return switchMap(_uidStream, (uid) {
 			if (uid == null) {
 				return Stream.value(<MessageModel>[]);
@@ -157,6 +157,7 @@ class ChatService {
 			final chatId = chatIdFor(uid, otherUserId);
 			return _messagesRef(chatId)
 					.orderBy('sentAt', descending: true)
+					.limit(limitCount)
 					// includeMetadataChanges: true → locally-written docs appear immediately
 					// with hasPendingWrites=true before the server confirms them.
 					.snapshots(includeMetadataChanges: true)

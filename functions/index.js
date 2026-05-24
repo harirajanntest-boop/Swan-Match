@@ -202,6 +202,12 @@ const stripeSecretKey = defineSecret('STRIPE_SECRET_KEY');
 const stripeWebhookSecret = defineSecret('STRIPE_WEBHOOK_SECRET');
 /** Monthly plan ($19.99) — set via: firebase functions:secrets:set STRIPE_PRICE_MONTHLY */
 const stripePriceMonthly = defineSecret('STRIPE_PRICE_MONTHLY');
+/** SMTP credentials for Nodemailer email sending — set via:
+ *  firebase functions:secrets:set SMTP_USER
+ *  firebase functions:secrets:set SMTP_PASS
+ */
+const smtpUser = defineSecret('SMTP_USER');
+const smtpPass = defineSecret('SMTP_PASS');
 
 async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
   const rateKey = key || uid;
@@ -881,7 +887,7 @@ exports.sendNotification = onCall(async (request) => {
   const email = request.auth.token.email || '';
   const isAdmin = email === "sasikumar.s9951@gmail.com" || 
                   email === "admin@gmail.com" || 
-                  email.endsWith("@swanmatch.com");
+                  email.endsWith("@swan-match.com");
                   
   if (!isAdmin) {
     throw new HttpsError('permission-denied', 'Only administrators can send notifications.');
@@ -1098,9 +1104,8 @@ exports.onUserSoftDeleted = onDocumentUpdated('users/{uid}', async (event) => {
 });
 
 // ─── Login Throttling ────────────────────────────────────────────────────────
-// In-memory tracker (resets on cold start, acceptable for throttling purposes).
-// Key = normalized email, value = array of recent timestamps within window.
-const loginAttempts = {};
+// Secure, persistent Firestore-backed throttling tracker (prevents bypasses on scaling/cold starts)
+// Reads and writes to private '_loginAttempts' collection which is completely hidden from clients.
 
 /**
  * trackLoginAttempt — called from the client BEFORE signInWithEmailAndPassword.
@@ -1118,11 +1123,13 @@ exports.trackLoginAttempt = onCall(async (request) => {
   const windowMs = 15 * 60 * 1000; // 15-minute sliding window
   const maxAttempts = 5;            // 5 failed attempts allowed
 
-  // Clean old entries
-  if (!loginAttempts[key]) loginAttempts[key] = [];
-  loginAttempts[key] = loginAttempts[key].filter(t => now - t < windowMs);
+  const db = admin.firestore();
+  const snap = await db.collection('_loginAttempts').doc(key).get();
+  const data = snap.exists ? snap.data() : { timestamps: [] };
 
-  const count = loginAttempts[key].length;
+  // Clean old entries
+  const recent = (data.timestamps || []).filter(t => now - t < windowMs);
+  const count = recent.length;
 
   if (count >= maxAttempts) {
     throw new HttpsError(
@@ -1131,8 +1138,7 @@ exports.trackLoginAttempt = onCall(async (request) => {
     );
   }
 
-  // Record this attempt (caller should only call after a FAILED login)
-  // Successful logins reset via trackLoginSuccess
+  // Caller only logs failures via trackLoginFailure. Success resets it via trackLoginSuccess.
   return { allowed: true, attempts: count, remaining: maxAttempts - count };
 });
 
@@ -1144,7 +1150,9 @@ exports.trackLoginSuccess = onCall(async (request) => {
   const { email } = request.data;
   if (!email || typeof email !== 'string') return { cleared: false };
   const key = email.toLowerCase().trim();
-  delete loginAttempts[key];
+
+  const db = admin.firestore();
+  await db.collection('_loginAttempts').doc(key).delete();
   return { cleared: true };
 });
 
@@ -1160,11 +1168,20 @@ exports.trackLoginFailure = onCall(async (request) => {
   const now = Date.now();
   const windowMs = 15 * 60 * 1000;
 
-  if (!loginAttempts[key]) loginAttempts[key] = [];
-  loginAttempts[key] = loginAttempts[key].filter(t => now - t < windowMs);
-  loginAttempts[key].push(now);
+  const db = admin.firestore();
+  const ref = db.collection('_loginAttempts').doc(key);
 
-  return { recorded: true, attempts: loginAttempts[key].length };
+  let attemptsCount = 0;
+  await db.runTransaction(async (transaction) => {
+    const snap = await transaction.get(ref);
+    const data = snap.exists ? snap.data() : { timestamps: [] };
+    const recent = (data.timestamps || []).filter(t => now - t < windowMs);
+    recent.push(now);
+    transaction.set(ref, { timestamps: recent }, { merge: true });
+    attemptsCount = recent.length;
+  });
+
+  return { recorded: true, attempts: attemptsCount };
 });
 
 // ─── Signup Velocity Tracking ────────────────────────────────────────────────
@@ -1207,7 +1224,7 @@ function isAdminAuth(request) {
   return request.auth && (
     request.auth.token.email === 'sasikumar.s9951@gmail.com' ||
     request.auth.token.email === 'admin@gmail.com' ||
-    (request.auth.token.email || '').endsWith('@swanmatch.com')
+    (request.auth.token.email || '').endsWith('@swan-match.com')
   );
 }
 
@@ -1335,7 +1352,7 @@ exports.submitAppeal = onCall(async (request) => {
 
   // Max 3 total appeals per user
   if (existing.size >= 3) {
-    throw new HttpsError('failed-precondition', 'You have reached the maximum of 3 appeals. Please contact support@swanmatch.com.');
+    throw new HttpsError('failed-precondition', 'You have reached the maximum of 3 appeals. Please contact support@swan-match.com.');
   }
 
   // Only 1 pending appeal at a time
@@ -1385,6 +1402,44 @@ exports.submitReport = onCall(async (request) => {
 
   const db = admin.firestore();
 
+  // Retrieve chat thread evidence before deleting it
+  const chatId = [reporterUid, reportedUid].sort().join('_');
+  const chatRef = db.collection('chats').doc(chatId);
+  let chatEvidence = [];
+
+  try {
+    const msgsSnapshot = await chatRef.collection('messages').get();
+    if (!msgsSnapshot.empty) {
+      // Sort docs ascending by time
+      const sortedDocs = msgsSnapshot.docs.sort((a, b) => {
+        const timeA = a.data().time || a.data().createdAt || 0;
+        const timeB = b.data().time || b.data().createdAt || 0;
+        const getMillis = (t) => {
+          if (!t) return 0;
+          if (typeof t.toDate === 'function') return t.toDate().getTime();
+          if (t.seconds) return t.seconds * 1000;
+          const parsed = Date.parse(t);
+          return Number.isNaN(parsed) ? 0 : parsed;
+        };
+        return getMillis(timeA) - getMillis(timeB);
+      });
+
+      // Keep only the last 50 messages
+      const recentDocs = sortedDocs.slice(-50);
+      chatEvidence = recentDocs.map(d => {
+        const data = d.data();
+        return {
+          senderId: data.senderId || '',
+          senderName: data.senderName || '',
+          text: data.text || data.message || '',
+          time: data.time || data.createdAt || null
+        };
+      });
+    }
+  } catch (err) {
+    console.error(`[submitReport] Error retrieving chat evidence: ${err.message}`);
+  }
+
   // Create report
   await db.collection('reports').add({
     reportedUid,
@@ -1392,13 +1447,14 @@ exports.submitReport = onCall(async (request) => {
     reason: reason.trim(),
     reportedAt: admin.firestore.FieldValue.serverTimestamp(),
     isReported: true,
-    status: 'pending',
+    status: 'Open',
+    chatEvidence: chatEvidence, // Archive conversation history permanently as moderator evidence
   });
 
   // Update reporter's blockedUids and reportedUids
   await db.collection('users').doc(reporterUid).update({
-    blockedUids: admin.firestore.FieldValue.arrayUnion([reportedUid]),
-    reportedUids: admin.firestore.FieldValue.arrayUnion([reportedUid]),
+    blockedUids: admin.firestore.FieldValue.arrayUnion(reportedUid),
+    reportedUids: admin.firestore.FieldValue.arrayUnion(reportedUid),
   });
 
   // Remove connections (interests, likes, matches, chat)
@@ -1566,4 +1622,347 @@ exports.logSessionActivity = onCall(async (request) => {
     throw new HttpsError('internal', `Security logging failed: ${err.message}`);
   }
 });
+
+// ============================================================================
+// SUPPORT & TICKETING SYSTEM (STEP 18)
+// ============================================================================
+const nodemailer = require('nodemailer');
+
+exports.onSupportQueryCreated = onDocumentCreated(
+  { document: 'support_queries/{queryId}', secrets: [smtpUser, smtpPass] },
+  async (event) => {
+  // ─── SUPPORT WORKFLOW RECIPIENTS CONFIGURATION (EASILY REMOVABLE/EDITABLE) ──
+  const TARGET_SUPPORT_INBOX = 'sasikumar.s9951@gmail.com'; // Temporary for testing, change to support@swan-match.com later
+  const DEVELOPER_CC_ADDRESS = ''; // Set to secondary email if needed
+  // ───────────────────────────────────────────────────────────────────────────
+
+  const queryData = event.data?.data();
+  if (!queryData) {
+    console.log('[onSupportQueryCreated] No data in event');
+    return;
+  }
+
+  const { userId, userName, userEmail, subject, message, deviceInfo } = queryData;
+  console.log(`[onSupportQueryCreated] New query from user=${userId} (${userEmail}): ${subject}`);
+
+  const smtpHost = 'smtp.gmail.com';
+  const smtpPort = 587;
+  const smtpUserVal = smtpUser.value();
+  const smtpPassVal = smtpPass.value();
+
+  if (!smtpUserVal || !smtpPassVal) {
+    console.warn('[onSupportQueryCreated] SMTP credentials are not configured in Secret Manager. Skipping email dispatch.');
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure: false,
+    auth: {
+      user: smtpUserVal,
+      pass: smtpPassVal,
+    },
+  });
+
+  const ccOptions = DEVELOPER_CC_ADDRESS ? { cc: DEVELOPER_CC_ADDRESS } : {};
+
+  const mailOptions = {
+    from: `"Swan Match Support" <${smtpUserVal}>`,
+    to: TARGET_SUPPORT_INBOX,
+    ...ccOptions,
+    replyTo: userEmail || smtpUserVal,
+    subject: `[Support Query] ${subject || 'No Subject'}`,
+    envelope: {
+      from: smtpUserVal,
+      to: TARGET_SUPPORT_INBOX,
+    },
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: #0d0d0d;
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+          }
+          .container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: #121212;
+            border: 1px solid #c5a880;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+          }
+          .header {
+            background: linear-gradient(135deg, #1f1a12 0%, #0d0d0d 100%);
+            padding: 30px;
+            text-align: center;
+            border-bottom: 1px solid #c5a880;
+          }
+          .header h1 {
+            color: #c5a880;
+            font-size: 24px;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+          }
+          .content {
+            padding: 30px;
+            line-height: 1.6;
+          }
+          .field {
+            margin-bottom: 20px;
+          }
+          .label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #c5a880;
+            font-weight: bold;
+            margin-bottom: 5px;
+          }
+          .value {
+            font-size: 15px;
+            color: #e6e6e6;
+            background-color: #1a1a1a;
+            padding: 10px 15px;
+            border-radius: 6px;
+            border: 1px solid #222;
+          }
+          .message-value {
+            font-size: 14px;
+            color: #ffffff;
+            background-color: #1a1a1a;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 3px solid #c5a880;
+            white-space: pre-wrap;
+            border-top: 1px solid #222;
+            border-right: 1px solid #222;
+            border-bottom: 1px solid #222;
+          }
+          .footer {
+            background-color: #0d0d0d;
+            padding: 20px;
+            text-align: center;
+            font-size: 11px;
+            color: #555555;
+            border-top: 1px solid #1a1a1a;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Swan Match</h1>
+            <div style="color: #888; font-size: 11px; margin-top: 5px; letter-spacing: 1px;">NEW CUSTOMER SUPPORT INQUIRY</div>
+          </div>
+          <div class="content">
+            <div class="field">
+              <div class="label">Sender Name</div>
+              <div class="value">${userName || 'Anonymous'}</div>
+            </div>
+            <div class="field">
+              <div class="label">Sender Email</div>
+              <div class="value">${userEmail || 'No Email'} &nbsp;&bull;&nbsp; UID: <code>${userId || 'N/A'}</code></div>
+            </div>
+            <div class="field">
+              <div class="label">Subject</div>
+              <div class="value" style="font-weight: bold; color: #fff;">${subject || 'No Subject'}</div>
+            </div>
+            <div class="field">
+              <div class="label">Message</div>
+              <div class="message-value">${message || 'No message content.'}</div>
+            </div>
+            <div class="field">
+              <div class="label">Device Diagnostics</div>
+              <div class="value" style="font-size: 13px; line-height: 1.5; color: #bbb;">
+                <strong>Platform/OS:</strong> ${deviceInfo?.osVersion || 'Unknown OS'}<br>
+                <strong>Device Model:</strong> ${deviceInfo?.deviceModel || 'Unknown Model'}<br>
+                <strong>Device Brand:</strong> ${deviceInfo?.deviceBrand || 'Unknown Brand'}<br>
+                <strong>App Version:</strong> ${deviceInfo?.appVersion || 'Unknown Version'}
+              </div>
+            </div>
+          </div>
+          <div class="footer">
+            &copy; ${new Date().getFullYear()} Swan Match. All rights reserved. Confidential Internal Admin Notification.
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`[onSupportQueryCreated] Successfully sent support query email. MessageId: ${info.messageId}`);
+  } catch (error) {
+    console.error('[onSupportQueryCreated] Error sending email:', error.message);
+  }
+});
+
+/**
+ * Send email response directly from Admin Web Dashboard to support users.
+ */
+exports.sendSupportEmail = onCall(
+  { secrets: [smtpUser, smtpPass] },
+  async (request) => {
+  // 1. Enforce admin auth
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Only administrators can send support emails.');
+  }
+
+  const { toEmail, subject, htmlMessage } = request.data;
+  if (!toEmail || !subject || !htmlMessage) {
+    throw new HttpsError('invalid-argument', 'Missing required fields (toEmail, subject, htmlMessage).');
+  }
+
+  const smtpUserVal = smtpUser.value();
+  const smtpPassVal = smtpPass.value();
+
+  if (!smtpUserVal || !smtpPassVal) {
+    throw new HttpsError(
+      'failed-precondition',
+      'SMTP credentials are not configured. Please set SMTP_USER and SMTP_PASS secrets in Firebase.'
+    );
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false,
+    auth: {
+      user: smtpUserVal,
+      pass: smtpPassVal,
+    },
+  });
+
+  const mailOptions = {
+    from: `"Swan Match Support" <${smtpUserVal}>`,
+    to: toEmail,
+    replyTo: 'support@swan-match.com',
+    subject: subject,
+    html: htmlMessage,
+  };
+
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`[sendSupportEmail] Support reply sent successfully to ${toEmail}. MessageId: ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error('[sendSupportEmail] Error sending reply email:', error.message);
+    throw new HttpsError('internal', `Failed to send email: ${error.message}`);
+  }
+});
+
+
+/**
+ * Automated Daily Inactivity Recovery Cron (STEP 20 Retention)
+ * Scans for users inactive for more than 3 days and dispatches a random re-engagement push notification.
+ */
+exports.sendInactivityReminders = onSchedule(
+  { schedule: '0 10 * * *', timeZone: 'UTC' }, // Runs daily at 10 AM UTC
+  async (_event) => {
+    const db = admin.firestore();
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
+    console.log('[inactivityRecovery] Starting daily re-engagement scan...');
+
+    try {
+      // Query users whose last active date is older than 3 days
+      const snapshot = await db.collection('users')
+        .where('lastActiveAt', '<=', admin.firestore.Timestamp.fromDate(threeDaysAgo))
+        .get();
+
+      if (snapshot.empty) {
+        console.log('[inactivityRecovery] No inactive users found.');
+        return;
+      }
+
+      console.log(`[inactivityRecovery] Found ${snapshot.size} candidate(s) for recovery.`);
+
+      const MESSAGES = [
+        {
+          title: "Someone is looking at your profile! 👀",
+          body: "We found new customized matching recommendations for you today. Open Swan Match to see who it is! 💛"
+        },
+        {
+          title: "Don't miss your perfect match! 👑",
+          body: "New members just joined in your area. Open Swan Match now to review your handpicked recommendations!"
+        },
+        {
+          title: "New recommendations are ready! ✨",
+          body: "Your daily match list has been updated. Tap to open Swan Match and meet your potential partner today!"
+        }
+      ];
+
+      let sentCount = 0;
+
+      for (const doc of snapshot.docs) {
+        const userData = doc.data();
+        
+        // Skip soft-deleted or suspended accounts
+        if (userData.isDeleted === true || userData.account === 'Suspended') {
+          continue;
+        }
+
+        // Extract token
+        let targetToken = userData.fcmToken;
+        if (!targetToken && Array.isArray(userData.fcmTokens) && userData.fcmTokens.length > 0) {
+          targetToken = userData.fcmTokens[0];
+        }
+
+        if (!targetToken) {
+          continue;
+        }
+
+        // Pick a random message
+        const randomMsg = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
+
+        const fcmMessage = {
+          token: targetToken,
+          notification: {
+            title: randomMsg.title,
+            body: randomMsg.body,
+          },
+          data: {
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            type: 'inactivity_recovery',
+          },
+          android: {
+            priority: 'high',
+            notification: {
+              channelId: 'high_importance_channel',
+              sound: 'default',
+            },
+          },
+          apns: {
+            payload: { aps: { sound: 'default', badge: 1 } },
+          },
+        };
+
+        try {
+          await admin.messaging().send(fcmMessage);
+          sentCount++;
+          console.log(`[inactivityRecovery] Dispatched push to user uid=${doc.id}`);
+        } catch (fcmError) {
+          console.warn(`[inactivityRecovery] Failed to send push to user uid=${doc.id}: ${fcmError.message}`);
+        }
+      }
+
+      console.log(`[inactivityRecovery] Run complete. Successfully sent pushes to ${sentCount} user(s).`);
+    } catch (err) {
+      console.error('[inactivityRecovery] Fatal execution error:', err.message);
+    }
+  }
+);
+
+
 

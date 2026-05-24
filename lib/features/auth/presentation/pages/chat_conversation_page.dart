@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
@@ -35,13 +36,17 @@ class ChatConversationPage extends StatefulWidget {
 
 class _ChatConversationPageState extends State<ChatConversationPage> {
   final TextEditingController _messageController = TextEditingController();
+  final FocusNode _messageFocusNode = FocusNode();
   bool _isSending = false;
   bool _chatRestricted = false;
   String? _chatRestrictionReason;
   Map<String, dynamic>? _otherUserProfile;
 
   // ─── STREAM CACHED IN STATE ───
-  late final Stream<List<MessageModel>> _messageStream;
+  late Stream<List<MessageModel>> _messageStream;
+  final ScrollController _scrollController = ScrollController();
+  int _currentLimit = 40;
+  bool _isLoadingMore = false;
 
   // ─── Real-time presence stream ───
   late final Stream<DocumentSnapshot<Map<String, dynamic>>> _presenceStream;
@@ -50,7 +55,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
   void initState() {
     super.initState();
     ChatPresenceService.instance.enterChat(widget.otherUserId);
-    _messageStream = ChatService.instance.watchMessages(widget.otherUserId);
+    _scrollController.addListener(_scrollListener);
+    _loadMessageStream();
     // Real-time presence (isOnline field in the user doc)
     _presenceStream = FirebaseFirestore.instance
         .collection('users')
@@ -58,6 +64,30 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
         .snapshots();
     _loadOtherUserProfile();
     _loadChatAccess();
+  }
+
+  void _loadMessageStream() {
+    _messageStream = ChatService.instance.watchMessages(
+      widget.otherUserId,
+      limitCount: _currentLimit,
+    );
+  }
+
+  void _scrollListener() {
+    if (!mounted) return;
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >=
+            _scrollController.position.maxScrollExtent - 200) {
+      if (_isLoadingMore) return;
+      _isLoadingMore = true;
+      setState(() {
+        _currentLimit += 40;
+        _loadMessageStream();
+      });
+      Future.delayed(const Duration(milliseconds: 600), () {
+        _isLoadingMore = false;
+      });
+    }
   }
 
   Future<void> _loadChatAccess() async {
@@ -104,7 +134,9 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
   @override
   void dispose() {
     ChatPresenceService.instance.leaveChat();
+    _scrollController.dispose();
     _messageController.dispose();
+    _messageFocusNode.dispose();
     super.dispose();
   }
 
@@ -361,13 +393,20 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                         ),
                       ),
                     );
-                  } catch (_) {
+                  } catch (e) {
+                    debugPrint('Report user error: $e');
                     if (!mounted) return;
+                    String errorMessage = 'Could not submit report. Please try again.';
+                    if (e is FirebaseFunctionsException) {
+                      errorMessage = e.message ?? errorMessage;
+                    } else if (e is FirebaseException) {
+                      errorMessage = e.message ?? errorMessage;
+                    } else {
+                      errorMessage = e.toString();
+                    }
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'Could not submit report. Please try again.',
-                        ),
+                      SnackBar(
+                        content: Text(errorMessage),
                       ),
                     );
                   }
@@ -607,30 +646,75 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
 
                     if (messages.isEmpty) {
                       return Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.chat_bubble_outline,
-                              color: AppColors.goldMedium.withValues(
-                                alpha: 0.3,
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.chat_bubble_outline,
+                                color: AppColors.goldMedium.withValues(
+                                  alpha: 0.3,
+                                ),
+                                size: 48,
                               ),
-                              size: 48,
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Start your conversation 👋',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.6),
-                                fontSize: 15,
+                              const SizedBox(height: 16),
+                              Text(
+                                'Start your conversation 👋',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.6),
+                                  fontSize: 15,
+                                ),
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 32),
+                              // ─── Icebreaker prompt title ───
+                              Text(
+                                "Need an Icebreaker?",
+                                style: TextStyle(
+                                  color: AppColors.goldLight.withValues(alpha: 0.8),
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                "Tap a card below to automatically fill the text box!",
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.35),
+                                  fontSize: 10,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              // ─── Icebreakers List ───
+                              SizedBox(
+                                height: 95,
+                                child: ListView(
+                                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                                  scrollDirection: Axis.horizontal,
+                                  children: [
+                                    _buildIcebreakerCard(
+                                      prompt: "What is your favorite travel destination? ✈️",
+                                    ),
+                                    _buildIcebreakerCard(
+                                      prompt: "Tell me about your professional background! 💼",
+                                    ),
+                                    _buildIcebreakerCard(
+                                      prompt: "What are your thoughts on family values? 🏡",
+                                    ),
+                                    _buildIcebreakerCard(
+                                      prompt: "What is your typical weekend like? ☕",
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       );
                     }
 
                     return ListView.builder(
+                      controller: _scrollController,
                       reverse: true,
                       padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
                       itemCount: messages.length,
@@ -735,6 +819,7 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                         Expanded(
                           child: TextField(
                             controller: _messageController,
+                            focusNode: _messageFocusNode,
                             minLines: 1,
                             maxLines: 4,
                             textInputAction: TextInputAction.send,
@@ -789,6 +874,43 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildIcebreakerCard({required String prompt}) {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _messageController.text = prompt;
+        });
+        _messageFocusNode.requestFocus();
+      },
+      child: Container(
+        width: 175,
+        margin: const EdgeInsets.only(right: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.03),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: AppColors.goldMedium.withValues(alpha: 0.25),
+            width: 1,
+          ),
+        ),
+        child: Center(
+          child: Text(
+            prompt,
+            textAlign: TextAlign.center,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.8),
+              fontSize: 11,
+              height: 1.3,
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import '../../../../services/payment_flow_service.dart';
@@ -514,6 +515,61 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                           },
                         ),
                         const SizedBox(height: 20),
+                        // ─── Legal Auto-Renewal Disclosures ───
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          child: Column(
+                            children: [
+                              Text(
+                                "Subscription automatically renews unless auto-renew is turned off at least 24-hours before the end of the current period. Payment will be charged to your iTunes/Google Play account. Subscriptions can be managed and cancelled in your account settings.",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.35),
+                                  fontSize: 10,
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _launchUrl("https://www.swan-match.com/terms"),
+                                    child: Text(
+                                      "Terms of Service",
+                                      style: TextStyle(
+                                        color: AppColors.goldMedium.withOpacity(0.7),
+                                        decoration: TextDecoration.underline,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    "   •   ",
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.2),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  GestureDetector(
+                                    onTap: () => _launchUrl("https://www.swan-match.com/privacy"),
+                                    child: Text(
+                                      "Privacy Policy",
+                                      style: TextStyle(
+                                        color: AppColors.goldMedium.withOpacity(0.7),
+                                        decoration: TextDecoration.underline,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 20),
                       ],
                     ),
                   ),
@@ -524,6 +580,15 @@ class _SubscriptionPageState extends State<SubscriptionPage>
         ),
       ),
     );
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {}
   }
 
   // Helper for Top Tabs
@@ -1403,6 +1468,61 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                       ),
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  // ─── Legal Auto-Renewal Disclosures ───
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: Column(
+                      children: [
+                        Text(
+                          "Subscription automatically renews unless auto-renew is turned off at least 24-hours before the end of the current period. Payment will be charged to your iTunes/Google Play account. Subscriptions can be managed and cancelled in your account settings.",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.35),
+                            fontSize: 10,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            GestureDetector(
+                              onTap: () => _launchUrl("https://www.swan-match.com/terms"),
+                              child: Text(
+                                "Terms of Service",
+                                style: TextStyle(
+                                  color: AppColors.goldMedium.withOpacity(0.7),
+                                  decoration: TextDecoration.underline,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              "   •   ",
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.2),
+                                fontSize: 11,
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () => _launchUrl("https://www.swan-match.com/privacy"),
+                              child: Text(
+                                "Privacy Policy",
+                                style: TextStyle(
+                                  color: AppColors.goldMedium.withOpacity(0.7),
+                                  decoration: TextDecoration.underline,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
                 const SizedBox(height: 16),
               ],
@@ -1411,6 +1531,15 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
         ),
       ),
     );
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      }
+    } catch (_) {}
   }
 }
 

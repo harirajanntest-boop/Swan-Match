@@ -113,9 +113,11 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
 
     setState(() => _isLoading = true);
 
+    bool throttlePassed = false;
     try {
       // Login throttling check before attempting sign-in
       await AuthService.instance.checkLoginThrottle(email);
+      throttlePassed = true;
 
       final credential = await AuthService.instance.signInWithEmailAndPassword(
         email: email,
@@ -131,8 +133,11 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       await _routeUser(user);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      // Report failed login attempt
-      await AuthService.instance.reportLoginFailure(email);
+      // Report failed login attempt only if we successfully cleared the throttle check
+      // and this itself isn't a pre-existing rate limit error.
+      if (throttlePassed && e.code != 'too-many-requests') {
+        await AuthService.instance.reportLoginFailure(email);
+      }
       if (e.code == 'invalid-credential' ||
           e.code == 'wrong-password' ||
           e.code == 'user-not-found') {
@@ -155,7 +160,9 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       _showError(AuthService.instance.readableAuthError(e));
     } catch (e) {
       if (!mounted) return;
-      await AuthService.instance.reportLoginFailure(email);
+      if (throttlePassed) {
+        await AuthService.instance.reportLoginFailure(email);
+      }
       _showError(AuthService.instance.readableAuthError(e));
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -301,6 +308,14 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
           'registrationCompleted': false,
           'createdAt': DateTime.now(),
           'updatedAt': DateTime.now(),
+          'isVerified': false,
+          'idVerified': false,
+          'profileVerified': false,
+          'profileApprovalStatus': 'pending',
+          'verificationStatus': 'pending',
+          'subscriptionPlan': 'free',
+          'subscriptionName': 'Free',
+          'account': 'active',
         },
       );
       if (mounted) {

@@ -176,6 +176,7 @@ class _OnboardingStep5PersonalityState extends State<OnboardingStep5Personality>
                             hintStyle: TextStyle(color: Colors.white24, fontSize: 14),
                             border: InputBorder.none,
                             contentPadding: EdgeInsets.zero,
+                            counterText: "",
                           ),
                           onChanged: (_) => setState(() {}),
                         ),

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 import '../../../../core/constants/colors.dart';
 import '../../../../services/interest_service.dart';
@@ -564,11 +566,20 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                               context,
                               'Profile reported and permanently blocked',
                             );
-                          } catch (_) {
+                          } catch (e) {
+                            debugPrint('Report user error: $e');
                             if (!context.mounted) return;
+                            String errorMessage = 'Could not submit report. Please try again.';
+                            if (e is FirebaseFunctionsException) {
+                              errorMessage = e.message ?? errorMessage;
+                            } else if (e is FirebaseException) {
+                              errorMessage = e.message ?? errorMessage;
+                            } else {
+                              errorMessage = e.toString();
+                            }
                             showLinearMessage(
                               context,
-                              'Could not submit report. Please try again.',
+                              errorMessage,
                             );
                           }
                         }

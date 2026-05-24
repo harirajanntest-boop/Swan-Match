@@ -10,7 +10,7 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.token.email == "sasikumar.s9951@gmail.com" ||
         request.auth.token.email == "admin@gmail.com" ||
-        request.auth.token.email.matches(".*@swanmatch\\.com$")
+        request.auth.token.email.matches(".*@swan-match\\.com$")
       );
     }
 
@@ -40,7 +40,7 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isOwner(userId);
       allow update: if (isOwner(userId) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-        ['account', 'isVerified', 'verificationStatus',
+        ['account', 'isVerified',
          'stripeCustomerId', 'stripeSubscriptionId',
          'lastCheckoutSessionId', 'lastInvoiceId',
          'subscription', 'paymentStatus', 'customerEmail',
@@ -49,6 +49,9 @@ service cloud.firestore {
       ) && (
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['profileApprovalStatus']) ||
         request.resource.data.profileApprovalStatus == 'pending'
+      ) && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus']) ||
+        request.resource.data.verificationStatus == 'pending'
       )) || isAdmin();
       allow delete: if isAdmin();
 
@@ -123,10 +126,10 @@ service cloud.firestore {
       allow read, update, delete: if isSignedIn() && (
         resource.data.toUserId == request.auth.uid || isAdmin()
       );
-      allow create: if isSignedIn() &&
+      allow create: if isAdmin() || (isSignedIn() &&
         request.resource.data.fromUserId == request.auth.uid &&
         request.resource.data.toUserId is string &&
-        request.resource.data.toUserId != request.auth.uid;
+        request.resource.data.toUserId != request.auth.uid);
     }
 
     match /reports/{reportId} {
@@ -172,12 +175,18 @@ service cloud.firestore {
 
     match /admin_audit_logs/{logId} {
       allow read: if isAdmin();
-      allow create: if isSignedIn() && request.auth.uid == request.resource.data.adminUid;
-      allow update, delete: if isAdmin();
+      allow create: if false; // Audit logs must be created strictly by the secure server backend
+      allow update, delete: if false; // Audit logs are strictly immutable and append-only
     }
 
     match /admin_notification_state/{adminUid} {
       allow read, write: if isAdmin() && request.auth.uid == adminUid;
+    }
+
+    match /support_queries/{queryId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update, delete: if isAdmin();
     }
   }
 }

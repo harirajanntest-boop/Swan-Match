@@ -11,6 +11,7 @@ import 'custom_login_page.dart';
 import 'blocked_profiles_page.dart';
 import 'ignored_profiles_page.dart';
 import 'saved_profiles_page.dart';
+import 'help_support_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final bool scrollToSecurity;
@@ -736,7 +737,12 @@ class _SettingsPageState extends State<SettingsPage>
                             _SettingsActionRow(
                               label: "Help & Contact",
                               subtitle: "Get in touch with support",
-                              onTap: () => _launchUrl("https://www.swan-match.com/help"),
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const HelpSupportPage(),
+                                ),
+                              ),
                             ),
                           ],
                         ),
@@ -833,7 +839,34 @@ class _SettingsPageState extends State<SettingsPage>
                             ],
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        const SizedBox(height: 16),
+                        const Center(
+                          child: Text(
+                            '© 2026 Swan Match, Inc. All Rights Reserved.',
+                            style: TextStyle(
+                              color: Colors.white30,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Center(
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 32),
+                            child: Text(
+                              '"Swan Match" and the gold Swan logo are registered trademarks.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.white12,
+                                fontSize: 9,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
                       ],
                     ),
                   );

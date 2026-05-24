@@ -1,0 +1,27 @@
+==============================================================================
+                    SWAN PLATFORM — DISASTER RESTORATION PLAYBOOK
+==============================================================================
+In case of a catastrophic database failure, follow this playbook to restore 
+100% of authentication credentials, chats, safety reports, and user profiles.
+
+PREPARATION:
+1. Ensure the Firebase CLI is logged in:
+   firebase login
+2. Ensure the Google Cloud SDK is logged in:
+   gcloud auth login
+
+PHASE 1: RESTORING AUTHENTICATION (USER LOGINS)
+Restore the user list to your destination project (e.g. swan-match-staging or restored swan-match):
+firebase auth:import backups/auth/users_YYYYMMDD_HHMMSS.json --hash-algo=SCRYPT --project=YOUR_RESTORE_PROJECT_ID
+
+PHASE 2: RESTORING CLOUD FIRESTORE (DATABASE SCHEMAS & RECORDS)
+Import the Firestore backup snapshot directly from your secure GCP Bucket:
+gcloud config set project YOUR_RESTORE_PROJECT_ID
+gcloud firestore import gs://swan-match-backups/YYYY-MM-DD-T-timestamp/
+
+PHASE 3: REDEPLOYING CLOUD SAFETY SHIELD & RULES
+Apply security controls to lock down the newly restored database instantly:
+firebase deploy --only firestore:rules,storage:rules --project=YOUR_RESTORE_PROJECT_ID
+
+RESTORE TESTING VERIFICATION COMPLETE.
+==============================================================================
