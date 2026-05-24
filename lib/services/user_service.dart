@@ -376,6 +376,26 @@ class UserService {
     return score.clamp(0.0, 1.0);
   }
 
+  /// Checks text against the server-side spam/escort/scam keyword blocklist.
+  /// Returns a warning message if flagged, or null if clean.
+  /// Fails open (returns null) if the Cloud Function is unavailable.
+  Future<String?> checkContentFilter(String text, String context) async {
+    if (text.trim().isEmpty) return null;
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('checkContentFilter')
+          .call(<String, dynamic>{'text': text, 'context': context});
+      final data = result.data as Map<String, dynamic>;
+      if (data['flagged'] == true) {
+        return 'Your text contains prohibited content. Please revise and try again.';
+      }
+      return null;
+    } catch (_) {
+      // Fail open — don't block user if filter is unavailable
+      return null;
+    }
+  }
+
   Future<void> blockUser(String uid) async {
     final currentUser = _auth.currentUser;
     if (currentUser == null) return;

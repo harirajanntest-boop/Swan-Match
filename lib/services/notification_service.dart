@@ -1,7 +1,5 @@
-import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'chat_presence_service.dart';
 
@@ -96,34 +94,8 @@ class NotificationService {
     }
   }
 
-  // SECURITY: Service account removed - using Firebase Cloud Functions for server-side FCM notifications
-  Future<void> sendNotification({
-    required String? fcmToken,
-    required String title,
-    required String body,
-    Map<String, dynamic>? data,
-  }) async {
-    if (fcmToken == null || fcmToken.isEmpty) return;
-
-    try {
-      final callable = FirebaseFunctions.instance.httpsCallable('sendNotification');
-      await callable.call({
-        'fcmToken': fcmToken,
-        'title': title,
-        'body': body,
-        'data': data ?? {},
-      });
-      if (kDebugMode) {
-        print('Notification sent successfully via Cloud Function');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('Error sending FCM notification via Cloud Function: $e');
-      }
-    }
-  }
-
   Future<String?> getFCMToken() async {
     return await _messaging.getToken();
   }
 }
+

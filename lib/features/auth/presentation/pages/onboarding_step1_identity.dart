@@ -107,7 +107,8 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     try {
       final XFile? image = await _picker.pickImage(
         source: ImageSource.gallery,
-        imageQuality: 80,
+        imageQuality: 75,
+        maxWidth: 1080,
       );
       if (image != null) setState(() => _localPhotos.add(image.path));
     } catch (_) {}

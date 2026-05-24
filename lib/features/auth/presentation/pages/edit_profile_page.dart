@@ -1,5 +1,7 @@
 import 'dart:io';
+import 'dart:math' show min;
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
@@ -488,8 +490,8 @@ class _EditProfilePageState extends State<EditProfilePage>
     final picker = ImagePicker();
     final file = await picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 85,
-      maxWidth: 1440,
+      imageQuality: 75,
+      maxWidth: 1080,
     );
     if (file == null) return;
 
@@ -515,6 +517,19 @@ class _EditProfilePageState extends State<EditProfilePage>
         'profilePicture': photoUrl,
         'profileApprovalStatus': 'pending', // Demote to pending for re-moderation
       });
+
+      // Non-blocking duplicate photo detection (backend flags suspicious accounts)
+      try {
+        final fileBytes = await File(file.path).readAsBytes();
+        final hashSeed = fileBytes.sublist(0, min(1024, fileBytes.length))
+            .fold<int>(0, (a, b) => a ^ b);
+        final photoHash = '${fileBytes.length}_$hashSeed';
+        await FirebaseFunctions.instance
+            .httpsCallable('checkPhotoDuplicate')
+            .call(<String, dynamic>{'photoUrl': photoUrl, 'photoHash': photoHash});
+      } catch (_) {
+        // Fail open — duplicate check is non-blocking
+      }
 
       if (!mounted) return;
       showLinearMessage(context, 'Profile photo updated successfully! Pending admin approval.');
@@ -878,6 +893,16 @@ class _EditProfilePageState extends State<EditProfilePage>
     final nested = map['nested'] as String?;
 
     if (key == null) return;
+
+    // Content filter check for text fields that could contain spam/abuse
+    if (key == 'bio' || key == 'aboutMe' || key == 'firstName' || key == 'lastName') {
+      final filterContext = (key == 'bio' || key == 'aboutMe') ? 'bio' : 'name';
+      final warning = await UserService.instance.checkContentFilter(updated, filterContext);
+      if (warning != null && mounted) {
+        showLinearMessage(context, warning, isError: true);
+        return;
+      }
+    }
 
     if (nested != null) {
       final existing = profile[nested];

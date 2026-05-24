@@ -346,6 +346,29 @@ class _HomePageState extends State<HomePage>
               minHeight: 4,
             ),
           ),
+          if (progress < 0.6) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.amber.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.amber.withOpacity(0.25)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.visibility_off_outlined, color: Colors.amber.shade300, size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Your profile is hidden from swipes! Complete at least 60% to be visible.',
+                      style: TextStyle(color: Colors.amber.shade200, fontSize: 12, height: 1.3),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
