@@ -205,9 +205,8 @@ const stripePriceMonthly = defineSecret('STRIPE_PRICE_MONTHLY');
 /** SMTP credentials for Nodemailer email sending — set via:
  *  firebase functions:secrets:set SMTP_USER
  *  firebase functions:secrets:set SMTP_PASS
+ *  NOTE: These are optional. If not set, email functions will log a warning and skip.
  */
-const smtpUser = defineSecret('SMTP_USER');
-const smtpPass = defineSecret('SMTP_PASS');
 
 async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
   const rateKey = key || uid;
@@ -1629,7 +1628,7 @@ exports.logSessionActivity = onCall(async (request) => {
 const nodemailer = require('nodemailer');
 
 exports.onSupportQueryCreated = onDocumentCreated(
-  { document: 'support_queries/{queryId}', secrets: [smtpUser, smtpPass] },
+  { document: 'support_queries/{queryId}' },
   async (event) => {
   // ─── SUPPORT WORKFLOW RECIPIENTS CONFIGURATION (EASILY REMOVABLE/EDITABLE) ──
   const TARGET_SUPPORT_INBOX = 'sasikumar.s9951@gmail.com'; // Temporary for testing, change to support@swan-match.com later
@@ -1647,8 +1646,8 @@ exports.onSupportQueryCreated = onDocumentCreated(
 
   const smtpHost = 'smtp.gmail.com';
   const smtpPort = 587;
-  const smtpUserVal = smtpUser.value();
-  const smtpPassVal = smtpPass.value();
+  const smtpUserVal = process.env.SMTP_USER || '';
+  const smtpPassVal = process.env.SMTP_PASS || '';
 
   if (!smtpUserVal || !smtpPassVal) {
     console.warn('[onSupportQueryCreated] SMTP credentials are not configured in Secret Manager. Skipping email dispatch.');
@@ -1811,7 +1810,7 @@ exports.onSupportQueryCreated = onDocumentCreated(
  * Send email response directly from Admin Web Dashboard to support users.
  */
 exports.sendSupportEmail = onCall(
-  { secrets: [smtpUser, smtpPass] },
+  {},
   async (request) => {
   // 1. Enforce admin auth
   if (!isAdminAuth(request)) {
@@ -1823,8 +1822,8 @@ exports.sendSupportEmail = onCall(
     throw new HttpsError('invalid-argument', 'Missing required fields (toEmail, subject, htmlMessage).');
   }
 
-  const smtpUserVal = smtpUser.value();
-  const smtpPassVal = smtpPass.value();
+  const smtpUserVal = process.env.SMTP_USER || '';
+  const smtpPassVal = process.env.SMTP_PASS || '';
 
   if (!smtpUserVal || !smtpPassVal) {
     throw new HttpsError(
