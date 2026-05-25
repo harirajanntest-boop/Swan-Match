@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/user_service.dart';
 import '../../../../services/support_service.dart';
@@ -52,7 +51,11 @@ class _HelpSupportPageState extends State<HelpSupportPage> {
         'appVersion': '1.0.0', // Standard app fallback version
       };
 
-      // 2. Submit to Firestore
+      // 2. Submit to Firestore.
+      // This triggers the `onSupportQueryCreated` Cloud Function which
+      // automatically sends a professional HTML email to support@swan-match.com
+      // with full ticket details, priority level, and SLA deadline.
+      // No manual email action is needed from the user.
       await SupportService.instance.submitSupportQuery(
         userName: userName,
         userEmail: userEmail,
@@ -61,47 +64,7 @@ class _HelpSupportPageState extends State<HelpSupportPage> {
         deviceInfo: deviceInfo,
       );
 
-      // 3. Trigger local email launcher intent (Option B)
-      final String targetEmail = 'sasikumar.s9951@gmail.com';
-      final String emailSubject = 'Swan Match Support: $_selectedSubject';
-      final String emailBody = '''
-Hi Swan Match Support Team,
-
-Please find my inquiry details below:
-
-Subject: $_selectedSubject
-Message:
-${_messageController.text.trim()}
-
----------------------------------------------
-Device & Diagnostic Metadata (Do not edit):
-User Name: $userName
-User Email: $userEmail
-OS Version: ${deviceInfo['osVersion']}
-Device Model: ${deviceInfo['deviceModel']}
-Device Brand: ${deviceInfo['deviceBrand']}
-App Version: ${deviceInfo['appVersion']}
----------------------------------------------
-''';
-
-      final String mailtoUrl = 'mailto:$targetEmail'
-          '?subject=${Uri.encodeComponent(emailSubject)}'
-          '&body=${Uri.encodeComponent(emailBody)}';
-      final Uri emailUri = Uri.parse(mailtoUrl);
-
-      try {
-        if (await canLaunchUrl(emailUri)) {
-          await launchUrl(emailUri, mode: LaunchMode.externalApplication);
-        } else {
-          // Fallback if external app launcher isn't allowed/supported
-          await launchUrl(emailUri);
-        }
-      } catch (launchError) {
-        // Log warning, but still proceed to show the success dialog since Firestore submission succeeded
-        debugPrint('Could not launch email client: $launchError');
-      }
-
-      // 4. Show dynamic success popup
+      // 3. Show success dialog
       if (mounted) {
         _showSuccessDialog();
       }
@@ -125,6 +88,7 @@ App Version: ${deviceInfo['appVersion']}
       }
     }
   }
+
 
   void _showSuccessDialog() {
     showDialog(
