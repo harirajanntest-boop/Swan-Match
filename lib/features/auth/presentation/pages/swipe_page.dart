@@ -23,6 +23,7 @@ import 'edit_profile_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/subscription_limits_service.dart';
+import 'package:swam_match_app/main.dart' show analytics;
 
 class ScoredUser {
   final UserModel user;
@@ -803,6 +804,12 @@ class _SwipePageState extends State<SwipePage> {
       'lastMessage': '',
       'lastMessageTime': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    // 📊 Analytics: track match creation
+    unawaited(analytics.logEvent(
+      name: 'match_created',
+      parameters: {'match_chat_id': chatId},
+    ));
   }
 
   List<UserModel> _applySubscriptionBoost(
@@ -1066,6 +1073,11 @@ class _SwipePageState extends State<SwipePage> {
       if (result == InterestSendResult.sent) {
         await _onLike(uid);
         if (!mounted) return;
+        // 📊 Analytics: track swipe right / interest sent
+        unawaited(analytics.logEvent(
+          name: 'swipe_right',
+          parameters: {'target_uid': uid},
+        ));
         _showMessage('Interest sent! 💛');
       } else if (result == InterestSendResult.pending) {
         _showMessage('Interest already pending');

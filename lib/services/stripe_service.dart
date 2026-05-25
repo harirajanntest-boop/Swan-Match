@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:swam_match_app/main.dart' show analytics;
 
 /// Holds price details fetched from the Stripe API via the
 /// `getStripePrices` Cloud Function. All formatting is done server-side.
@@ -166,6 +169,12 @@ class StripeService {
       if (!launched) {
         throw 'Could not open Stripe checkout. Please ensure you have a browser installed.';
       }
+
+      // 📊 Analytics: track subscription checkout started
+      unawaited(analytics.logEvent(
+        name: 'subscription_started',
+        parameters: {'price_id': priceId},
+      ));
     } on FirebaseFunctionsException catch (e) {
       throw 'Payment error (${e.code}): ${e.message}';
     } catch (e) {
@@ -190,7 +199,13 @@ class StripeService {
         options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
       );
       final result = await callable.call<Map<String, dynamic>>();
-      return result.data['isPremium'] as bool? ?? false;
+      final isPremium = result.data['isPremium'] as bool? ?? false;
+
+      if (isPremium) {
+        // 📊 Analytics: track subscription verified (deep-link return from Stripe)
+        unawaited(analytics.logEvent(name: 'subscription_verified'));
+      }
+      return isPremium;
     } on FirebaseFunctionsException catch (e) {
       throw 'Verification error (${e.code}): ${e.message}';
     } catch (e) {

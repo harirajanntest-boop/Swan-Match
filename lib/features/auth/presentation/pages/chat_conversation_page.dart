@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -19,6 +20,7 @@ import '../../../../shared/widgets/deleted_user_avatar.dart';
 import '../../../../shared/helpers/profile_visibility_helper.dart';
 import 'match_profile_detail_page.dart';
 import 'subscription_page.dart';
+import 'package:swam_match_app/main.dart' show analytics;
 
 class ChatConversationPage extends StatefulWidget {
   final String otherUserId;
@@ -153,7 +155,13 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
         text: text,
       );
 
-      if (!sent && mounted) {
+      if (sent) {
+        // 📊 Analytics: track message sent
+        unawaited(analytics.logEvent(
+          name: 'message_sent',
+          parameters: {'recipient_uid': widget.otherUserId},
+        ));
+      } else if (mounted) {
         final check = await SubscriptionLimitsService.instance.canSendMessageTo(
           widget.otherUserId,
         );

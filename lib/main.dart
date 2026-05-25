@@ -1,8 +1,12 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
@@ -16,8 +20,33 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:swam_match_app/services/stripe_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
 
+/// Global Firebase Analytics instance — use anywhere in the app:
+/// `analytics.logEvent(name: 'swipe_right', parameters: {'target_uid': uid})`
+final FirebaseAnalytics analytics = FirebaseAnalytics.instance;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ─── Crash reporting: capture any Flutter framework errors ───────────────
+  // Must be initialised before runApp so errors during startup are captured.
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // Pass all uncaught Flutter framework errors to Crashlytics.
+  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+
+  // Pass uncaught async errors from the Dart platform layer to Crashlytics.
+  PlatformDispatcher.instance.onError = (error, stack) {
+    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+    return true;
+  };
+
+  // Enable crash collection in release mode only; disable in debug so
+  // crash reports don't pollute production data during development.
+  await FirebaseCrashlytics.instance
+      .setCrashlyticsCollectionEnabled(!kDebugMode);
+
   runApp(const SwamMatchApp());
 }
 
@@ -109,10 +138,12 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
   }
 
   Future<void> _performInitialization() async {
+    // Firebase.initializeApp() was already called in main() before runApp().
+    // Calling it a second time is safe — it returns the existing app instance.
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    
+
     try {
       await FirebaseAppCheck.instance.activate(
         androidProvider: AndroidProvider.playIntegrity,
@@ -121,6 +152,11 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
     } catch (e) {
       debugPrint("App Check initialization error: $e");
     }
+
+    // ─── Analytics: set analytics collection on/off per build mode ─────────
+    await analytics.setAnalyticsCollectionEnabled(!kDebugMode);
+    // Log app_open event so we can track daily active users in Firebase console
+    await analytics.logAppOpen();
 
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
     await PushNotificationService.instance.initialize();

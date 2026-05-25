@@ -1,0 +1,68 @@
+======================================================
+  SWAN MATCH — PENDING REMINDERS & TODO
+======================================================
+
+1. SMTP EMAIL SETUP (HIGH PRIORITY)
+------------------------------------------------------
+   Status  : ⏳ Not configured yet
+   Why     : Email functions (support ticket notifications,
+             admin reply emails) are currently disabled
+             because SMTP credentials are not set.
+
+   Action Required:
+   ─────────────────
+   a) Create a professional email on your Swan Match domain
+      e.g. support@swan-match.com or noreply@swan-match.com
+
+   b) Generate an App Password (if using Gmail/Google Workspace):
+      → Go to https://myaccount.google.com/apppasswords
+      → Create a new app password for "Mail"
+
+   c) Set the secrets in Firebase:
+      Run these commands in terminal:
+
+      npx -y firebase-tools@latest functions:secrets:set SMTP_USER --project swan-match
+      → Enter your email address (e.g. support@swan-match.com)
+
+      npx -y firebase-tools@latest functions:secrets:set SMTP_PASS --project swan-match
+      → Enter the app password from step (b)
+
+   d) Redeploy Cloud Functions after setting secrets:
+      cd /Users/apple/Downloads/Swan_Match_app-main
+      npx -y firebase-tools@latest deploy --only functions --project swan-match --force
+
+   Files that use SMTP:
+   • functions/index.js → onSupportQueryCreated() — sends ticket notification emails
+   • functions/index.js → sendSupportEmail()       — admin replies to users via email
+
+------------------------------------------------------
+
+2. STRIPE WEBHOOK URL VERIFICATION
+------------------------------------------------------
+   Status  : ⚠️ Verify in Stripe Dashboard
+   Why     : The webhook URL may have changed after
+             redeployment with codebase namespacing.
+
+   Current URL:
+   https://us-central1-swan-match.cloudfunctions.net/handleStripeWebhook
+
+   Action Required:
+   → Go to https://dashboard.stripe.com/webhooks
+   → Verify the endpoint URL matches the one above
+   → Update if different
+
+------------------------------------------------------
+
+3. NODE.JS RUNTIME UPGRADE
+------------------------------------------------------
+   Status  : ⚠️ Node.js 20 deprecated (April 30, 2026)
+   Deadline: October 30, 2026 (decommission date)
+
+   Action Required:
+   → Update "runtime" in firebase.json from "nodejs20" to "nodejs22"
+   → Test all functions locally
+   → Redeploy
+
+======================================================
+  Last Updated: 2026-05-25
+======================================================

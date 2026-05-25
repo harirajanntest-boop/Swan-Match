@@ -209,6 +209,8 @@ const stripePriceYearly = defineSecret('STRIPE_PRICE_YEARLY');
  *  firebase functions:secrets:set SMTP_PASS
  *  NOTE: These are optional. If not set, email functions will log a warning and skip.
  */
+const smtpUser = defineSecret('SMTP_USER');
+const smtpPass = defineSecret('SMTP_PASS');
 
 async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
   const rateKey = key || uid;
@@ -1756,10 +1758,10 @@ exports.logSessionActivity = onCall(async (request) => {
 const nodemailer = require('nodemailer');
 
 exports.onSupportQueryCreated = onDocumentCreated(
-  { document: 'support_queries/{queryId}' },
+  { document: 'support_queries/{queryId}', secrets: [smtpUser, smtpPass] },
   async (event) => {
   // ─── SUPPORT WORKFLOW RECIPIENTS CONFIGURATION (EASILY REMOVABLE/EDITABLE) ──
-  const TARGET_SUPPORT_INBOX = 'sasikumar.s9951@gmail.com'; // Temporary for testing, change to support@swan-match.com later
+  const TARGET_SUPPORT_INBOX = 'support@swan-match.com';
   const DEVELOPER_CC_ADDRESS = ''; // Set to secondary email if needed
   // ───────────────────────────────────────────────────────────────────────────
 
@@ -1805,8 +1807,8 @@ exports.onSupportQueryCreated = onDocumentCreated(
 
   const smtpHost = 'smtp.gmail.com';
   const smtpPort = 587;
-  const smtpUserVal = process.env.SMTP_USER || '';
-  const smtpPassVal = process.env.SMTP_PASS || '';
+  const smtpUserVal = smtpUser.value() || '';
+  const smtpPassVal = smtpPass.value() || '';
 
   if (!smtpUserVal || !smtpPassVal) {
     console.warn('[onSupportQueryCreated] SMTP credentials are not configured in Secret Manager. Skipping email dispatch.');
@@ -1969,7 +1971,7 @@ exports.onSupportQueryCreated = onDocumentCreated(
  * Send email response directly from Admin Web Dashboard to support users.
  */
 exports.sendSupportEmail = onCall(
-  {},
+  { secrets: [smtpUser, smtpPass] },
   async (request) => {
   // 1. Enforce admin auth
   if (!isAdminAuth(request)) {
@@ -1981,8 +1983,8 @@ exports.sendSupportEmail = onCall(
     throw new HttpsError('invalid-argument', 'Missing required fields (toEmail, subject, htmlMessage).');
   }
 
-  const smtpUserVal = process.env.SMTP_USER || '';
-  const smtpPassVal = process.env.SMTP_PASS || '';
+  const smtpUserVal = smtpUser.value() || '';
+  const smtpPassVal = smtpPass.value() || '';
 
   if (!smtpUserVal || !smtpPassVal) {
     throw new HttpsError(
@@ -2502,10 +2504,10 @@ exports.processRefund = onCall(
 // ============================================================================
 
 exports.sendReEngagementEmails = onSchedule(
-  { schedule: '0 11 * * 1', timeZone: 'UTC' }, // Runs every Monday at 11 AM UTC
+  { schedule: '0 11 * * 1', timeZone: 'UTC', secrets: [smtpUser, smtpPass] }, // Runs every Monday at 11 AM UTC
   async (_event) => {
-    const smtpUserVal = process.env.SMTP_USER || '';
-    const smtpPassVal = process.env.SMTP_PASS || '';
+    const smtpUserVal = smtpUser.value() || '';
+    const smtpPassVal = smtpPass.value() || '';
 
     if (!smtpUserVal || !smtpPassVal) {
       console.log('[reEngagement] SMTP not configured. Skipping email re-engagement. Set SMTP_USER and SMTP_PASS to activate.');
