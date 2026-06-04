@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/services/auth_service.dart';
+import 'package:swam_match_app/services/user_service.dart';
 import 'custom_login_page.dart';
 import 'main_dashboard.dart';
+import 'onboarding_flow.dart';
 
 class VerifyEmailPage extends StatefulWidget {
   const VerifyEmailPage({super.key});
@@ -40,9 +42,15 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
       final verified = await AuthService.instance.checkEmailVerified();
       if (verified) {
         if (!mounted) return;
+        final user = AuthService.instance.currentUser;
+        if (user == null) return;
+        final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
+        final completed = profile?['registrationCompleted'] == true;
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const MainDashboard()),
+          MaterialPageRoute(
+            builder: (_) => completed ? const MainDashboard() : const OnboardingFlow(),
+          ),
           (route) => false,
         );
       } else {

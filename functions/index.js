@@ -394,6 +394,25 @@ exports.getSubscriptionPriceIds = onCall(
 /**
  * Stripe - Webhook Handler
  */
+
+/**
+ * Updates a user doc only if it exists. Webhook events can reference Stripe
+ * customers whose metadata.userId maps to no Firestore user (e.g. test-mode
+ * customers or already-deleted accounts). Calling .update() on a missing doc
+ * throws NOT_FOUND, which would surface to Stripe as HTTP 500 and trigger
+ * endless retries. Returns true if updated, false if the user no longer exists.
+ */
+async function updateUserIfExists(db, uid, data) {
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    console.warn(`[handleStripeWebhook] User ${uid} not found — skipping update.`);
+    return false;
+  }
+  await ref.update(data);
+  return true;
+}
+
 exports.handleStripeWebhook = onRequest(
   {
     secrets: [stripeSecretKey, stripeWebhookSecret, stripePriceMonthly, stripePriceSixMonth, stripePriceYearly],
@@ -422,7 +441,12 @@ exports.handleStripeWebhook = onRequest(
       return res.status(400).send('Missing stripe-signature header.');
     }
 
-    const stripe = require('stripe')(stripeSecretKey.value().trim());
+    const stripeKeyValue = (stripeSecretKey.value() || '').trim();
+    if (!stripeKeyValue) {
+      console.error('STRIPE_SECRET_KEY is not configured.');
+      return res.status(500).send('Stripe secret key missing.');
+    }
+    const stripe = require('stripe')(stripeKeyValue);
     let event;
 
     try {
@@ -439,7 +463,7 @@ exports.handleStripeWebhook = onRequest(
       switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
-          const uid = session.metadata.userId || session.client_reference_id;
+          const uid = session.metadata?.userId || session.client_reference_id;
 
           if (!uid) {
             console.error('No UID found in session metadata or client_reference_id');
@@ -489,7 +513,7 @@ exports.handleStripeWebhook = onRequest(
             }
           }
 
-          await db.collection('users').doc(uid).update(updateData);
+          await updateUserIfExists(db, uid, updateData);
           break;
         }
 
@@ -549,7 +573,7 @@ exports.handleStripeWebhook = onRequest(
           const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
 
           if (uid) {
-            await db.collection('users').doc(uid).update(updateData);
+            await updateUserIfExists(db, uid, updateData);
             console.log(`Subscription updated for uid=${uid} status=${subscription.status}`);
           } else {
             console.log('No uid found in customer metadata — skipping Firestore update');
@@ -595,7 +619,7 @@ exports.handleStripeWebhook = onRequest(
             }
             attachSubscriptionName(invoiceUpdate, invoicePriceId, true);
 
-            await db.collection('users').doc(uid).update(invoiceUpdate);
+            await updateUserIfExists(db, uid, invoiceUpdate);
           }
           break;
         }
@@ -606,7 +630,7 @@ exports.handleStripeWebhook = onRequest(
           const uid = customer.metadata?.userId || customer.metadata?.firebaseUid;
 
           if (uid) {
-            await db.collection('users').doc(uid).update({
+            await updateUserIfExists(db, uid, {
               paymentStatus: 'failed',
               subscriptionStatus: 'past_due',
               lastInvoiceId: invoice.id,
@@ -642,7 +666,22 @@ exports.handleStripeWebhook = onRequest(
       res.json({ received: true });
     } catch (error) {
       console.error('Webhook Processing Error:', error);
-      res.status(500).send('Webhook Processing Error');
+      // Only transient infrastructure errors should return 500 so Stripe retries.
+      // Permanent/data errors (bad payload, missing user, etc.) are acknowledged
+      // with 200 so Stripe stops retrying a request that can never succeed —
+      // this is what clears a backlog of repeated 500 failures.
+      const code = error?.code || error?.type;
+      const transient =
+        code === 'unavailable' ||
+        code === 'deadline-exceeded' ||
+        code === 'resource-exhausted' ||
+        error?.type === 'StripeConnectionError' ||
+        error?.type === 'StripeAPIError' ||
+        error?.type === 'StripeRateLimitError';
+      if (transient) {
+        return res.status(500).send('Temporary processing error — retry expected.');
+      }
+      return res.status(200).send('Acknowledged (non-retryable processing issue logged).');
     }
   });
 

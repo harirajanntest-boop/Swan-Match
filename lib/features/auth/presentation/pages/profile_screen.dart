@@ -10,7 +10,6 @@ import 'settings_page.dart';
 import 'custom_login_page.dart';
 import 'edit_profile_page.dart';
 import 'verify_profile_page.dart';
-import 'partner_preferences_page.dart';
 import 'subscription_page.dart';
 import 'about_me_screen.dart';
 import 'values_screen.dart';
@@ -181,9 +180,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _launchUrl(String urlString) async {
     final uri = Uri.parse(urlString);
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
+      final bool launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Could not launch link.')),
@@ -440,16 +438,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           context,
                           MaterialPageRoute(
                             builder: (_) => const ValuesScreen(),
-                          ),
-                        ),
-                      ),
-                      _MenuItem(
-                        icon: Icons.tune_rounded,
-                        label: 'Preferences',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PartnerPreferencesPage(),
                           ),
                         ),
                       ),

@@ -80,6 +80,7 @@ class OnboardingData {
 
   // ─── Legal ───────────────────────────────────────────────────────────────
   bool termsAccepted;
+  DateTime? termsAcceptedAt;
 
   // ─── Metadata ────────────────────────────────────────────────────────────
   int onboardingStep; // Current step for resume
@@ -148,6 +149,7 @@ class OnboardingData {
     this.loveLanguage = '',
     this.zodiac = '',
     this.termsAccepted = false,
+    this.termsAcceptedAt,
     this.onboardingStep = 0,
   }) : createdAt = DateTime.now();
 
@@ -273,6 +275,7 @@ class OnboardingData {
       'loveLanguage': loveLanguage,
       'zodiac': zodiac,
       'termsAccepted': termsAccepted,
+      'termsAcceptedAt': termsAcceptedAt?.toIso8601String(),
       'onboardingStep': onboardingStep,
       'createdAt': createdAt.toIso8601String(),
     };
@@ -346,6 +349,9 @@ class OnboardingData {
       loveLanguage: map['loveLanguage'] ?? '',
       zodiac: map['zodiac'] ?? '',
       termsAccepted: map['termsAccepted'] ?? false,
+      termsAcceptedAt: map['termsAcceptedAt'] != null
+          ? DateTime.tryParse(map['termsAcceptedAt'].toString())
+          : null,
       onboardingStep: map['onboardingStep'] ?? 0,
     );
   }
@@ -413,6 +419,7 @@ class OnboardingData {
     String? loveLanguage,
     String? zodiac,
     bool? termsAccepted,
+    DateTime? termsAcceptedAt,
     int? onboardingStep,
   }) {
     return OnboardingData(

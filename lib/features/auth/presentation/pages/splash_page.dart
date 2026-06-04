@@ -70,31 +70,33 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
           );
           return;
         }
-
-        if (profile != null && profile['registrationCompleted'] == true) {
-          // Email verification gate: skip for OAuth providers
-          final providers = List<String>.from(profile['providers'] ?? []);
-          final hasOAuth = providers.any((p) => p == 'google.com' || p == 'apple.com');
-          if (!hasOAuth) {
-            final emailVerified = await AuthService.instance.checkEmailVerified();
-            if (!emailVerified) {
+        final hasOAuth = user.providerData.any(
+          (p) => p.providerId == 'google.com' || p.providerId == 'apple.com',
+        );
+        if (!hasOAuth) {
+          final emailVerified = await AuthService.instance.checkEmailVerified();
+          if (!emailVerified) {
             if (!mounted) return;
             Navigator.pushReplacement(
               context,
               PageRouteBuilder(
                 pageBuilder: (ctx, anim, sec) => const VerifyEmailPage(),
-                transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+                transitionsBuilder: (ctx, animation, sec, child) =>
+                    FadeTransition(opacity: animation, child: child),
                 transitionDuration: const Duration(milliseconds: 800),
               ),
             );
             return;
           }
-          }
+        }
+
+        if (profile != null && profile['registrationCompleted'] == true) {
           Navigator.pushReplacement(
             context,
             PageRouteBuilder(
               pageBuilder: (ctx, anim, sec) => const MainDashboard(),
-              transitionsBuilder: (ctx, animation, sec, child) => FadeTransition(opacity: animation, child: child),
+              transitionsBuilder: (ctx, animation, sec, child) =>
+                  FadeTransition(opacity: animation, child: child),
               transitionDuration: const Duration(milliseconds: 800),
             ),
           );

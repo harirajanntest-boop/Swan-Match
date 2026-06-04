@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/gestures.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/services/auth_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
@@ -27,7 +29,6 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
   bool _isGoogleLoading = false;
   bool _isAppleLoading = false;
   DateTime? _selectedDob;
-
   int _calculateAge(DateTime birthDate) {
     final today = DateTime.now();
     int age = today.year - birthDate.year;
@@ -59,22 +60,23 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         return;
       }
 
-      if (profile != null && profile['registrationCompleted'] == true) {
-        // Email verification gate (skip for OAuth providers)
-        final providers = List<String>.from(profile['providers'] ?? []);
-        final hasOAuth = providers.any((p) => p == 'google.com' || p == 'apple.com');
-        if (!hasOAuth) {
-          final emailVerified = await AuthService.instance.checkEmailVerified();
-          if (!emailVerified) {
-            if (!mounted) return;
-            Navigator.pushAndRemoveUntil(
-              context,
-              MaterialPageRoute(builder: (_) => const VerifyEmailPage()),
-              (route) => false,
-            );
-            return;
-          }
+      final hasOAuth = user.providerData.any(
+        (p) => p.providerId == 'google.com' || p.providerId == 'apple.com',
+      );
+      if (!hasOAuth) {
+        final emailVerified = await AuthService.instance.checkEmailVerified();
+        if (!emailVerified) {
+          if (!mounted) return;
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const VerifyEmailPage()),
+            (route) => false,
+          );
+          return;
         }
+      }
+
+      if (profile != null && profile['registrationCompleted'] == true) {
         // User has completed all details → Dashboard
         Navigator.pushAndRemoveUntil(
           context,
@@ -130,6 +132,22 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       }
       // Report successful login to clear throttle counter
       await AuthService.instance.reportLoginSuccess(email);
+
+      // Check if terms already accepted
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
+      if (profile == null || profile['termsAccepted'] != true) {
+        if (!mounted) return;
+        final accepted = await _showTermsDialog();
+        if (accepted != true) {
+          await AuthService.instance.signOut();
+          return;
+        }
+        await UserService.instance.updateCurrentUserProfile({
+          'termsAccepted': true,
+          'termsAcceptedAt': DateTime.now(),
+        });
+      }
+
       await _routeUser(user);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -175,7 +193,6 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     setState(() => _isGoogleLoading = true);
 
     try {
-      // Step 1: Complete Google Auth Directly
       final userCredential = await AuthService.instance.signInWithGoogle(delayedAuth: false);
       if (userCredential == null) {
         setState(() => _isGoogleLoading = false);
@@ -188,14 +205,20 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         return;
       }
 
-      // Step 2: Check if user already has a profile
       final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null) {
-        // Existing User
+        // Existing User -> terms already accepted, just route
         await _routeUser(user);
       } else {
-        // New Google User -> Immediately show DOB dialog
+        // New Google User -> ask terms first, then DOB
+        if (!mounted) return;
+        final termsAccepted = await _showTermsDialog();
+        if (termsAccepted != true) {
+          await user.delete();
+          await AuthService.instance.signOut();
+          return;
+        }
         if (!mounted) return;
         await _showGoogleDobDialog(user);
       }
@@ -208,6 +231,90 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     } finally {
       if (mounted) setState(() => _isGoogleLoading = false);
     }
+  }
+
+  Future<bool?> _showTermsDialog() async {
+    bool termsAccepted = false;
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.onyx,
+              title: const Text(
+                "Terms & Privacy",
+                style: TextStyle(color: Colors.white),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Please accept our Terms of Service and Privacy Policy to continue.",
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: termsAccepted,
+                        activeColor: AppColors.goldMedium,
+                        onChanged: (v) {
+                          setDialogState(() => termsAccepted = v ?? false);
+                        },
+                      ),
+                      Expanded(
+                        child: RichText(
+                          text: TextSpan(
+                            style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            children: [
+                              const TextSpan(text: "I accept the "),
+                              TextSpan(
+                                text: "Terms of Service",
+                                style: const TextStyle(
+                                  color: AppColors.goldMedium,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: TapGestureRecognizer()
+                                  ..onTap = () => _launchUrl("https://www.swan-match.com/terms"),
+                              ),
+                              const TextSpan(text: " and "),
+                              TextSpan(
+                                text: "Privacy Policy",
+                                style: const TextStyle(
+                                  color: AppColors.goldMedium,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: TapGestureRecognizer()
+                                  ..onTap = () => _launchUrl("https://www.swan-match.com/privacy"),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: termsAccepted
+                      ? () => Navigator.pop(context, true)
+                      : null,
+                  child: const Text("Continue", style: TextStyle(color: AppColors.goldMedium)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _showGoogleDobDialog(User user) async {
@@ -296,18 +403,26 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       // Valid Age -> Create profile and route
       final age = _calculateAge(_selectedDob!);
       final googlePhoto = user.photoURL ?? '';
-      await UserService.instance.upsertUserProfile(
-        uid: user.uid,
-        data: {
-          'uid': user.uid,
-          'name': user.displayName ?? '',
-          'email': user.email ?? '',
-          'dob': _selectedDob!.toIso8601String(),
-          'age': age,
-          'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
-          'registrationCompleted': false,
-          'createdAt': DateTime.now(),
-          'updatedAt': DateTime.now(),
+      final existing = await UserService.instance.getUserProfile(
+        user.uid,
+        forceRefresh: true,
+      );
+      final data = <String, dynamic>{
+        'uid': user.uid,
+        'name': user.displayName ?? '',
+        'email': user.email ?? '',
+        'dob': _selectedDob!.toIso8601String(),
+        'age': age,
+        'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
+        'termsAccepted': false,
+        'termsAcceptedAt': null,
+        'registrationCompleted': false,
+        'createdAt': DateTime.now(),
+        'updatedAt': DateTime.now(),
+      };
+
+      if (existing == null) {
+        data.addAll({
           'isVerified': false,
           'idVerified': false,
           'profileVerified': false,
@@ -316,8 +431,20 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
           'subscriptionPlan': 'free',
           'subscriptionName': 'Free',
           'account': 'active',
-        },
-      );
+        });
+      }
+
+      try {
+        await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
+      } on FirebaseException catch (e) {
+        if (e.code == 'permission-denied') {
+          _showError(
+            'Account created, but profile write was blocked by Firestore rules. '
+            'Please retry after a moment or contact support if this persists.',
+          );
+        }
+        rethrow;
+      }
       if (mounted) {
         Navigator.pushAndRemoveUntil(
           context,
@@ -332,30 +459,20 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     }
   }
 
-  // ─── Apple Sign-In (placeholder — same pattern as Google) ───
+  // ─── Apple Sign-In (placeholder) ───
   Future<void> _handleAppleSignIn() async {
-    // TODO: Implement Apple Sign-In when ready
     _showError('Apple Sign-In coming soon.');
   }
 
-  // ─── Forgot Password ───
-  Future<void> _handleForgotPassword() async {
-    final email = _emailController.text.trim();
-    if (email.isEmpty) {
-      _showError('Please enter your email first.');
-      return;
-    }
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
     try {
-      await AuthService.instance.sendPasswordReset(email: email);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Password reset email sent. Check your inbox.'),
-        ),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      _showError(AuthService.instance.readableAuthError(e));
+      final bool launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        _showError('Could not launch link.');
+      }
+    } catch (_) {
+      if (mounted) _showError('Could not launch link.');
     }
   }
 
@@ -446,7 +563,6 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
               ),
 
               const SizedBox(height: 8),
-              // Forgot Password
               Align(
                 alignment: Alignment.centerRight,
                 child: GestureDetector(

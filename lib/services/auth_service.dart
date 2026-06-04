@@ -741,6 +741,7 @@ class AuthService {
   Future<bool> checkEmailVerified() async {
     final user = _auth.currentUser;
     if (user == null) return false;
+    await user.getIdToken(true);
     await user.reload();
     return user.emailVerified;
   }

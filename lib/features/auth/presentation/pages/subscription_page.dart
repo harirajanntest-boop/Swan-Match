@@ -585,9 +585,7 @@ class _SubscriptionPageState extends State<SubscriptionPage>
   Future<void> _launchUrl(String urlString) async {
     final uri = Uri.parse(urlString);
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {}
   }
 
@@ -1536,9 +1534,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   Future<void> _launchUrl(String urlString) async {
     final uri = Uri.parse(urlString);
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {}
   }
 }

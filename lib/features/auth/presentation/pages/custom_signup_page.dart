@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/services/auth_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/custom_login_page.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/dob_verification_screen.dart';
 import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
+import 'package:swam_match_app/features/auth/presentation/pages/verify_email_page.dart';
 
 class CustomSignupPage extends StatefulWidget {
   const CustomSignupPage({super.key});
@@ -28,6 +30,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   bool _isGoogleLoading = false;
   bool _isAppleLoading = false;
   DateTime? _selectedDob;
+  bool _termsAccepted = false;
 
   int _calculateAge(DateTime birthDate) {
     final today = DateTime.now();
@@ -63,6 +66,18 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
 
     if (picked != null && mounted) {
       setState(() => _selectedDob = picked);
+    }
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      final bool launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched && mounted) {
+        _showError('Could not launch link.');
+      }
+    } catch (_) {
+      if (mounted) _showError('Could not launch link.');
     }
   }
 
@@ -121,6 +136,47 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     return patterns.any((p) => p.hasMatch(name.trim()));
   }
 
+  Map<String, dynamic> _restrictedProfileFields() {
+    return {
+      'isVerified': false,
+      'idVerified': false,
+      'profileVerified': false,
+      'profileApprovalStatus': 'pending',
+      'verificationStatus': 'pending',
+      'subscriptionPlan': 'free',
+      'subscriptionName': 'Free',
+      'account': 'active',
+    };
+  }
+
+  Future<void> _upsertProfileSafely({
+    required String uid,
+    required Map<String, dynamic> baseData,
+  }) async {
+    try {
+      final existing = await UserService.instance.getUserProfile(
+        uid,
+        forceRefresh: true,
+      );
+
+      final data = <String, dynamic>{...baseData};
+      if (existing == null) {
+        data.addAll(_restrictedProfileFields());
+      }
+
+      await UserService.instance.upsertUserProfile(uid: uid, data: data);
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        _showError(
+          'Account created, but profile write was blocked by Firestore rules. '
+          'Please retry after a moment or contact support if this persists.',
+        );
+        rethrow;
+      }
+      rethrow;
+    }
+  }
+
   // ─── Email / Password Sign Up ───
   Future<void> _handleEmailSignup() async {
     final name = _nameController.text.trim();
@@ -153,6 +209,11 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       return;
     }
 
+    if (!_termsAccepted) {
+      _showError('You must accept the Terms of Service and Privacy Policy');
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
@@ -175,55 +236,27 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
         await AuthService.instance.sendVerificationEmail();
 
         // Create Firestore Profile
-        await UserService.instance.upsertUserProfile(
+        await _upsertProfileSafely(
           uid: user.uid,
-          data: {
+          baseData: {
             'uid': user.uid,
             'name': name,
             'email': email,
             'dob': _selectedDob!.toIso8601String(),
             'age': age,
+            'termsAccepted': true,
+            'termsAcceptedAt': DateTime.now(),
             'registrationCompleted': false,
             'createdAt': DateTime.now(),
             'updatedAt': DateTime.now(),
-            'isVerified': false,
-            'idVerified': false,
-            'profileVerified': false,
-            'profileApprovalStatus': 'pending',
-            'verificationStatus': 'pending',
-            'subscriptionPlan': 'free',
-            'subscriptionName': 'Free',
-            'account': 'active',
           },
         );
 
         if (!mounted) return;
-        // Show verification notice before proceeding
-        final proceed = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: AppColors.onyx,
-            title: const Text('Verify Your Email', style: TextStyle(color: Colors.white)),
-            content: const Text(
-              'We sent a verification link to your email. '
-              'Please verify before accessing the app. '
-              'You can still complete your profile in the meantime.',
-              style: TextStyle(color: Colors.white70),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Continue', style: TextStyle(color: AppColors.goldMedium)),
-              ),
-            ],
-          ),
-        );
-
-        if (!mounted || proceed != true) return;
+        if (!mounted) return;
         Navigator.pushAndRemoveUntil(
           context,
-          MaterialPageRoute(builder: (_) => const OnboardingFlow()),
+          MaterialPageRoute(builder: (_) => const VerifyEmailPage()),
           (route) => false,
         );
       }
@@ -248,7 +281,6 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     setState(() => _isGoogleLoading = true);
 
     try {
-      // Step 1: Complete Google Auth Directly
       final userCredential = await AuthService.instance.signInWithGoogle(delayedAuth: false);
       if (userCredential == null) {
         setState(() => _isGoogleLoading = false);
@@ -261,14 +293,20 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
         return;
       }
 
-      // Step 2: Check if user already has a profile
       final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null) {
-        // Existing User
+        // Existing User -> terms already accepted, just route
         await _routeUser(user);
       } else {
-        // New Google User -> Immediately show DOB dialog
+        // New Google User -> ask terms first, then DOB
+        if (!mounted) return;
+        final termsAccepted = await _showTermsDialog();
+        if (termsAccepted != true) {
+          await user.delete();
+          await AuthService.instance.signOut();
+          return;
+        }
         if (!mounted) return;
         await _showGoogleDobDialog(user);
       }
@@ -281,6 +319,90 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     } finally {
       if (mounted) setState(() => _isGoogleLoading = false);
     }
+  }
+
+  Future<bool?> _showTermsDialog() async {
+    bool termsAccepted = false;
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppColors.onyx,
+              title: const Text(
+                "Terms & Privacy",
+                style: TextStyle(color: Colors.white),
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Please accept our Terms of Service and Privacy Policy to continue.",
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: termsAccepted,
+                        activeColor: AppColors.goldMedium,
+                        onChanged: (v) {
+                          setDialogState(() => termsAccepted = v ?? false);
+                        },
+                      ),
+                      Expanded(
+                        child: RichText(
+                          text: TextSpan(
+                            style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            children: [
+                              const TextSpan(text: "I accept the "),
+                              TextSpan(
+                                text: "Terms of Service",
+                                style: const TextStyle(
+                                  color: AppColors.goldMedium,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: TapGestureRecognizer()
+                                  ..onTap = () => _launchUrl("https://www.swan-match.com/terms"),
+                              ),
+                              const TextSpan(text: " and "),
+                              TextSpan(
+                                text: "Privacy Policy",
+                                style: const TextStyle(
+                                  color: AppColors.goldMedium,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: TapGestureRecognizer()
+                                  ..onTap = () => _launchUrl("https://www.swan-match.com/privacy"),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: termsAccepted
+                      ? () => Navigator.pop(context, true)
+                      : null,
+                  child: const Text("Continue", style: TextStyle(color: AppColors.goldMedium)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _showGoogleDobDialog(User user) async {
@@ -369,26 +491,20 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       // Valid Age -> Create profile and route
       final age = _calculateAge(_selectedDob!);
       final googlePhoto = user.photoURL ?? '';
-      await UserService.instance.upsertUserProfile(
+      await _upsertProfileSafely(
         uid: user.uid,
-        data: {
+        baseData: {
           'uid': user.uid,
           'name': user.displayName ?? '',
           'email': user.email ?? '',
           'dob': _selectedDob!.toIso8601String(),
           'age': age,
           'photos': googlePhoto.isNotEmpty ? [googlePhoto] : [],
+          'termsAccepted': false,
+          'termsAcceptedAt': null,
           'registrationCompleted': false,
           'createdAt': DateTime.now(),
           'updatedAt': DateTime.now(),
-          'isVerified': false,
-          'idVerified': false,
-          'profileVerified': false,
-          'profileApprovalStatus': 'pending',
-          'verificationStatus': 'pending',
-          'subscriptionPlan': 'free',
-          'subscriptionName': 'Free',
-          'account': 'active',
         },
       );
       if (mounted) {
@@ -432,6 +548,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               const SizedBox(height: 20),
+
               // Logo
               Image.asset(
                 'assets/images/appicon.png',
@@ -533,6 +650,65 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
                     ],
                   ),
                 ),
+              ),
+              const SizedBox(height: 20),
+
+              // Terms & Conditions Checkbox
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: Checkbox(
+                      value: _termsAccepted,
+                      onChanged: (val) =>
+                          setState(() => _termsAccepted = val ?? false),
+                      activeColor: AppColors.goldMedium,
+                      checkColor: Colors.black,
+                      side: const BorderSide(color: Colors.white54, width: 1.5),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text.rich(
+                      TextSpan(
+                        text: 'I agree to the ',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13,
+                          height: 1.4,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: 'Terms of Service',
+                            style: const TextStyle(
+                              color: AppColors.goldMedium,
+                              decoration: TextDecoration.underline,
+                            ),
+                            recognizer: TapGestureRecognizer()
+                              ..onTap = () => _launchUrl(
+                                    'https://www.swan-match.com/terms',
+                                  ),
+                          ),
+                          const TextSpan(text: ' and '),
+                          TextSpan(
+                            text: 'Privacy Policy',
+                            style: const TextStyle(
+                              color: AppColors.goldMedium,
+                              decoration: TextDecoration.underline,
+                            ),
+                            recognizer: TapGestureRecognizer()
+                              ..onTap = () => _launchUrl(
+                                    'https://www.swan-match.com/privacy',
+                                  ),
+                          ),
+                          const TextSpan(text: '.'),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 20),

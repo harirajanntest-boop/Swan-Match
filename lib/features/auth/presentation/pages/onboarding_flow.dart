@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:async';
 import '../../../../services/user_service.dart';
@@ -80,6 +81,68 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     }
   }
 
+  String _draftKey(String suffix, String uid) => 'onboarding_${suffix}_$uid';
+
+  Future<void> _persistLocalDraftMedia(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _draftKey('local_photos', uid),
+      _onboardingData.photos,
+    );
+    await prefs.setString(
+      _draftKey('profile_picture', uid),
+      _onboardingData.profilePicture,
+    );
+    await prefs.setString(
+      _draftKey('verification_photo', uid),
+      _onboardingData.verificationPhotoUrl,
+    );
+    await prefs.setString(
+      _draftKey('id_photo', uid),
+      _onboardingData.idVerificationUrl,
+    );
+  }
+
+  Future<void> _restoreLocalDraftMedia(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    final cachedPhotos = prefs.getStringList(_draftKey('local_photos', uid)) ?? [];
+    final validPhotos = cachedPhotos
+        .where((path) => File(path).existsSync())
+        .toList();
+
+    if (_onboardingData.photos.isEmpty && validPhotos.isNotEmpty) {
+      _onboardingData.photos = validPhotos;
+    }
+
+    if (_onboardingData.profilePicture.isEmpty &&
+        _onboardingData.photos.isNotEmpty) {
+      _onboardingData.profilePicture = _onboardingData.photos.first;
+    }
+
+    final verificationPath =
+        prefs.getString(_draftKey('verification_photo', uid)) ?? '';
+    if (_onboardingData.verificationPhotoUrl.isEmpty &&
+        verificationPath.isNotEmpty &&
+        File(verificationPath).existsSync()) {
+      _onboardingData.verificationPhotoUrl = verificationPath;
+    }
+
+    final idPath = prefs.getString(_draftKey('id_photo', uid)) ?? '';
+    if (_onboardingData.idVerificationUrl.isEmpty &&
+        idPath.isNotEmpty &&
+        File(idPath).existsSync()) {
+      _onboardingData.idVerificationUrl = idPath;
+    }
+  }
+
+  Future<void> _clearLocalDraftMedia(String uid) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_draftKey('local_photos', uid));
+    await prefs.remove(_draftKey('profile_picture', uid));
+    await prefs.remove(_draftKey('verification_photo', uid));
+    await prefs.remove(_draftKey('id_photo', uid));
+  }
+
   // ─── Load saved progress from Firestore ─────────────────────────────────
   Future<void> _loadSavedProgress() async {
     setState(() => _isLoading = true);
@@ -112,6 +175,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
           });
         }
       }
+      await _restoreLocalDraftMedia(user.uid);
     } catch (e) {
       debugPrint('Error loading progress: $e');
     }
@@ -125,6 +189,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       if (user == null) return;
 
       _onboardingData.onboardingStep = _currentStep;
+      await _persistLocalDraftMedia(user.uid);
       final data = _onboardingData.toMap();
       // Remove local file paths before saving to Firestore
       data.remove('photos');
@@ -353,6 +418,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
       // Save to Firestore
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
+      await _clearLocalDraftMedia(user.uid);
 
       // Trigger secure background session tracking upon onboarding completion
       unawaited(SecurityMonitoringService.instance.logSessionActivity('onboarding_completed'));

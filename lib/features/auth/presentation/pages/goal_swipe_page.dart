@@ -184,6 +184,12 @@ class _GoalSwipePageState extends State<GoalSwipePage>
       body: StreamBuilder<Map<String, dynamic>?>(
         stream: _userProfileStream,
         builder: (context, profileSnapshot) {
+          if (profileSnapshot.connectionState == ConnectionState.waiting &&
+              !profileSnapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(color: AppColors.goldMedium),
+            );
+          }
           final profile = profileSnapshot.data ?? <String, dynamic>{};
           final hiddenMapRaw = profile['hiddenMatches'];
           final hiddenMap = hiddenMapRaw is Map ? Map<String, dynamic>.from(hiddenMapRaw) : <String, dynamic>{};
@@ -191,11 +197,23 @@ class _GoalSwipePageState extends State<GoalSwipePage>
           return StreamBuilder<Map<String, String>>(
             stream: _sentInterestStatusStream,
             builder: (context, sentStatusSnapshot) {
+              if (sentStatusSnapshot.connectionState == ConnectionState.waiting &&
+                  !sentStatusSnapshot.hasData) {
+                return const Center(
+                  child: CircularProgressIndicator(color: AppColors.goldMedium),
+                );
+              }
               final sentStatusByUser = sentStatusSnapshot.data ?? const <String, String>{};
               
               return StreamBuilder<Map<String, String>>(
                 stream: _receivedInterestStatusStream,
                 builder: (context, receivedStatusSnapshot) {
+                  if (receivedStatusSnapshot.connectionState == ConnectionState.waiting &&
+                      !receivedStatusSnapshot.hasData) {
+                    return const Center(
+                      child: CircularProgressIndicator(color: AppColors.goldMedium),
+                    );
+                  }
                   final receivedStatusByUser = receivedStatusSnapshot.data ?? const <String, String>{};
                   
                   final savedIds = ((profile['savedMatchIds'] ?? const <dynamic>[]) as List)
@@ -204,7 +222,8 @@ class _GoalSwipePageState extends State<GoalSwipePage>
                   return StreamBuilder<List<Map<String, dynamic>>>(
                     stream: _filteredMatchesStream,
                     builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
+                      if (snapshot.connectionState == ConnectionState.waiting &&
+                          !snapshot.hasData) {
                         return const Center(child: CircularProgressIndicator(color: AppColors.goldMedium));
                       }
 
@@ -306,7 +325,6 @@ class _GoalSwipePageState extends State<GoalSwipePage>
     Map<String, String> sentStatusByUser,
     Map<String, String> receivedStatusByUser,
   ) {
-    final city = (profile['city'] ?? '').toString().trim();
     final ignoredMatchIds = (profile['ignoredMatchIds'] as List<dynamic>? ?? []).map((e) => e.toString()).toSet();
     final blockedUids = List<String>.from(profile['blockedUids'] ?? []);
     final now = DateTime.now().millisecondsSinceEpoch;

@@ -46,7 +46,6 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     _lastNameCtrl = TextEditingController(text: widget.data.lastName);
     _cityCtrl = TextEditingController(text: widget.data.city);
     _countryCtrl = TextEditingController(text: widget.data.country);
-    _termsAccepted = widget.data.termsAccepted;
     _dateOfBirth = widget.data.dateOfBirth;
     _gender = widget.data.gender.isNotEmpty ? widget.data.gender : null;
     if (widget.data.photos.isNotEmpty) {
@@ -143,11 +142,10 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
       _showError('Please upload at least 3 photos');
       return;
     }
-    if (!_termsAccepted) {
-      _showError('You must accept the Terms of Service and Privacy Policy');
+    if (!widget.data.termsAccepted && !_termsAccepted) {
+      _showError('Please accept the Terms of Service and Privacy Policy');
       return;
     }
-
     // Save to data
     widget.data.firstName = firstName;
     widget.data.lastName = lastName;
@@ -156,13 +154,24 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     widget.data.gender = _gender!;
     widget.data.city = city;
     widget.data.country = country;
-    widget.data.termsAccepted = _termsAccepted;
     widget.data.photos = List<String>.from(_localPhotos);
     widget.data.profilePicture = _localPhotos.isNotEmpty
         ? _localPhotos.first
         : '';
 
+    if (!widget.data.termsAccepted && _termsAccepted) {
+      widget.data.termsAccepted = true;
+      widget.data.termsAcceptedAt = DateTime.now();
+    }
+
     widget.onNext();
+  }
+
+  Future<void> _launchUrl(String urlString) async {
+    final uri = Uri.parse(urlString);
+    try {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
   }
 
   void _showError(String msg) {
@@ -171,26 +180,6 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
     );
   }
 
-  Future<void> _launchUrl(String urlString) async {
-    final uri = Uri.parse(urlString);
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not launch link.')),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Could not launch link.')));
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -517,46 +506,68 @@ class _OnboardingStep1IdentityState extends State<OnboardingStep1Identity> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Terms & Conditions Checkbox
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: Checkbox(
-                          value: _termsAccepted,
-                          onChanged: (val) => setState(() => _termsAccepted = val ?? false),
-                          activeColor: OnboardingColors.primaryGold,
-                          checkColor: Colors.black,
-                          side: const BorderSide(color: Colors.white54, width: 1.5),
-                        ),
+                  if (!widget.data.termsAccepted) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: OnboardingColors.fieldBackground,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text.rich(
-                          TextSpan(
-                            text: 'I agree to the ',
-                            style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-                            children: [
-                              TextSpan(
-                                text: 'Terms of Service',
-                                style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
-                                recognizer: TapGestureRecognizer()..onTap = () => _launchUrl('https://www.swan-match.com/terms'),
-                              ),
-                              const TextSpan(text: ' and '),
-                              TextSpan(
-                                text: 'Privacy Policy',
-                                style: const TextStyle(color: OnboardingColors.primaryGold, decoration: TextDecoration.underline),
-                                recognizer: TapGestureRecognizer()..onTap = () => _launchUrl('https://www.swan-match.com/privacy'),
-                              ),
-                              const TextSpan(text: '.'),
-                            ],
+                      child: Row(
+                        children: [
+                          Checkbox(
+                            value: _termsAccepted,
+                            activeColor: OnboardingColors.primaryGold,
+                            onChanged: (v) {
+                              setState(() => _termsAccepted = v ?? false);
+                            },
                           ),
-                        ),
+                          Expanded(
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 12,
+                                ),
+                                children: [
+                                  const TextSpan(
+                                    text:
+                                        "I accept the ",
+                                  ),
+                                  TextSpan(
+                                    text: "Terms of Service",
+                                    style: const TextStyle(
+                                      color: OnboardingColors.primaryGold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    recognizer: TapGestureRecognizer()
+                                      ..onTap = () => _launchUrl(
+                                            "https://www.swan-match.com/terms",
+                                          ),
+                                  ),
+                                  const TextSpan(text: " and "),
+                                  TextSpan(
+                                    text: "Privacy Policy",
+                                    style: const TextStyle(
+                                      color: OnboardingColors.primaryGold,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    recognizer: TapGestureRecognizer()
+                                      ..onTap = () => _launchUrl(
+                                            "https://www.swan-match.com/privacy",
+                                          ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
                   const SizedBox(height: 32),
                 ],
               ),
