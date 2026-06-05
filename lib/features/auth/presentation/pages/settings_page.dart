@@ -110,8 +110,15 @@ class _SettingsPageState extends State<SettingsPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'This action is permanent and cannot be undone.',
+                'This permanently deletes your account, profile, photos, and '
+                'messages. It is immediate and cannot be undone.',
                 style: TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Just want a break? Set your profile to Private in Settings '
+                'instead — that hides you without deleting anything.',
+                style: TextStyle(color: Colors.white60, fontSize: 13),
               ),
               const SizedBox(height: 12),
               Text(
@@ -187,6 +194,16 @@ class _SettingsPageState extends State<SettingsPage>
       final uid = user?.uid;
       if (uid == null) throw Exception('No authenticated user found.');
 
+      // Step 0: Re-authenticate FIRST, while the account still exists. The
+      // soft-delete below triggers immediate server-side deletion of the login
+      // (onUserSoftDeleted), so re-authenticating afterward would fail because
+      // the credential would already be invalid.
+      final reauthed = await _reauthenticate();
+      if (!reauthed) {
+        if (mounted) setState(() => _isDeletingAccount = false);
+        return;
+      }
+
       // Step 1: Soft delete in Firestore - clear personal data
       final now = DateTime.now();
       final scheduledHardDelete = now.add(const Duration(days: 30));
@@ -226,7 +243,7 @@ class _SettingsPageState extends State<SettingsPage>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Your account has been scheduled for deletion.'),
+          content: Text('Your account has been permanently deleted.'),
         ),
       );
       Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
@@ -235,8 +252,24 @@ class _SettingsPageState extends State<SettingsPage>
       );
     } on FirebaseAuthException catch (error) {
       if (!mounted) return;
+      // We re-authenticate up front now, so this is unexpected. The Firestore
+      // soft-delete already ran and the server-side function completes the login
+      // deletion, so treat it as success and finish signing out.
       if (error.code == 'requires-recent-login') {
-        _handleReauthentication();
+        await AuthService.instance.signOut();
+        try {
+          await GoogleSignIn().signOut();
+        } catch (_) {}
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Your account has been permanently deleted.'),
+          ),
+        );
+        Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const CustomLoginPage()),
+          (route) => false,
+        );
         return;
       }
 
@@ -275,9 +308,9 @@ class _SettingsPageState extends State<SettingsPage>
     }
   }
 
-  Future<void> _handleReauthentication() async {
+  Future<bool> _reauthenticate() async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    if (user == null) return false;
 
     final providers = user.providerData.map((p) => p.providerId).toList();
     final isPasswordUser = providers.contains('password');
@@ -329,7 +362,7 @@ class _SettingsPageState extends State<SettingsPage>
           ),
         );
 
-        if (confirmed != true || passwordController.text.isEmpty) return;
+        if (confirmed != true || passwordController.text.isEmpty) return false;
 
         final credential = EmailAuthProvider.credential(
           email: user.email!,
@@ -339,7 +372,7 @@ class _SettingsPageState extends State<SettingsPage>
       } else {
         // Re-authenticate with Google
         final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
-        if (googleUser == null) return;
+        if (googleUser == null) return false;
 
         final GoogleSignInAuthentication googleAuth =
             await googleUser.authentication;
@@ -350,8 +383,8 @@ class _SettingsPageState extends State<SettingsPage>
         await user.reauthenticateWithCredential(credential);
       }
 
-      // Now retry delete
-      await _deleteAccount();
+      // Re-authentication succeeded — the caller may now proceed with deletion.
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -361,6 +394,7 @@ class _SettingsPageState extends State<SettingsPage>
           ),
         );
       }
+      return false;
     }
   }
 

@@ -238,27 +238,25 @@ class _MainDashboardState extends State<MainDashboard> {
 
   @override
   Widget build(BuildContext context) {
-    Widget currentPage;
-    switch (_currentIndex) {
-      case 0:
-        currentPage = SwipePage(
-          onOpenMatches: ({Map<String, dynamic>? profile}) => _openMatchesTab(profile: profile),
-          onOpenUpgrade: _openUpgradeTab,
-        );
-        break;
-      case 1:
-        currentPage = const InterestsView();
-        break;
-      case 2:
-        currentPage = const MessagesView();
-        break;
-      default:
-        currentPage = const ProfileScreen();
-    }
-
+    // IndexedStack keeps all four tabs mounted, so switching to another tab and
+    // back preserves each screen's state. In particular the Discover (swipe)
+    // screen now stays on the profile you were viewing instead of restarting
+    // from the first profile. (Previously the body was rebuilt per tab via a
+    // switch, which destroyed the swipe page's state and reset its position.)
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
-      body: currentPage,
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          SwipePage(
+            onOpenMatches: ({Map<String, dynamic>? profile}) => _openMatchesTab(profile: profile),
+            onOpenUpgrade: _openUpgradeTab,
+          ),
+          const InterestsView(),
+          const MessagesView(),
+          const ProfileScreen(),
+        ],
+      ),
       bottomNavigationBar: _SwanBottomNav(
         currentIndex: _currentIndex,
         onTap: (index) => setState(() => _currentIndex = index),

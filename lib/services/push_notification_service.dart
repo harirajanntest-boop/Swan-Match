@@ -158,12 +158,29 @@ class PushNotificationService {
       return;
     }
     if (token == null || token.trim().isEmpty) return;
+    token = token.trim();
 
-    await _firestore.collection('users').doc(user.uid).set(<String, dynamic>{
+    final users = _firestore.collection('users').doc(user.uid);
+
+    // Remove this device's PREVIOUS token (e.g. after a token refresh) before
+    // adding the new one, so the user's fcmTokens array never accumulates
+    // multiple tokens for the same device — that accumulation is what makes the
+    // backend send (and the device receive) duplicate push notifications.
+    final prefs = await SharedPreferences.getInstance();
+    final previous = prefs.getString('fcm_token_local');
+    if (previous != null && previous.isNotEmpty && previous != token) {
+      await users.set(<String, dynamic>{
+        'fcmTokens': FieldValue.arrayRemove([previous]),
+      }, SetOptions(merge: true));
+    }
+
+    await users.set(<String, dynamic>{
       'fcmTokens': FieldValue.arrayUnion([token]),
       'fcmToken': token,
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    await prefs.setString('fcm_token_local', token);
   }
 
   /// Removes this device's token when signing out (call before [FirebaseAuth.signOut]).

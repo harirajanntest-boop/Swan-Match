@@ -1,3 +1,0 @@
-Stripe - need admin access
-FCM - need admin access
-Continue With Google

@@ -7,10 +7,19 @@ service cloud.firestore {
     }
 
     function isAdmin() {
+      // Primary: the unforgeable custom-claim "badge" that the backend sets when
+      // an admin is created (covers Super, Support, Finance & Verification roles).
+      // Fallback: the owner emails, but ONLY when the email is verified — an
+      // attacker cannot verify an email they do not control, so the old
+      // "any @swan-match.com signup = admin" spoofing hole is closed.
       return isSignedIn() && (
-        request.auth.token.email == "sasikumar.s9951@gmail.com" ||
-        request.auth.token.email == "admin@gmail.com" ||
-        request.auth.token.email.matches(".*@swan-match\\.com$")
+        request.auth.token.isAdmin == true ||
+        (
+          request.auth.token.email_verified == true && (
+            request.auth.token.email == "admin@swan-match.com" ||
+            request.auth.token.email == "sasikumar.s9951@gmail.com"
+          )
+        )
       );
     }
 
@@ -160,7 +169,10 @@ service cloud.firestore {
     }
 
     match /user_lookup/{docId} {
-      allow read, write: if isSignedIn();
+      // Read allowed for signed-in users; writes restricted to admin/backend so
+      // a regular user cannot pollute or overwrite lookup entries.
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     match /appeals/{appealId} {

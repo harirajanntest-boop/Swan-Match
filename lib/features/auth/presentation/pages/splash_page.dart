@@ -25,9 +25,20 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
   late final Animation<double> _scaleAnimation;
   late final Animation<double> _fadeAnimation;
 
+  // Future that completes once the custom Google Fonts are loaded into memory.
+  // We gate navigation on this so the intro/login/signup screens render with
+  // the correct font already available — no flash of the fallback font.
+  late final Future<void> _fontsReady;
+
   @override
   void initState() {
     super.initState();
+
+    // Start downloading/loading the fonts immediately, in parallel with the
+    // splash animation and the 2.5s timer below. On first launch this warms
+    // them up while the branded splash is on screen; afterwards they are
+    // cached on the device so it is instant.
+    _fontsReady = _preloadFonts();
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
@@ -47,7 +58,40 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     Timer(const Duration(milliseconds: 2500), _checkAuth);
   }
 
+  // Warm up every custom font (and the weights actually used) before the
+  // first real screen appears. GoogleFonts loads each family+weight lazily,
+  // which is what caused the visible swap from the system fallback font to
+  // the real font on the intro, login and signup screens. Loading them here
+  // eliminates that flash. Wrapped in a timeout + try/catch so a slow or
+  // offline first launch can never block the app from continuing.
+  Future<void> _preloadFonts() async {
+    try {
+      await GoogleFonts.pendingFonts([
+        GoogleFonts.poppins(),
+        GoogleFonts.poppins(fontWeight: FontWeight.w500),
+        GoogleFonts.poppins(fontWeight: FontWeight.w600),
+        GoogleFonts.poppins(fontWeight: FontWeight.w700),
+        GoogleFonts.playfairDisplay(),
+        GoogleFonts.playfairDisplay(fontWeight: FontWeight.w600),
+        GoogleFonts.playfairDisplay(fontWeight: FontWeight.w700),
+        GoogleFonts.inter(),
+        GoogleFonts.inter(fontWeight: FontWeight.w500),
+        GoogleFonts.inter(fontWeight: FontWeight.w600),
+        GoogleFonts.cinzel(),
+        GoogleFonts.cinzel(fontWeight: FontWeight.w600),
+        GoogleFonts.cinzel(fontWeight: FontWeight.w700),
+      ]).timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Offline / slow network on first launch: fall back to lazy loading
+      // (the old behaviour) rather than holding the user on the splash.
+    }
+  }
+
   Future<void> _checkAuth() async {
+    if (!mounted) return;
+    // Make sure the fonts finished warming up before we leave the splash, so
+    // the next screen does not flash the fallback font.
+    await _fontsReady;
     if (!mounted) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
@@ -178,7 +222,11 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
                 const SizedBox(height: 24),
                 Text(
                   "SWAN MATCH",
-                  style: GoogleFonts.cinzel(
+                  style: const TextStyle(
+                    // Bundled font (declared in pubspec) — available from the
+                    // first frame, so no flash of the system fallback font.
+                    fontFamily: 'SwanCinzel',
+                    fontVariations: [FontVariation('wght', 600)],
                     color: AppColors.goldMedium,
                     fontSize: 32,
                     letterSpacing: 2,

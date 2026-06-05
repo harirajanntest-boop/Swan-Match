@@ -1141,26 +1141,49 @@ exports.checkAuthProviders = onCall(async (request) => {
  * Ensures Firebase Auth account is deleted even if the user force closes
  * the app during the deletion process. Triggered when `isDeleted: true`.
  */
-exports.onUserSoftDeleted = onDocumentUpdated('users/{uid}', async (event) => {
-  const before = event.data.before.data();
-  const after = event.data.after.data();
-  const uid = event.params.uid;
+exports.onUserSoftDeleted = onDocumentUpdated(
+  { document: 'users/{uid}', secrets: [stripeSecretKey] },
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const uid = event.params.uid;
 
-  // Only trigger if isDeleted changes from false to true
-  if (!before.isDeleted && after.isDeleted === true) {
-    console.log(`[onUserSoftDeleted] Triggered for user ${uid}. Deleting Firebase Auth account.`);
-    try {
-      await admin.auth().deleteUser(uid);
-      console.log(`[onUserSoftDeleted] Successfully deleted Firebase Auth for ${uid}.`);
-    } catch (error) {
-      if (error.code === 'auth/user-not-found') {
-        console.log(`[onUserSoftDeleted] Auth account for ${uid} was already deleted.`);
-      } else {
-        console.error(`[onUserSoftDeleted] Error deleting Auth for ${uid}:`, error);
+    // Only trigger if isDeleted changes from false to true
+    if (!before.isDeleted && after.isDeleted === true) {
+      console.log(`[onUserSoftDeleted] Triggered for user ${uid}.`);
+
+      // 1. Cancel any active Stripe subscription so a deleted user is never
+      //    billed again (otherwise their card stays on file and keeps renewing).
+      const subId = after.stripeSubscriptionId;
+      if (subId) {
+        try {
+          const stripe = require('stripe')((stripeSecretKey.value() || '').trim());
+          await stripe.subscriptions.cancel(subId);
+          console.log(`[onUserSoftDeleted] Cancelled Stripe subscription ${subId} for ${uid}.`);
+        } catch (error) {
+          if ((error.code || error.type) === 'resource_missing') {
+            console.log(`[onUserSoftDeleted] Subscription ${subId} already gone for ${uid}.`);
+          } else {
+            console.error(`[onUserSoftDeleted] Failed to cancel subscription ${subId} for ${uid}:`, error.message);
+          }
+        }
+      }
+
+      // 2. Delete the Firebase Auth account (even if the user force-closed the app).
+      console.log(`[onUserSoftDeleted] Deleting Firebase Auth account for ${uid}.`);
+      try {
+        await admin.auth().deleteUser(uid);
+        console.log(`[onUserSoftDeleted] Successfully deleted Firebase Auth for ${uid}.`);
+      } catch (error) {
+        if (error.code === 'auth/user-not-found') {
+          console.log(`[onUserSoftDeleted] Auth account for ${uid} was already deleted.`);
+        } else {
+          console.error(`[onUserSoftDeleted] Error deleting Auth for ${uid}:`, error);
+        }
       }
     }
   }
-});
+);
 
 // ─── Login Throttling ────────────────────────────────────────────────────────
 // Secure, persistent Firestore-backed throttling tracker (prevents bypasses on scaling/cold starts)

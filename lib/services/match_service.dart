@@ -277,14 +277,6 @@ class MatchService {
     ))
       matches++;
 
-    // 6. Height (In CM)
-    totalFields++;
-    final h = double.tryParse(candidate['height']?.toString() ?? '0') ?? 0;
-    final hMin = double.tryParse(myPrefs['heightMin']?.toString() ?? '0') ?? 0;
-    final hMax =
-        double.tryParse(myPrefs['heightMax']?.toString() ?? '300') ?? 300;
-    if (h >= hMin && h <= hMax) matches++;
-
     if (totalFields == 0) return 1.0;
     return matches / totalFields;
   }

@@ -739,11 +739,29 @@ class AuthService {
   bool get isEmailVerified => _auth.currentUser?.emailVerified ?? false;
 
   Future<bool> checkEmailVerified() async {
-    final user = _auth.currentUser;
+    var user = _auth.currentUser;
     if (user == null) return false;
-    await user.getIdToken(true);
-    await user.reload();
-    return user.emailVerified;
+
+    // Pull the latest state from the server, then RE-FETCH currentUser.
+    // After reload(), the old `user` reference is a stale snapshot whose
+    // emailVerified still reads the cached value — only a freshly read
+    // currentUser reflects the verification. (This is why the first tap
+    // used to say "not verified" and the second tap worked.)
+    try {
+      await user.reload();
+    } catch (_) {}
+    user = _auth.currentUser;
+    if (user == null) return false;
+    if (user.emailVerified) return true;
+
+    // Fallback: force a token refresh and reload once more, then re-read.
+    // This makes a single tap enough even if the first reload was slow.
+    try {
+      await user.getIdToken(true);
+      await user.reload();
+      user = _auth.currentUser;
+    } catch (_) {}
+    return user?.emailVerified ?? false;
   }
 }
 

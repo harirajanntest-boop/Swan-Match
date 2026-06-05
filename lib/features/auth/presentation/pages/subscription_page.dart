@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import '../../../../services/payment_flow_service.dart';
@@ -638,6 +639,8 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   bool _checkingStatus = true; // true while we check if user is already premium
   bool _isPaidPremium = false;
   bool _isOnFreeTrial = false;
+  bool _cancelAtPeriodEnd = false; // user cancelled; premium runs out at period end
+  DateTime? _premiumEndsAt; // when premium access ends (current period end)
   String _currentPriceId = ''; // The Stripe price ID of the user's active plan
   String _currentPlanTitle = '';
   int _selectedPlanIndex = 2; // Default to 12 Months
@@ -737,6 +740,8 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
     final currentPlanTitle = _inferCurrentPlanTitle(profile);
     final isPaid = UserService.instance.isPaidPremium(profile);
     final isOnTrial = UserService.instance.isOnFreeTrial(profile);
+    final cancelAtPeriodEnd = profile?['cancelAtPeriodEnd'] == true;
+    final premiumEndsAt = _asDateTime(profile?['billingPeriodEnd']);
 
     int? selectedIndex;
     if (isPaid) {
@@ -764,6 +769,8 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
     setState(() {
       _isPaidPremium = isPaid;
       _isOnFreeTrial = isOnTrial;
+      _cancelAtPeriodEnd = isPaid && cancelAtPeriodEnd;
+      _premiumEndsAt = premiumEndsAt;
       _currentPriceId = isPaid ? priceId : '';
       _currentPlanTitle = isPaid ? currentPlanTitle : '';
       if (selectedIndex != null) _selectedPlanIndex = selectedIndex;
@@ -783,7 +790,22 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
       (profile['subscriptionType'] ?? '').toString(),
       (profile['plan'] ?? '').toString(),
       (profile['freeTrialEndsAt'] ?? '').toString(),
+      (profile['cancelAtPeriodEnd'] ?? '').toString(),
+      (profile['billingPeriodEnd'] ?? '').toString(),
     ].join('|');
+  }
+
+  /// Converts a Firestore Timestamp / millis int / DateTime into a DateTime.
+  /// Duck-typed so we don't need to import the cloud_firestore Timestamp type.
+  DateTime? _asDateTime(dynamic v) {
+    if (v == null) return null;
+    if (v is DateTime) return v;
+    if (v is int) return DateTime.fromMillisecondsSinceEpoch(v);
+    try {
+      final d = (v as dynamic).toDate();
+      if (d is DateTime) return d;
+    } catch (_) {}
+    return null;
   }
 
   String _subscriptionStatus(Map<String, dynamic>? profile) {
@@ -1348,6 +1370,46 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                     ),
                   )
                 else if (_isPaidPremium) ...[
+                  // Cancellation notice — only when the user has cancelled but is
+                  // still inside the paid period. Premium stays until the period
+                  // end, then auto-downgrades to Free; no further charges. To turn
+                  // renewal back on, the user taps Manage Subscription below.
+                  if (_cancelAtPeriodEnd)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 14),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.amber.withOpacity(0.4)),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.info_outline,
+                              color: Colors.amber, size: 18),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _premiumEndsAt != null
+                                  ? "Your subscription is cancelled. You'll keep Premium until "
+                                      "${DateFormat('MMMM d, yyyy').format(_premiumEndsAt!)}, "
+                                      "then your account moves to Free. It won't renew and you "
+                                      "won't be charged again."
+                                  : "Your subscription is cancelled. You'll keep Premium until the "
+                                      "end of your current billing period, then your account moves "
+                                      "to Free. It won't renew and you won't be charged again.",
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12.5,
+                                height: 1.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   // User already has paid premium — show manage subscription button
                   SizedBox(
                     width: double.infinity,

@@ -277,8 +277,9 @@ class _SwipePageState extends State<SwipePage> {
     Map<String, dynamic> profile,
     Map<String, dynamic> hiddenMap,
     Map<String, String> sentStatus,
-    Map<String, String> receivedStatus,
-  ) {
+    Map<String, String> receivedStatus, {
+    bool includeSkipped = false,
+  }) {
     final blocked = List<String>.from(profile['blockedUids'] ?? []);
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -393,15 +394,15 @@ class _SwipePageState extends State<SwipePage> {
         if (r != preferredReligion) return false;
       }
 
-      // ─ Ignored / hidden ──────────────────────────────────────────────────
-      final ignoredMatchIds =
-          (profile['ignoredMatchIds'] as List<dynamic>? ?? [])
-              .map((e) => e.toString())
-              .toSet();
-      if (ignoredMatchIds.contains(uid)) return false;
-
+      // ─ Cooldown ──────────────────────────────────────────────────────────
+      // Passed profiles are hidden only until their cooldown expires (see the
+      // ✕ handler), so the pool never permanently dries up. The legacy
+      // permanent `ignoredMatchIds` list is intentionally no longer used to
+      // hide profiles from Discover.
+      // When includeSkipped is true (the "Review skipped" flow) we deliberately
+      // bypass the cooldown so the profiles the user passed can resurface.
       final hidden = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
-      if (hidden > now) return false;
+      if (!includeSkipped && hidden > now) return false;
 
       // ─ Interest / like status ────────────────────────────────────────────
       final ss = sentStatus[uid]?.toLowerCase() ?? '';
@@ -717,28 +718,93 @@ class _SwipePageState extends State<SwipePage> {
     return result;
   }
 
-  int _calculateScore(UserModel currentUser, UserModel otherUser) {
-    var score = 0;
+  /// Weighted compatibility score (0–100) between the signed-in user (`me`)
+  /// and `other`. Weights total 100 and reflect what matters for serious
+  /// relationships. Used by [_rankUsers] to sort the Discover feed best-first.
+  int _calculateScore(UserModel me, UserModel other) {
+    String norm(String s) => s.trim().toLowerCase();
+    double score = 0;
 
-    final myInterests = currentUser.interests;
-    final theirInterests = otherUser.interests;
-    final commonInterests = myInterests
-        .where((interest) => theirInterests.contains(interest))
-        .length;
-    score += (commonInterests * 8).clamp(0, 40).toInt();
-
-    if (currentUser.drinking == otherUser.drinking) score += 10;
-    if (currentUser.smoking == otherUser.smoking) score += 10;
-    if (currentUser.workout == otherUser.workout) score += 10;
-
-    if (currentUser.lookingFor == otherUser.lookingFor) score += 20;
-
-    if (currentUser.city.trim().toLowerCase() ==
-        otherUser.city.trim().toLowerCase()) {
-      score += 10;
+    // 1. Relationship goal — 25
+    if (me.lookingFor.isNotEmpty && other.lookingFor.isNotEmpty) {
+      score += norm(me.lookingFor) == norm(other.lookingFor) ? 25 : 25 * 0.4;
     }
 
-    return score.clamp(0, 100);
+    // 2. Age fit — 20 (full inside my preferred range, partial within 3 years)
+    final otherAge = other.age > 0
+        ? other.age
+        : (other.dateOfBirth != null
+            ? DateTime.now().year - other.dateOfBirth!.year
+            : 0);
+    if (otherAge > 0) {
+      if (otherAge >= me.minAgePreference && otherAge <= me.maxAgePreference) {
+        score += 20;
+      } else {
+        final gap = otherAge < me.minAgePreference
+            ? me.minAgePreference - otherAge
+            : otherAge - me.maxAgePreference;
+        if (gap <= 3) score += 20 * (1 - gap / 3) * 0.7;
+      }
+    }
+
+    // 3. Shared interests — 18 (overlap ratio)
+    final mine = me.interests.map(norm).toSet();
+    final theirs = other.interests.map(norm).toSet();
+    if (mine.isNotEmpty && theirs.isNotEmpty) {
+      final shared = mine.intersection(theirs).length;
+      final union = mine.union(theirs).length;
+      if (union > 0) score += 18 * (shared / union);
+    }
+
+    // 4. Religion / community — 12
+    if (me.religion.isNotEmpty &&
+        other.religion.isNotEmpty &&
+        norm(me.religion) == norm(other.religion)) {
+      score += 12;
+    }
+
+    // 5. Location — 10 (same city full, same country partial)
+    if (me.city.isNotEmpty && norm(me.city) == norm(other.city)) {
+      score += 10;
+    } else if (me.country.isNotEmpty &&
+        norm(me.country) == norm(other.country)) {
+      score += 10 * 0.4;
+    }
+
+    // 6. Language — 8 (any shared primary/other language)
+    final myLangs = {norm(me.primaryLanguage), ...me.otherLanguages.map(norm)}
+      ..removeWhere((e) => e.isEmpty);
+    final theirLangs = {
+      norm(other.primaryLanguage),
+      ...other.otherLanguages.map(norm),
+    }..removeWhere((e) => e.isEmpty);
+    if (myLangs.isNotEmpty &&
+        theirLangs.isNotEmpty &&
+        myLangs.intersection(theirLangs).isNotEmpty) {
+      score += 8;
+    }
+
+    // 7. Lifestyle — 7 (smoking + drinking + workout + family-values closeness)
+    double sub = 0;
+    int parts = 0;
+    for (final pair in [
+      [me.smoking, other.smoking],
+      [me.drinking, other.drinking],
+      [me.workout, other.workout],
+    ]) {
+      if (pair[0].isNotEmpty && pair[1].isNotEmpty) {
+        parts++;
+        if (norm(pair[0]) == norm(pair[1])) sub += 1;
+      }
+    }
+    parts++;
+    sub += (1 -
+            (me.familyValuesImportance - other.familyValuesImportance).abs() /
+                5)
+        .clamp(0.0, 1.0);
+    if (parts > 0) score += 7 * (sub / parts);
+
+    return score.clamp(0, 100).round();
   }
 
   List<UserModel> _rankUsers(List<UserModel> users, UserModel currentUser) {
@@ -923,7 +989,26 @@ class _SwipePageState extends State<SwipePage> {
                       recvStatus,
                     );
 
-                    if (matches.isEmpty) return _EmptyDiscoverState();
+                    if (matches.isEmpty) {
+                      // Fresh deck is exhausted. If the user skipped anyone, show
+                      // an "all caught up" card with a one-tap way to revisit only
+                      // those skipped profiles (liked / matched / blocked people
+                      // are never included). Otherwise show the standard empty state.
+                      final skipped = _applyFilters(
+                        rankedMaps,
+                        profile,
+                        hiddenMap,
+                        sentStatus,
+                        recvStatus,
+                        includeSkipped: true,
+                      );
+                      if (skipped.isNotEmpty) {
+                        return _ResetDeckCard(
+                          onReset: () => _resetDeck(hiddenMap),
+                        );
+                      }
+                      return _EmptyDiscoverState();
+                    }
 
                     return PageView.builder(
                       controller: _pageController,
@@ -987,16 +1072,20 @@ class _SwipePageState extends State<SwipePage> {
                           },
                           onDismiss: () async {
                             if (uid.isEmpty) return;
-                            final curIgnored =
-                                ((profile['ignoredMatchIds'] ?? []) as List)
-                                    .map((e) => e.toString())
-                                    .toSet();
-                            curIgnored.add(uid);
+                            // Pass = 7-day cooldown (the profile can resurface
+                            // later) rather than a permanent hide — keeps the
+                            // pool from drying up for active/premium users.
+                            const cooldown = Duration(days: 7);
+                            final hidden = Map<String, dynamic>.from(
+                                profile['hiddenMatches'] ?? {});
+                            hidden[uid] = DateTime.now()
+                                .add(cooldown)
+                                .millisecondsSinceEpoch;
                             await UserService.instance.updateCurrentUserProfile(
-                              {'ignoredMatchIds': curIgnored.toList()},
+                              {'hiddenMatches': hidden},
                             );
                             if (!mounted) return;
-                            _showMessage('Profile ignored.');
+                            _showMessage('Skipped for now.');
                             _nextCard(matches);
                           },
                           onToggleSave: () async {
@@ -1104,6 +1193,30 @@ class _SwipePageState extends State<SwipePage> {
         curve: Curves.easeInOut,
       );
     }
+  }
+
+  /// Resets the Discover deck back to the first profile. We expire the cooldown
+  /// timestamps of the profiles the user skipped (the ✕ button → 7-day cooldown)
+  /// so they re-enter the deck, then jump the PageView to profile zero. Profiles
+  /// the user liked, matched with, or blocked are tracked separately and are NOT
+  /// brought back. The live profile stream then rebuilds the deck from the top.
+  Future<void> _resetDeck(Map<String, dynamic> hiddenMap) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final updated = Map<String, dynamic>.from(hiddenMap);
+    updated.updateAll((key, value) {
+      final ms = int.tryParse(value.toString()) ?? 0;
+      return ms > now ? 0 : value; // expire active cooldowns only
+    });
+
+    await UserService.instance.updateCurrentUserProfile(
+      {'hiddenMatches': updated},
+    );
+    if (!mounted) return;
+    setState(() => _currentPage = 0);
+    if (_pageController.hasClients) {
+      _pageController.jumpToPage(0);
+    }
+    _showMessage('Starting over from the first profile 🔄');
   }
 
   Future<void> _checkEmailLinkPopup() async {
@@ -2605,6 +2718,81 @@ class _EmptyDiscoverState extends StatelessWidget {
           style: TextStyle(color: Colors.white.withOpacity(0.45), fontSize: 14),
         ),
       ],
+    ),
+  );
+}
+
+// ─── End-of-deck reset card: shown when the user reaches the final profile.
+// Tapping Reset restarts the deck from the first profile (skipped people are
+// shown again; liked / matched / blocked people are not). ───
+class _ResetDeckCard extends StatelessWidget {
+  const _ResetDeckCard({required this.onReset});
+
+  final VoidCallback onReset;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.refresh_rounded,
+            color: AppColors.goldMedium.withOpacity(0.6),
+            size: 72,
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            "You've reached the end",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "You've seen everyone for now. Tap Reset to start again from the first profile.",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.5),
+              fontSize: 14,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 28),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: onReset,
+              icon: const Icon(Icons.refresh_rounded, size: 20),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.goldMedium,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+              label: const Text('Reset'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            "People you liked or matched with won't reappear here.",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.3),
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
     ),
   );
 }

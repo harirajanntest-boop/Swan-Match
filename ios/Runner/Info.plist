@@ -36,6 +36,10 @@
 	<string>This app needs access to location to determine your country, state, and city.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>This app needs access to location to determine your country, state, and city.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Swan Match uses your camera so you can take profile photos and complete ID verification.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Swan Match needs access to your photos so you can upload profile pictures and verification documents.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

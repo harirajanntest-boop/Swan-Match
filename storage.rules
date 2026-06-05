@@ -2,10 +2,17 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     function isAdmin() {
+      // Same model as Firestore: trust the backend-set custom-claim "badge",
+      // with a verified-owner-email fallback. (Also fixes the old domain typo
+      // that checked @swanmatch.com instead of the real @swan-match.com.)
       return request.auth != null && (
-        request.auth.token.email == "sasikumar.s9951@gmail.com" ||
-        request.auth.token.email == "admin@gmail.com" ||
-        request.auth.token.email.matches(".*@swanmatch\\.com$")
+        request.auth.token.isAdmin == true ||
+        (
+          request.auth.token.email_verified == true && (
+            request.auth.token.email == "admin@swan-match.com" ||
+            request.auth.token.email == "sasikumar.s9951@gmail.com"
+          )
+        )
       );
     }
 
