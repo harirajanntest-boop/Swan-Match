@@ -2,44 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- App queries schemes for url_launcher to work on iOS 9+ -->
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>https</string>
-		<string>http</string>
-	</array>
-	<!-- Google Sign-in Section -->
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>com.googleusercontent.apps.439342747193-hbe2s6ca6om9f6qirg132r4i26u4hrff</string>
-			</array>
-		</dict>
-		<!-- Stripe payment return deep link -->
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLName</key>
-			<string>com.swanmatch.app.payment</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>swanmatch</string>
-			</array>
-		</dict>
-	</array>
-	<!-- End of the Google Sign-in Section -->
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>This app needs access to location to determine your country, state, and city.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>This app needs access to location to determine your country, state, and city.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Swan Match uses your camera so you can take profile photos and complete ID verification.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Swan Match needs access to your photos so you can upload profile pictures and verification documents.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -60,10 +22,44 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.439342747193-hg5humqka9h093adtbiar2d5lkfq9d93</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.swanmatch.app.payment</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>swanmatch</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>http</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Swan Match uses your camera so you can take profile photos and complete ID verification.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>This app needs access to location to determine your country, state, and city.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>This app needs access to location to determine your country, state, and city.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Swan Match needs access to your photos so you can upload profile pictures and verification documents.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -85,12 +81,12 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
 	</array>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

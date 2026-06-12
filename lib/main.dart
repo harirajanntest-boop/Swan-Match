@@ -138,8 +138,12 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
   }
 
   Future<void> _performInitialization() async {
-    // Firebase.initializeApp() was already called in main() before runApp().
-    // Calling it a second time is safe — it returns the existing app instance.
+    // CRITICAL: Firebase core is the ONLY step that must succeed for the app to
+    // run. (It was already called in main(); calling again returns the existing
+    // instance.) Everything below is best-effort — a failure or hang here must
+    // NOT block the app or trigger the "Firebase setup required" screen. For
+    // example, push notifications cannot obtain an APNs token on the iOS
+    // Simulator and would otherwise hang until the outer timeout fired.
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
@@ -149,18 +153,28 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
         androidProvider:
             kDebugMode ? AndroidProvider.debug : AndroidProvider.playIntegrity,
         appleProvider: kDebugMode ? AppleProvider.debug : AppleProvider.appAttest,
-      );
+      ).timeout(const Duration(seconds: 8));
     } catch (e) {
       debugPrint("App Check initialization error: $e");
     }
 
-    // ─── Analytics: set analytics collection on/off per build mode ─────────
-    await analytics.setAnalyticsCollectionEnabled(!kDebugMode);
-    // Log app_open event so we can track daily active users in Firebase console
-    await analytics.logAppOpen();
+    // ─── Analytics (best-effort) ───────────────────────────────────────────
+    try {
+      await analytics.setAnalyticsCollectionEnabled(!kDebugMode);
+      await analytics.logAppOpen();
+    } catch (e) {
+      debugPrint("Analytics initialization error: $e");
+    }
 
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
-    await PushNotificationService.instance.initialize();
+    // ─── Push notifications (best-effort; no APNs token on the Simulator) ──
+    try {
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+      await PushNotificationService.instance
+          .initialize()
+          .timeout(const Duration(seconds: 8));
+    } catch (e) {
+      debugPrint("Push notification initialization error: $e");
+    }
   }
 
   @override

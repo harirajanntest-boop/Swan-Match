@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/gestures.dart';
@@ -648,15 +649,18 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
                 isLoading: _isGoogleLoading,
                 onPressed: _isGoogleLoading ? () {} : _handleGoogleSignIn,
               ),
-              const SizedBox(height: 12),
-              // Apple Button
-              _buildSocialButton(
-                icon: FontAwesomeIcons.apple,
-                iconColor: Colors.white,
-                text: "Continue with Apple",
-                isLoading: _isAppleLoading,
-                onPressed: _isAppleLoading ? () {} : _handleAppleSignIn,
-              ),
+              // Apple Button — iOS only (Sign in with Apple isn't available on
+              // Android, and the handler is still a stub there).
+              if (Platform.isIOS) ...[
+                const SizedBox(height: 12),
+                _buildSocialButton(
+                  icon: FontAwesomeIcons.apple,
+                  iconColor: Colors.white,
+                  text: "Continue with Apple",
+                  isLoading: _isAppleLoading,
+                  onPressed: _isAppleLoading ? () {} : _handleAppleSignIn,
+                ),
+              ],
 
               const SizedBox(height: 20),
               // Footer

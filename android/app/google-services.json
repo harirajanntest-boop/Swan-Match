@@ -58,6 +58,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "439342747193-reebsaklijc2k8o8a8autnc6egdkrrsm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.swanmatch.app",
+            "certificate_hash": "3bc768bda5caf216337591c88e5aaf1aa141a093"
+          }
+        },
+        {
           "client_id": "439342747193-uqmbsfsbphubcetcq82dosff0gc9vlg2.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

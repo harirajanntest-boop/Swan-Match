@@ -917,6 +917,21 @@ class _EditProfilePageState extends State<EditProfilePage>
       updates[key] = updated;
     }
 
+    // Keep the combined `name` field in sync with firstName/lastName.
+    // Most screens (Discover, chat, matches, settings, notifications) read
+    // `name` first, so without this the old name lingers everywhere else.
+    if (key == 'firstName' || key == 'lastName') {
+      final first =
+          (key == 'firstName' ? updated : profile['firstName'] ?? '')
+              .toString()
+              .trim();
+      final last = (key == 'lastName' ? updated : profile['lastName'] ?? '')
+          .toString()
+          .trim();
+      final combined = '$first $last'.trim();
+      if (combined.isNotEmpty) updates['name'] = combined;
+    }
+
     await UserService.instance.updateCurrentUserProfile(updates);
   }
 

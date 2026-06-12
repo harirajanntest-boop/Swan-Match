@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: 'Cinzel';
+    src: url('file:///Users/apple/Downloads/Swan_Match_app-main/assets/fonts/Cinzel/Cinzel.ttf') format('truetype');
+    font-weight: 400 900;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1024px; height: 500px; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse 900px 600px at 78% 45%, #1a1408 0%, #0d0b06 38%, #080808 70%),
+                #080808;
+    position: relative;
+    font-family: 'Cinzel', serif;
+  }
+  /* soft gold glow behind swan */
+  .glow {
+    position: absolute;
+    right: 60px; top: 50%;
+    width: 460px; height: 460px;
+    transform: translateY(-50%);
+    background: radial-gradient(circle, rgba(198,168,92,0.20) 0%, rgba(198,168,92,0.07) 45%, transparent 70%);
+    border-radius: 50%;
+  }
+  .swan {
+    position: absolute;
+    right: 88px; top: 50%;
+    transform: translateY(-50%);
+    width: 400px; height: 400px;
+    object-fit: contain;
+    /* the png has a black square bg that blends into ours */
+    mix-blend-mode: screen;
+  }
+  .content {
+    position: absolute;
+    left: 84px; top: 50%;
+    transform: translateY(-50%);
+    width: 520px;
+  }
+  .title {
+    font-size: 76px;
+    font-weight: 700;
+    letter-spacing: 8px;
+    line-height: 1.04;
+    background: linear-gradient(135deg, #a08840 0%, #c6a85c 45%, #dec47e 75%, #c6a85c 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .rule {
+    margin: 26px 0 22px 4px;
+    width: 340px; height: 1px;
+    background: linear-gradient(90deg, #c6a85c 0%, rgba(198,168,92,0.45) 60%, transparent 100%);
+    position: relative;
+  }
+  .rule::after {
+    content: '';
+    position: absolute;
+    left: 0; top: -2.5px;
+    width: 6px; height: 6px;
+    background: #dec47e;
+    transform: rotate(45deg);
+  }
+  .tagline {
+    font-size: 27px;
+    font-weight: 500;
+    letter-spacing: 3.5px;
+    color: rgba(255,255,255,0.92);
+  }
+  .tagline .accent { color: #c6a85c; }
+  .sub {
+    margin-top: 16px;
+    font-size: 16px;
+    font-weight: 400;
+    letter-spacing: 4.5px;
+    color: rgba(255,255,255,0.55);
+    text-transform: uppercase;
+  }
+  /* corner ornaments */
+  .corner {
+    position: absolute;
+    width: 56px; height: 56px;
+    border-color: rgba(198,168,92,0.55);
+    border-style: solid;
+    border-width: 0;
+  }
+  .tl { top: 26px; left: 26px; border-top-width: 1.5px; border-left-width: 1.5px; }
+  .br { bottom: 26px; right: 26px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <img class="swan" src="file:///Users/apple/Downloads/Swan_Match_app-main/assets/images/appicon.png">
+  <div class="corner tl"></div>
+  <div class="corner br"></div>
+  <div class="content">
+    <div class="title">SWAN<br>MATCH</div>
+    <div class="rule"></div>
+    <div class="tagline">Not Dating. <span class="accent">Intentional&nbsp;Connection.</span></div>
+    <div class="sub">Verified profiles &nbsp;·&nbsp; Serious intent</div>
+  </div>
+</body>
+</html>

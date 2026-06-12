@@ -103,6 +103,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       (p['verificationStatus']?.toString().toLowerCase() == 'approved');
 
   bool _isPremium(Map<String, dynamic> p) => UserService.instance.isPremium(p);
+  bool _isOnFreeTrial(Map<String, dynamic> p) => UserService.instance.isOnFreeTrial(p);
+  bool _isPaidPremium(Map<String, dynamic> p) => UserService.instance.isPaidPremium(p);
 
   int? _trialDaysLeft(Map<String, dynamic> p) {
     final t = p['freeTrialEndsAt'];
@@ -474,7 +476,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       _MenuItem(
                         icon: Icons.workspace_premium_outlined,
                         label: 'Subscription',
-                        trailing: _isPremium(profile) ? 'Premium' : 'Upgrade',
+                        trailing: _isPaidPremium(profile)
+                            ? 'Premium'
+                            : (_isOnFreeTrial(profile) ? 'Free Trial' : 'Upgrade'),
                         trailingColor: AppColors.goldMedium,
                         onTap: () => Navigator.push(
                           context,

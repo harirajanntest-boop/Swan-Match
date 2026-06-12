@@ -59,24 +59,24 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyCxD4jbk4M_F1vOX9VOjwocMMpcMoRMJYE',
-    appId: '1:439342747193:ios:13a3c4cf6fff855118c7e8',
+    appId: '1:439342747193:ios:4a30bfb500aeaabc18c7e8',
     messagingSenderId: '439342747193',
     projectId: 'swan-match',
     storageBucket: 'swan-match.firebasestorage.app',
     androidClientId: '439342747193-p9ha5buke2iqgiulnl303f78se4t2gh2.apps.googleusercontent.com',
-    iosClientId: '439342747193-hbe2s6ca6om9f6qirg132r4i26u4hrff.apps.googleusercontent.com',
-    iosBundleId: 'com.example.swamMatchApp',
+    iosClientId: '439342747193-hg5humqka9h093adtbiar2d5lkfq9d93.apps.googleusercontent.com',
+    iosBundleId: 'com.swanmatch.app',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
     apiKey: 'AIzaSyCxD4jbk4M_F1vOX9VOjwocMMpcMoRMJYE',
-    appId: '1:439342747193:ios:13a3c4cf6fff855118c7e8',
+    appId: '1:439342747193:ios:4a30bfb500aeaabc18c7e8',
     messagingSenderId: '439342747193',
     projectId: 'swan-match',
     storageBucket: 'swan-match.firebasestorage.app',
     androidClientId: '439342747193-p9ha5buke2iqgiulnl303f78se4t2gh2.apps.googleusercontent.com',
-    iosClientId: '439342747193-hbe2s6ca6om9f6qirg132r4i26u4hrff.apps.googleusercontent.com',
-    iosBundleId: 'com.example.swamMatchApp',
+    iosClientId: '439342747193-hg5humqka9h093adtbiar2d5lkfq9d93.apps.googleusercontent.com',
+    iosBundleId: 'com.swanmatch.app',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
