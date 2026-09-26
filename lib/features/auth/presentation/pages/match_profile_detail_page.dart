@@ -3,15 +3,16 @@ import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../../core/constants/colors.dart';
-import '../../../../services/interest_service.dart';
+import '../../../../services/connection_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
 import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import 'chat_conversation_page.dart';
-import 'subscription_page.dart';
+import 'connect_record_page.dart';
 
 class MatchProfileDetailPage extends StatefulWidget {
   final Map<String, dynamic> profile;
@@ -29,7 +30,9 @@ class MatchProfileDetailPage extends StatefulWidget {
 }
 
 class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
-  // Streams cached in state to avoid re-subscribing on rebuild
+  // Streams cached in state to avoid re-subscribing on rebuild. Mirrors
+  // swipe_page.dart's `_connectedOrPendingUserIds` pattern, sourced from
+  // ConnectionService instead of the removed InterestService.
   late final Stream<Set<String>> _pendingStream;
   late final Stream<Set<String>> _acceptedStream;
 
@@ -39,10 +42,19 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
   @override
   void initState() {
     super.initState();
-    _pendingStream = InterestService.instance
-        .watchMyPendingSentInterestUserIds();
-    _acceptedStream = InterestService.instance
-        .watchMyAcceptedSentInterestUserIds();
+    // "Pending" here means: the current user has already sent a connection
+    // request (pending or accepted) to this profile — same source stream
+    // swipe_page.dart uses to disable/relabel its Connect button.
+    _pendingStream =
+        ConnectionService.instance.watchMyPendingOrAcceptedConnectionUserIds();
+    _acceptedStream = ConnectionService.instance.watchAcceptedConnections().map(
+      (items) {
+        final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+        return items
+            .map((c) => c.senderId == myUid ? c.receiverId : c.senderId)
+            .toSet();
+      },
+    );
   }
 
   String _read(String key, {String fallback = ''}) {
@@ -94,25 +106,35 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
     return single.isNotEmpty ? [single] : [];
   }
 
-  List<String> _values() {
-    final out = <String>[];
-    final traits =
-        widget.profile['personalityTraits'] ?? widget.profile['lifestyleTags'];
-    if (traits is List && traits.isNotEmpty) {
-      out.addAll(traits.take(6).map((e) => e.toString()));
+  /// Opens a full-screen, zoomable, swipeable viewer for the profile photos.
+  void _openPhotoViewer(List<String> photos, int initialIndex) {
+    if (photos.isEmpty) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) =>
+            _PhotoViewerPage(photos: photos, initialIndex: initialIndex),
+      ),
+    );
+  }
+
+  List<String> _skills() {
+    final skills = widget.profile['skills'];
+    if (skills is List) {
+      return skills.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
     }
-    if (out.isEmpty) {
-      final r = _read('religion');
-      if (r.isNotEmpty) out.add(r);
-      final p = _read('profession');
-      if (p.isEmpty) {
-        final occ = _read('occupation');
-        if (occ.isNotEmpty) out.add(occ);
-      } else {
-        out.add(p);
-      }
+    return const [];
+  }
+
+  List<String> _interests() {
+    final interests = widget.profile['interests'];
+    if (interests is List) {
+      return interests
+          .map((e) => e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList();
     }
-    return out;
+    return const [];
   }
 
   /// Verified only when admin has approved the ID.
@@ -192,7 +214,8 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
       'bio',
       fallback: _read('shortBio', fallback: _read('aboutMe')),
     );
-    final values = _values();
+    final skills = _skills();
+    final interests = _interests();
     final intent = _read('lookingFor', fallback: _read('goal'));
     final photos = _photos();
     final hidePhotos = ProfileVisibilityHelper.shouldHidePhotos(widget.profile);
@@ -236,30 +259,28 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                   HapticFeedback.mediumImpact();
                   setState(() => _isSending = true);
                   try {
-                    final result = await InterestService.instance.sendInterest(
-                      toUserId: uid,
+                    // Same Connect flow as the Discover feed: opens the
+                    // topic + video record/preview/submit screen. The actual
+                    // `connections` write happens from that flow (via
+                    // ConnectionService.sendConnectionRequest), not here —
+                    // mirrors swipe_page.dart's `onConnect` navigation.
+                    final photo = photos.isNotEmpty ? photos.first : '';
+                    final sent = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ConnectRecordPage(
+                          receiverId: uid,
+                          receiverName: name,
+                          receiverPhotoUrl: photo,
+                        ),
+                      ),
                     );
-                    if (!mounted) return;
-                    if (result == InterestSendResult.trialLimitReached) {
-                      _showUpgradeSheet(context);
-                      return;
-                    }
-                    final sent = result == InterestSendResult.sent ||
-                        result == InterestSendResult.pending ||
-                        result == InterestSendResult.alreadyAccepted;
-                    if (!sent) return;
+                    if (!mounted || sent != true) return;
 
                     if (widget.popOnInterestSent) {
-                      if (mounted) Navigator.pop(context, true);
+                      Navigator.pop(context, true);
                     } else {
-                      showLinearMessage(
-                        context,
-                        result == InterestSendResult.pending
-                            ? 'Interest already pending'
-                            : result == InterestSendResult.alreadyAccepted
-                            ? 'Already connected! You can message now.'
-                            : 'Interest sent! 💛',
-                      );
+                      showLinearMessage(context, 'Connection request sent.');
                     }
                   } finally {
                     _connectInFlight = false;
@@ -850,14 +871,27 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                     const SizedBox(height: 28),
                   ],
 
-                  // Values
-                  if (values.isNotEmpty) ...[
-                    _sectionTitle('Values'),
+                  // Details (moved up from below Intent — used to sit next to
+                  // a "Values" section that, for the simplified onboarding
+                  // model, just duplicated Religion/Profession from here)
+                  if (_hasDetails()) ...[
+                    _sectionTitle('Details'),
+                    const SizedBox(height: 12),
+                    _DetailRow(label: 'Religion', value: religion),
+                    _DetailRow(label: 'Education', value: education),
+                    _DetailRow(label: 'Profession', value: profession),
+                    _DetailRow(label: 'Marital Status', value: maritalStatus),
+                    const SizedBox(height: 28),
+                  ],
+
+                  // Interests
+                  if (interests.isNotEmpty) ...[
+                    _sectionTitle('Interests'),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
-                      children: values
+                      children: interests
                           .map(
                             (v) => Container(
                               padding: const EdgeInsets.symmetric(
@@ -886,6 +920,42 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                     const SizedBox(height: 28),
                   ],
 
+                  // Skills
+                  if (skills.isNotEmpty) ...[
+                    _sectionTitle('Skills'),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: skills
+                          .map(
+                            (v) => Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppColors.goldMedium.withOpacity(0.08),
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: AppColors.goldMedium.withOpacity(0.3),
+                                ),
+                              ),
+                              child: Text(
+                                v,
+                                style: const TextStyle(
+                                  color: AppColors.goldLight,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                    const SizedBox(height: 28),
+                  ],
+
                   // Intent
                   if (intent.isNotEmpty) ...[
                     _sectionTitle('Intent'),
@@ -900,17 +970,6 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                     const SizedBox(height: 28),
                   ],
 
-                  // Details
-                  if (_hasDetails()) ...[
-                    _sectionTitle('Details'),
-                    const SizedBox(height: 12),
-                    _DetailRow(label: 'Religion', value: religion),
-                    _DetailRow(label: 'Education', value: education),
-                    _DetailRow(label: 'Profession', value: profession),
-                    _DetailRow(label: 'Marital Status', value: maritalStatus),
-                    const SizedBox(height: 28),
-                  ],
-
                   // Photo gallery
                   if (!hidePhotos && photos.length > 1) ...[
                     _sectionTitle('Photos'),
@@ -921,23 +980,26 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
                         scrollDirection: Axis.horizontal,
                         itemCount: photos.length,
                         separatorBuilder: (_, __) => const SizedBox(width: 10),
-                        itemBuilder: (ctx, i) => ClipRRect(
-                          borderRadius: BorderRadius.circular(16),
-                          child: CachedNetworkImage(
-                            imageUrl: photos[i],
-                            width: 140,
-                            height: 180,
-                            fit: BoxFit.cover,
-                            placeholder: (_, __) => Container(
+                        itemBuilder: (ctx, i) => GestureDetector(
+                          onTap: () => _openPhotoViewer(photos, i),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: CachedNetworkImage(
+                              imageUrl: photos[i],
                               width: 140,
-                              color: const Color(0xFF1A1A1A),
-                            ),
-                            errorWidget: (_, __, ___) => Container(
-                              width: 140,
-                              color: const Color(0xFF1A1A1A),
-                              child: const Icon(
-                                Icons.broken_image,
-                                color: Colors.white24,
+                              height: 180,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) => Container(
+                                width: 140,
+                                color: const Color(0xFF1A1A1A),
+                              ),
+                              errorWidget: (_, __, ___) => Container(
+                                width: 140,
+                                color: const Color(0xFF1A1A1A),
+                                child: const Icon(
+                                  Icons.broken_image,
+                                  color: Colors.white24,
+                                ),
                               ),
                             ),
                           ),
@@ -974,121 +1036,6 @@ class _MatchProfileDetailPageState extends State<MatchProfileDetailPage> {
       child: Icon(Icons.person, color: Colors.white12, size: 80),
     ),
   );
-
-  void _showUpgradeSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => Container(
-        decoration: const BoxDecoration(
-          color: Color(0xFF111111),
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        padding: const EdgeInsets.fromLTRB(28, 20, 28, 48),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 28),
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  colors: [Color(0xFFD4A017), Color(0xFFC8960C)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.goldMedium.withOpacity(0.3),
-                    blurRadius: 20,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.workspace_premium_rounded,
-                color: Colors.black,
-                size: 36,
-              ),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Daily Limit Reached',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 0.2,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'You\'ve used all your free connections for today.\n'
-              'Upgrade to Premium for unlimited interests and messaging.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.6),
-                fontSize: 15,
-                height: 1.6,
-              ),
-            ),
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const SubscriptionPage()),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.goldMedium,
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  elevation: 0,
-                ),
-                child: const Text(
-                  'Upgrade to Premium',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text(
-                'Maybe later',
-                style: TextStyle(
-                  color: Colors.white.withOpacity(0.35),
-                  fontSize: 14,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 // ─── Floating Connect Bar ────────────────────────────────────────────────────
@@ -1275,6 +1222,108 @@ class _DetailRow extends StatelessWidget {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Full-screen photo viewer: swipe between photos, pinch/double-tap to zoom,
+/// tap the close button or back to dismiss.
+class _PhotoViewerPage extends StatefulWidget {
+  final List<String> photos;
+  final int initialIndex;
+
+  const _PhotoViewerPage({required this.photos, required this.initialIndex});
+
+  @override
+  State<_PhotoViewerPage> createState() => _PhotoViewerPageState();
+}
+
+class _PhotoViewerPageState extends State<_PhotoViewerPage> {
+  late final PageController _controller;
+  late int _index;
+
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex.clamp(0, widget.photos.length - 1);
+    _controller = PageController(initialPage: _index);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          PageView.builder(
+            controller: _controller,
+            itemCount: widget.photos.length,
+            onPageChanged: (i) => setState(() => _index = i),
+            itemBuilder: (_, i) => InteractiveViewer(
+              minScale: 1,
+              maxScale: 4,
+              child: Center(
+                child: CachedNetworkImage(
+                  imageUrl: widget.photos[i],
+                  fit: BoxFit.contain,
+                  placeholder: (_, __) => const Center(
+                    child: CircularProgressIndicator(
+                      color: AppColors.goldMedium,
+                      strokeWidth: 2,
+                    ),
+                  ),
+                  errorWidget: (_, __, ___) => const Icon(
+                    Icons.broken_image,
+                    color: Colors.white24,
+                    size: 64,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 8,
+            right: 12,
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: const BoxDecoration(
+                  color: Colors.black54,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.close_rounded, color: Colors.white),
+              ),
+            ),
+          ),
+          if (widget.photos.length > 1)
+            Positioned(
+              bottom: MediaQuery.of(context).padding.bottom + 20,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '${_index + 1} / ${widget.photos.length}',
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

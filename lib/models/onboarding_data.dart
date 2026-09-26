@@ -66,10 +66,24 @@ class OnboardingData {
   String inviteCode;
   String profileVisibility; // Public / Private / Curated Matches Only
 
+  // ─── New Marriage-Focused Assessment Fields ─────────────────────────────
+  String height;
+  String marriageTimeline; // "Within 1 year", "1–3 years", "Flexible"
+  String childrenPreference; // "Yes", "No", "Undecided"
+  String preferredFamilySize; // "Small", "Medium", "Large"
+  String relocatePreference; // "Yes", "No", "Depends"
+  String financialStyle; // "Saver", "Balanced", "Spender"
+  String decisionMakingStyle; // "Logical", "Emotional", "Balanced"
+  String religionPreferenceMode; // "No Preference", "Same Religion", "Specific Religion"
+  String specificReligion;
+  List<String> rankedPartnerPriorities;
+
+  /// Marriage dealbreaker IDs (see DealbreakerCatalog). Top-level user field.
+  List<String> dealbreakers;
+
   // ─── Legacy Fields (backward compat) ──────────────────────────────────────
   String partnerPreference;
   String state;
-  int distanceKm;
   String highestQualification;
   String university;
   String workout;
@@ -81,6 +95,29 @@ class OnboardingData {
   // ─── Legal ───────────────────────────────────────────────────────────────
   bool termsAccepted;
   DateTime? termsAcceptedAt;
+
+  // ─── Video-First Redesign Fields ─────────────────────────────────────────
+  String introVideoUrl;
+  String introVideoThumbnailUrl;
+  String introVideoStatus; // '' | 'pending' | 'approved' | 'rejected'
+  String? introVideoRejectionReason;
+  DateTime? introVideoSubmittedAt;
+  List<String> skills; // new, parallel to `interests`
+  String datingIntention; // flat mirror of lookingFor (see marriageProfile.intent)
+  Map<String, dynamic>? datingPreferences; // flat mirror of partner preferences
+
+  /// Local filesystem path to the just-recorded intro video, held here only
+  /// until `_completeOnboarding()` uploads it via `StorageService.uploadIntroVideo`.
+  /// Never persisted to Firestore (not read/written in toMap/fromMap), mirroring
+  /// how `photos` holds local file paths pre-upload.
+  String? introVideoLocalPath;
+
+  /// Local filesystem path to the JPEG thumbnail generated alongside the
+  /// intro video recording, held here only until `_completeOnboarding()`
+  /// best-effort-uploads it via `StorageService.uploadIntroVideoThumbnail`.
+  /// Never persisted to Firestore (not read/written in toMap/fromMap), same
+  /// transient treatment as `introVideoLocalPath` above.
+  String? introVideoThumbnailLocalPath;
 
   // ─── Metadata ────────────────────────────────────────────────────────────
   int onboardingStep; // Current step for resume
@@ -138,9 +175,25 @@ class OnboardingData {
     this.profileApprovalStatus = 'pending',
     this.inviteCode = '',
     this.profileVisibility = 'Public',
+    this.height = '',
+    this.marriageTimeline = '',
+    this.childrenPreference = '',
+    this.preferredFamilySize = '',
+    this.relocatePreference = '',
+    this.financialStyle = '',
+    this.decisionMakingStyle = '',
+    this.religionPreferenceMode = 'No Preference',
+    this.specificReligion = '',
+    this.rankedPartnerPriorities = const [
+      'Family Values',
+      'Communication',
+      'Lifestyle Alignment',
+      'Career Ambition',
+      'Financial Maturity'
+    ],
+    this.dealbreakers = const [],
     this.partnerPreference = '',
     this.state = '',
-    this.distanceKm = 50,
     this.highestQualification = '',
     this.university = '',
     this.workout = '',
@@ -150,6 +203,16 @@ class OnboardingData {
     this.zodiac = '',
     this.termsAccepted = false,
     this.termsAcceptedAt,
+    this.introVideoUrl = '',
+    this.introVideoThumbnailUrl = '',
+    this.introVideoStatus = '',
+    this.introVideoRejectionReason,
+    this.introVideoSubmittedAt,
+    this.skills = const [],
+    this.datingIntention = '',
+    this.datingPreferences,
+    this.introVideoLocalPath,
+    this.introVideoThumbnailLocalPath,
     this.onboardingStep = 0,
   }) : createdAt = DateTime.now();
 
@@ -181,32 +244,88 @@ class OnboardingData {
     return '';
   }
 
+  // ─── Serialization ──────────────────────────────────────────────────────
+
+  /// Reflects the 7-step required onboarding flow: Welcome → Basic Info →
+  /// Intent & Preferences → Bio & Interests → Intro Video → Verification →
+  /// Review. "Bio & Interests" was added as a step (collecting the optional
+  /// `bio`/`interests` fields) after the prior 6-step structure (which itself
+  /// added Verification — selfie + government ID — after the original 5-step
+  /// simplification), per user-feedback follow-ups.
+  /// Profession/education/values/dealbreakers etc. are still not required to
+  /// complete onboarding (deferred to optional profile editing) so they don't
+  /// factor into this percentage.
   double get completionPercentage {
     int completed = 0;
-    const total = 8;
+    const total = 7;
 
-    // Step 1
+    // Step 1: Welcome
+    completed++;
+    // Step 2: Basic Info (name, age, gender, location)
     if (firstName.isNotEmpty && (selectedAge != null || dateOfBirth != null) &&
-        gender.isNotEmpty && city.isNotEmpty && photos.length >= 3) completed++;
-    // Step 2
-    if (lookingFor.isNotEmpty && maritalStatus.isNotEmpty &&
-        hasChildren != null && willingToRelocate != null) completed++;
-    // Step 3
-    if (educationLevel.isNotEmpty && profession.isNotEmpty &&
-        incomeRange.isNotEmpty) completed++;
-    // Step 4
-    if (religion.isNotEmpty && primaryLanguage.isNotEmpty) completed++;
-    // Step 5
-    if (bio.isNotEmpty && personalityTraits.isNotEmpty &&
-        interests.isNotEmpty) completed++;
-    // Step 6
-    if (minAgePreference > 0 && maxAgePreference > minAgePreference) completed++;
-    // Step 7
-    if (isVerified || verificationPhotoUrl.isNotEmpty) completed++;
-    // Step 8
-    if (profileVisibility.isNotEmpty) completed++;
+        gender.isNotEmpty && city.isNotEmpty) completed++;
+    // Step 3: Intent & Preferences (dating intention + basic age range)
+    if (lookingFor.isNotEmpty &&
+        minAgePreference > 0 &&
+        maxAgePreference > minAgePreference) completed++;
+    // Step 4: Bio & Interests (both optional — count as soon as this step has
+    // been reached/passed, mirroring how Step 7/Review below uses
+    // onboardingStep rather than requiring the fields themselves to be set)
+    if (onboardingStep >= 3 || bio.isNotEmpty || interests.isNotEmpty) {
+      completed++;
+    }
+    // Step 5: Intro Video (recorded locally, or already submitted/reviewed)
+    if ((introVideoLocalPath != null && introVideoLocalPath!.isNotEmpty) ||
+        introVideoUrl.isNotEmpty ||
+        introVideoStatus.isNotEmpty) completed++;
+    // Step 6: Verification (selfie required; government ID optional)
+    if (verificationPhotoUrl.isNotEmpty) {
+      completed++;
+    }
+    // Step 7: Review & Generate
+    if (onboardingStep >= 6) completed++;
 
-    return completed / total;
+    return (completed / total).clamp(0.0, 1.0);
+  }
+
+  // ─── AI Marriage Profile Serialization ───────────────────────────────────
+
+  Map<String, dynamic> toMarriageProfileMap() {
+    return {
+      'intent': {
+        'lookingFor': lookingFor,
+        'marriageTimeline': marriageTimeline,
+        'relocatePreference': relocatePreference,
+        'willingToRelocate': willingToRelocate,
+      },
+      'lifestyleValues': {
+        'height': height,
+        'familyImportance': familyValuesImportance,
+        'childrenPreference': childrenPreference,
+        'preferredFamilySize': preferredFamilySize,
+        'financialStyle': financialStyle,
+        'decisionMakingStyle': decisionMakingStyle,
+        'smoking': smoking,
+        'drinking': drinking,
+        'workout': workout,
+        'languages': [
+          if (primaryLanguage.isNotEmpty) primaryLanguage,
+          ...otherLanguages.where((l) => l != primaryLanguage),
+        ],
+      },
+      'partnerPreferences': {
+        'minAge': minAgePreference,
+        'maxAge': maxAgePreference,
+        'religionPreferenceMode': religionPreferenceMode,
+        'preferredReligion': preferredReligion,
+        'specificReligion': specificReligion,
+        'rankedPriorities': rankedPartnerPriorities,
+      },
+      'aiMetaData': {
+        'version': '1.0',
+        'assessmentCompletedAt': DateTime.now().toIso8601String(),
+      },
+    };
   }
 
   // ─── Serialization ──────────────────────────────────────────────────────
@@ -264,9 +383,20 @@ class OnboardingData {
       'profileApprovalStatus': profileApprovalStatus,
       'inviteCode': inviteCode,
       'profileVisibility': profileVisibility,
+      'height': height,
+      'marriageTimeline': marriageTimeline,
+      'childrenPreference': childrenPreference,
+      'preferredFamilySize': preferredFamilySize,
+      'relocatePreference': relocatePreference,
+      'financialStyle': financialStyle,
+      'decisionMakingStyle': decisionMakingStyle,
+      'religionPreferenceMode': religionPreferenceMode,
+      'specificReligion': specificReligion,
+      'rankedPartnerPriorities': rankedPartnerPriorities,
+      'dealbreakers': dealbreakers,
+      'marriageProfile': toMarriageProfileMap(),
       'partnerPreference': partnerPreference,
       'state': state,
-      'distanceKm': distanceKm,
       'highestQualification': highestQualification,
       'university': university,
       'workout': workout,
@@ -276,12 +406,28 @@ class OnboardingData {
       'zodiac': zodiac,
       'termsAccepted': termsAccepted,
       'termsAcceptedAt': termsAcceptedAt?.toIso8601String(),
+      'introVideoUrl': introVideoUrl,
+      'introVideoThumbnailUrl': introVideoThumbnailUrl,
+      'introVideoStatus': introVideoStatus,
+      'introVideoRejectionReason': introVideoRejectionReason,
+      'introVideoSubmittedAt': introVideoSubmittedAt?.toIso8601String(),
+      'skills': skills,
+      'datingIntention': datingIntention,
+      'datingPreferences': datingPreferences,
+      // NOTE: introVideoLocalPath is intentionally NOT included — it is a
+      // transient local-only field, same treatment as local photo paths
+      // pre-upload (see `photos`, which is only ever a remote URL once saved).
       'onboardingStep': onboardingStep,
       'createdAt': createdAt.toIso8601String(),
     };
   }
 
   factory OnboardingData.fromMap(Map<String, dynamic> map) {
+    final mp = map['marriageProfile'] as Map<String, dynamic>? ?? {};
+    final intentMap = mp['intent'] as Map<String, dynamic>? ?? {};
+    final lifestyleMap = mp['lifestyleValues'] as Map<String, dynamic>? ?? {};
+    final partnerMap = mp['partnerPreferences'] as Map<String, dynamic>? ?? {};
+
     return OnboardingData(
       firstName: map['firstName'] ?? map['name'] ?? '',
       lastName: map['lastName'] ?? '',
@@ -299,11 +445,11 @@ class OnboardingData {
       email: map['email'] ?? '',
       photos: List<String>.from(map['photos'] ?? []),
       profilePicture: map['profilePicture'] ?? '',
-      lookingFor: map['lookingFor'] ?? '',
+      lookingFor: map['lookingFor'] ?? intentMap['lookingFor'] ?? '',
       maritalStatus: map['maritalStatus'] ?? '',
       hasChildren: map['hasChildren'],
       childrenDetails: map['childrenDetails'] ?? '',
-      willingToRelocate: map['willingToRelocate'],
+      willingToRelocate: map['willingToRelocate'] ?? intentMap['willingToRelocate'],
       educationLevel: map['educationLevel'] ?? map['highestQualification'] ?? '',
       profession: map['profession'] ?? '',
       industry: map['industry'] ?? '',
@@ -316,19 +462,19 @@ class OnboardingData {
       primaryLanguage: map['primaryLanguage'] ?? '',
       otherLanguages: List<String>.from(map['otherLanguages'] ?? []),
       languageFluency: Map<String, String>.from(map['languageFluency'] ?? {}),
-      familyValuesImportance: map['familyValuesImportance'] ?? 3,
+      familyValuesImportance: map['familyValuesImportance'] ?? lifestyleMap['familyImportance'] ?? 3,
       bio: map['bio'] ?? '',
       personalityTraits: List<String>.from(map['personalityTraits'] ?? []),
       interests: List<String>.from(map['interests'] ?? []),
-      smoking: map['smoking'] ?? '',
-      drinking: map['drinking'] ?? '',
-      minAgePreference: map['minAgePreference'] ?? 18,
-      maxAgePreference: map['maxAgePreference'] ?? 50,
+      smoking: map['smoking'] ?? lifestyleMap['smoking'] ?? '',
+      drinking: map['drinking'] ?? lifestyleMap['drinking'] ?? '',
+      minAgePreference: map['minAgePreference'] ?? partnerMap['minAge'] ?? 18,
+      maxAgePreference: map['maxAgePreference'] ?? partnerMap['maxAge'] ?? 50,
       preferredLocation: map['preferredLocation'] ?? '',
       preferredEducation: map['preferredEducation'] ?? '',
       preferredProfession: map['preferredProfession'] ?? '',
       preferredLifestyle: List<String>.from(map['preferredLifestyle'] ?? []),
-      preferredReligion: map['preferredReligion'] ?? '',
+      preferredReligion: map['preferredReligion'] ?? partnerMap['preferredReligion'] ?? '',
       idVerified: map['idVerified'] ?? false,
       idVerificationUrl: map['idVerificationUrl'] ?? '',
       verificationPhotoUrl: map['verificationPhotoUrl'] ?? '',
@@ -338,12 +484,28 @@ class OnboardingData {
       profileApprovalStatus: map['profileApprovalStatus'] ?? 'pending',
       inviteCode: map['inviteCode'] ?? '',
       profileVisibility: map['profileVisibility'] ?? 'Public',
+      height: map['height'] ?? lifestyleMap['height'] ?? '',
+      marriageTimeline: map['marriageTimeline'] ?? intentMap['marriageTimeline'] ?? '',
+      childrenPreference: map['childrenPreference'] ?? lifestyleMap['childrenPreference'] ?? '',
+      preferredFamilySize: map['preferredFamilySize'] ?? lifestyleMap['preferredFamilySize'] ?? '',
+      relocatePreference: map['relocatePreference'] ?? intentMap['relocatePreference'] ?? '',
+      financialStyle: map['financialStyle'] ?? lifestyleMap['financialStyle'] ?? '',
+      decisionMakingStyle: map['decisionMakingStyle'] ?? lifestyleMap['decisionMakingStyle'] ?? '',
+      religionPreferenceMode: map['religionPreferenceMode'] ?? partnerMap['religionPreferenceMode'] ?? 'No Preference',
+      specificReligion: map['specificReligion'] ?? partnerMap['specificReligion'] ?? '',
+      rankedPartnerPriorities: List<String>.from(map['rankedPartnerPriorities'] ?? partnerMap['rankedPriorities'] ?? [
+        'Family Values',
+        'Communication',
+        'Lifestyle Alignment',
+        'Career Ambition',
+        'Financial Maturity'
+      ]),
+      dealbreakers: List<String>.from(map['dealbreakers'] ?? const []),
       partnerPreference: map['partnerPreference'] ?? '',
       state: map['state'] ?? '',
-      distanceKm: map['distanceKm'] ?? 50,
       highestQualification: map['highestQualification'] ?? '',
       university: map['university'] ?? '',
-      workout: map['workout'] ?? '',
+      workout: map['workout'] ?? lifestyleMap['workout'] ?? '',
       pets: List<String>.from(map['pets'] ?? []),
       communicationStyle: map['communicationStyle'] ?? '',
       loveLanguage: map['loveLanguage'] ?? '',
@@ -352,6 +514,16 @@ class OnboardingData {
       termsAcceptedAt: map['termsAcceptedAt'] != null
           ? DateTime.tryParse(map['termsAcceptedAt'].toString())
           : null,
+      introVideoUrl: map['introVideoUrl'] ?? '',
+      introVideoThumbnailUrl: map['introVideoThumbnailUrl'] ?? '',
+      introVideoStatus: map['introVideoStatus'] ?? '',
+      introVideoRejectionReason: map['introVideoRejectionReason'],
+      introVideoSubmittedAt: map['introVideoSubmittedAt'] != null
+          ? DateTime.tryParse(map['introVideoSubmittedAt'].toString())
+          : null,
+      skills: List<String>.from(map['skills'] ?? []),
+      datingIntention: map['datingIntention'] ?? map['lookingFor'] ?? '',
+      datingPreferences: map['datingPreferences'] as Map<String, dynamic>?,
       onboardingStep: map['onboardingStep'] ?? 0,
     );
   }
@@ -410,7 +582,6 @@ class OnboardingData {
     String? profileVisibility,
     String? partnerPreference,
     String? state,
-    int? distanceKm,
     String? highestQualification,
     String? university,
     String? workout,
@@ -420,6 +591,16 @@ class OnboardingData {
     String? zodiac,
     bool? termsAccepted,
     DateTime? termsAcceptedAt,
+    String? introVideoUrl,
+    String? introVideoThumbnailUrl,
+    String? introVideoStatus,
+    String? introVideoRejectionReason,
+    DateTime? introVideoSubmittedAt,
+    List<String>? skills,
+    String? datingIntention,
+    Map<String, dynamic>? datingPreferences,
+    String? introVideoLocalPath,
+    String? introVideoThumbnailLocalPath,
     int? onboardingStep,
   }) {
     return OnboardingData(
@@ -476,7 +657,6 @@ class OnboardingData {
       profileVisibility: profileVisibility ?? this.profileVisibility,
       partnerPreference: partnerPreference ?? this.partnerPreference,
       state: state ?? this.state,
-      distanceKm: distanceKm ?? this.distanceKm,
       highestQualification: highestQualification ?? this.highestQualification,
       university: university ?? this.university,
       workout: workout ?? this.workout,
@@ -485,6 +665,17 @@ class OnboardingData {
       loveLanguage: loveLanguage ?? this.loveLanguage,
       zodiac: zodiac ?? this.zodiac,
       termsAccepted: termsAccepted ?? this.termsAccepted,
+      introVideoUrl: introVideoUrl ?? this.introVideoUrl,
+      introVideoThumbnailUrl: introVideoThumbnailUrl ?? this.introVideoThumbnailUrl,
+      introVideoStatus: introVideoStatus ?? this.introVideoStatus,
+      introVideoRejectionReason: introVideoRejectionReason ?? this.introVideoRejectionReason,
+      introVideoSubmittedAt: introVideoSubmittedAt ?? this.introVideoSubmittedAt,
+      skills: skills ?? this.skills,
+      datingIntention: datingIntention ?? this.datingIntention,
+      datingPreferences: datingPreferences ?? this.datingPreferences,
+      introVideoLocalPath: introVideoLocalPath ?? this.introVideoLocalPath,
+      introVideoThumbnailLocalPath:
+          introVideoThumbnailLocalPath ?? this.introVideoThumbnailLocalPath,
       onboardingStep: onboardingStep ?? this.onboardingStep,
     );
   }

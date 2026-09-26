@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../../../../core/constants/colors.dart';
+import '../../../../services/iap_service.dart';
 import '../../../../shared/widgets/gold_button.dart';
 import 'main_dashboard.dart';
 
@@ -20,6 +21,16 @@ class _FreeTrialPageState extends State<FreeTrialPage>
   late final Animation<double> _fadeAnim;
   bool _isLoading = false;
 
+  // Apple requires the price and billing frequency to be disclosed BEFORE
+  // the trial starts, not only on the later paywall screen — these load the
+  // real store-localized prices for that disclosure (never hardcoded, since
+  // App Store/Play pricing varies by region/currency).
+  static const Map<String, String> _priceFallbacks = {
+    IapService.monthlyId: '₹2,250',
+    IapService.sixMonthId: '₹11,100',
+    IapService.yearlyId: '₹22,300',
+  };
+
   @override
   void initState() {
     super.initState();
@@ -31,10 +42,31 @@ class _FreeTrialPageState extends State<FreeTrialPage>
       CurvedAnimation(parent: _entryController, curve: Curves.easeOut),
     );
     _entryController.forward();
+
+    IapService.instance.products.addListener(_onIapProductsChanged);
+    IapService.instance.init();
+  }
+
+  void _onIapProductsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Store-localized price for a plan, falling back to a placeholder INR
+  /// price only while the store hasn't returned product data yet (e.g. no
+  /// network) — same convention as `subscription_page.dart`'s `_iapPrice`.
+  String _iapPrice(String planKey) {
+    try {
+      return IapService.instance.productFor(planKey)?.price ??
+          _priceFallbacks[planKey] ??
+          '—';
+    } catch (_) {
+      return _priceFallbacks[planKey] ?? '—';
+    }
   }
 
   @override
   void dispose() {
+    IapService.instance.products.removeListener(_onIapProductsChanged);
     _entryController.dispose();
     super.dispose();
   }
@@ -149,8 +181,39 @@ class _FreeTrialPageState extends State<FreeTrialPage>
                 title: 'Gender & age discover filters',
               ),
               const Spacer(flex: 2),
+              // ─── Required disclosure: price + billing frequency BEFORE
+              // the trial starts, not only on the later paywall screen.
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.white.withOpacity(0.08)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'After your 7-day free trial, choose a plan:',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.7),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    _PlanPriceRow(label: '1 Month', price: _iapPrice(IapService.monthlyId)),
+                    const SizedBox(height: 4),
+                    _PlanPriceRow(label: '6 Months', price: _iapPrice(IapService.sixMonthId)),
+                    const SizedBox(height: 4),
+                    _PlanPriceRow(label: '12 Months', price: _iapPrice(IapService.yearlyId)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               Text(
-                'Trial lasts 7 days. Cancel anytime before it ends.',
+                'Trial lasts 7 days. Cancel anytime before it ends. Billed through your Apple ID / Google Play account.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.4),
@@ -186,6 +249,34 @@ class _FreeTrialPageState extends State<FreeTrialPage>
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PlanPriceRow extends StatelessWidget {
+  final String label;
+  final String price;
+
+  const _PlanPriceRow({required this.label, required this.price});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13),
+        ),
+        Text(
+          price,
+          style: const TextStyle(
+            color: AppColors.goldLight,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
     );
   }
 }

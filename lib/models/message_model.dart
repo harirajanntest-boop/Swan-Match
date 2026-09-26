@@ -7,6 +7,9 @@ class MessageModel {
 	final String receiverId;
 	final String text;
 	final DateTime sentAt;
+	/// True once the receiver has opened the conversation and seen this message.
+	/// Drives the single-tick (delivered) vs double-tick (seen) indicator.
+	final bool seen;
 	/// True when the message has been written locally but not yet confirmed by
 	/// the Firestore server. Used to show a "sending" indicator.
 	final bool hasPendingWrites;
@@ -18,6 +21,7 @@ class MessageModel {
 		required this.receiverId,
 		required this.text,
 		required this.sentAt,
+		this.seen = false,
 		this.hasPendingWrites = false,
 	});
 
@@ -29,6 +33,7 @@ class MessageModel {
 			'receiverId': receiverId,
 			'text': text,
 			'sentAt': Timestamp.fromDate(sentAt),
+			'seen': seen,
 		};
 	}
 
@@ -42,6 +47,7 @@ class MessageModel {
 			sentAt: map['sentAt'] is Timestamp
 					? (map['sentAt'] as Timestamp).toDate()
 					: DateTime.now(),
+			seen: (map['seen'] ?? false) as bool,
 			hasPendingWrites: hasPendingWrites,
 		);
 	}

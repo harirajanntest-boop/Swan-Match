@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -7,8 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:intl/intl.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../shared/widgets/gold_button.dart';
-import '../../../../services/payment_flow_service.dart';
-import '../../../../services/stripe_service.dart';
+import '../../../../services/iap_service.dart';
 import '../../../../services/user_service.dart';
 
 class SubscriptionPage extends StatefulWidget {
@@ -215,61 +215,25 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                     ],
                   ),
                 ),
-                // Cancel subscription link
+                // Cancel subscription link (native store billing)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: TextButton(
                       onPressed: () async {
+                        final url = Platform.isIOS
+                            ? 'https://apps.apple.com/account/subscriptions'
+                            : 'https://play.google.com/store/account/subscriptions';
                         try {
-                          final profile = await UserService.instance.getCurrentUserProfile();
-                          final sub = (profile?['subscription'] as Map?)?.cast<String, dynamic>();
-                          final status = (sub?['status'] ?? '').toString().toLowerCase();
-                          final isActive = status == 'active' || status == 'trialing';
-
-                          if (!isActive) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('No active subscription to cancel.')),
-                              );
-                            }
-                            return;
-                          }
-
-                          if (!mounted) return;
-                          final confirm = await showDialog<bool>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              backgroundColor: const Color(0xFF111111),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              title: const Text('Cancel Subscription', style: TextStyle(color: Colors.white)),
-                              content: const Text(
-                                'You will be taken to the Stripe Customer Portal where you can cancel or manage your subscription. Continue?',
-                                style: TextStyle(color: Colors.white70),
-                              ),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
-                                TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Open Portal')),
-                              ],
-                            ),
+                          await launchUrl(
+                            Uri.parse(url),
+                            mode: LaunchMode.externalApplication,
                           );
-
-                          if (confirm != true) return;
-
-                          try {
-                            await StripeService.instance.createPortalSession();
-                          } catch (e) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Error opening portal: $e'), backgroundColor: Colors.red),
-                              );
-                            }
-                          }
                         } catch (_) {}
                       },
                       child: const Text(
-                        'Cancel subscription',
+                        'Manage subscription',
                         style: TextStyle(
                           color: Colors.white70,
                           decoration: TextDecoration.underline,
@@ -485,7 +449,6 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                           text: "PAY NOW",
                           onPressed: () async {
                             try {
-                              // Show loading indicator
                               showDialog(
                                 context: context,
                                 barrierDismissible: false,
@@ -496,16 +459,25 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                                 ),
                               );
 
-                              await StripeService.ensurePriceIdsLoaded();
-                              await StripeService.instance.startSubscription(
-                                priceId: StripeService.premiumMonthlyPriceId,
-                              );
+                              await IapService.instance.init();
+                              final started = await IapService.instance
+                                  .buy(IapService.monthlyId);
 
                               if (!context.mounted) return;
-                              Navigator.pop(context); // Close loading
+                              Navigator.pop(context);
+                              if (!started) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      'This plan isn\'t available yet. Please try again shortly.',
+                                    ),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
                             } catch (e) {
                               if (!context.mounted) return;
-                              Navigator.pop(context); // Close loading
+                              Navigator.pop(context);
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
                                   content: Text('Error: $e'),
@@ -633,101 +605,118 @@ class _SwanProSubscriptionBody extends StatefulWidget {
       _SwanProSubscriptionBodyState();
 }
 
-class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
-    with WidgetsBindingObserver {
+class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
+  static const Map<String, String> _inrFallbackPrices = {
+    IapService.monthlyId: '₹2,250',
+    IapService.sixMonthId: '₹11,100',
+    IapService.yearlyId: '₹22,300',
+  };
+
   bool _isLoading = false;
   bool _checkingStatus = true; // true while we check if user is already premium
   bool _isPaidPremium = false;
   bool _isOnFreeTrial = false;
   bool _cancelAtPeriodEnd = false; // user cancelled; premium runs out at period end
   DateTime? _premiumEndsAt; // when premium access ends (current period end)
-  String _currentPriceId = ''; // The Stripe price ID of the user's active plan
+  String _currentPriceId = '';
   String _currentPlanTitle = '';
   int _selectedPlanIndex = 2; // Default to 12 Months
   StreamSubscription<Map<String, dynamic>?>? _profileSubscription;
   String _lastProfileSignature = '';
-  bool _handlingCheckoutReturn = false;
-
-  // Stripe prices keyed by price ID. Populated on init.
-  Map<String, StripePriceInfo> _prices = {};
-  bool _pricesLoading = true;
+  bool _iapLoading = true;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    _initStripePricing();
+    _initIap();
   }
 
-  Future<void> _initStripePricing() async {
+  Future<void> _initIap() async {
     try {
-      await StripeService.ensurePriceIdsLoaded();
+      // Wire native in-app purchase (StoreKit / Play Billing).
+      IapService.instance.onPremiumActivated = _onIapPremiumActivated;
+      IapService.instance.onError = (String msg) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: Colors.red),
+        );
+      };
+      IapService.instance.products.addListener(_onIapProductsChanged);
+      await IapService.instance.init();
       if (!mounted) return;
       _profileSubscription ??= UserService.instance
           .watchCurrentUserProfile()
           .listen(_syncPremiumFromProfile);
       _checkCurrentPremiumStatus();
-      await _loadPrices();
+      if (mounted) setState(() => _iapLoading = false);
     } catch (_) {
-      if (mounted) setState(() => _pricesLoading = false);
+      if (mounted) setState(() => _iapLoading = false);
     }
+  }
+
+  void _onIapProductsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// Called after a purchase/restore is delivered — refresh premium state.
+  Future<void> _onIapPremiumActivated() async {
+    UserService.instance.invalidateCurrentUserCache();
+    if (!mounted) return;
+    final refreshed = await UserService.instance.getCurrentUserProfile();
+    if (!mounted) return;
+    setState(() {
+      _isPaidPremium = UserService.instance.isPaidPremium(refreshed);
+      _isOnFreeTrial = UserService.instance.isOnFreeTrial(refreshed);
+      _currentPlanTitle = _inferCurrentPlanTitle(refreshed);
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Premium activated — welcome to Swan Pro!'),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  /// Store price string for a product, with INR fallbacks when the store
+  /// hasn't returned localized prices yet.
+  String _iapPrice(String productId) {
+    try {
+      return IapService.instance.productFor(productId)?.price ??
+          _inrFallbackPrices[productId] ??
+          '—';
+    } catch (_) {
+      return _inrFallbackPrices[productId] ?? '—';
+    }
+  }
+
+  /// Maps the selected plan tab to the store product ID.
+  String get _selectedProductId {
+    switch (_selectedPlanIndex) {
+      case 0:
+        return IapService.monthlyId;
+      case 1:
+        return IapService.sixMonthId;
+      case 2:
+      default:
+        return IapService.yearlyId;
+    }
+  }
+
+  /// Opens the OS-native subscription management screen.
+  Future<void> _openManageSubscriptions() async {
+    final url = Platform.isIOS
+        ? 'https://apps.apple.com/account/subscriptions'
+        : 'https://play.google.com/store/account/subscriptions';
+    try {
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    } catch (_) {}
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _profileSubscription?.cancel();
+    IapService.instance.products.removeListener(_onIapProductsChanged);
     super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _handleReturnFromCheckout();
-    }
-  }
-
-  Future<void> _handleReturnFromCheckout() async {
-    if (_handlingCheckoutReturn) return;
-    final pending = await PaymentFlowService.isCheckoutPending();
-    if (!pending) return;
-
-    _handlingCheckoutReturn = true;
-    try {
-      await PaymentFlowService.presentCongratulationsIfPaid();
-    } finally {
-      _handlingCheckoutReturn = false;
-    }
-  }
-
-  /// Fetches the real price amounts from Stripe via Cloud Function.
-  Future<void> _loadPrices() async {
-    try {
-      final prices = await StripeService.instance.fetchPrices([
-        StripeService.premiumMonthlyPriceId,
-        StripeService.premium6MonthPriceId,
-        StripeService.premium1YearPriceId,
-      ]);
-      if (mounted)
-        setState(() {
-          _prices = prices;
-          _pricesLoading = false;
-        });
-    } catch (e) {
-      if (mounted) setState(() => _pricesLoading = false);
-    }
-  }
-
-  /// Returns the formatted price for a given price ID, with a fallback.
-  String _priceLabel(String priceId, String fallback) {
-    final info = _prices[priceId];
-    return info != null ? info.formattedAmount : fallback;
-  }
-
-  /// Returns the per-month price string for a given price ID.
-  String _perMonthLabel(String priceId, String fallback) {
-    final info = _prices[priceId];
-    return info != null ? info.formattedPerMonth : fallback;
   }
 
   void _syncPremiumFromProfile(Map<String, dynamic>? profile) {
@@ -754,14 +743,9 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
       } else if (currentPlanTitle == '12 Months' ||
           currentPlanTitle == 'Yearly') {
         selectedIndex = 2;
-      } else if (StripeService.arePriceIdsLoaded) {
-        if (priceId == StripeService.premiumMonthlyPriceId) {
-          selectedIndex = 0;
-        } else if (priceId == StripeService.premium6MonthPriceId) {
-          selectedIndex = 1;
-        } else if (priceId == StripeService.premium1YearPriceId) {
-          selectedIndex = 2;
-        }
+      } else {
+        final idx = _planIndexForPriceId(priceId);
+        if (idx != null) selectedIndex = idx;
       }
     }
 
@@ -836,9 +820,22 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   }
 
   int? _planIndexForPriceId(String priceId) {
-    if (priceId == StripeService.premiumMonthlyPriceId) return 0;
-    if (priceId == StripeService.premium6MonthPriceId) return 1;
-    if (priceId == StripeService.premium1YearPriceId) return 2;
+    final id = priceId.toLowerCase();
+    if (id.contains('monthly') ||
+        id == IapService.monthlyId ||
+        id.contains('1_month')) {
+      return 0;
+    }
+    if (id.contains('sixmonth') ||
+        id.contains('6month') ||
+        id.contains('6_month')) {
+      return 1;
+    }
+    if (id.contains('yearly') ||
+        id.contains('year') ||
+        id.contains('12_month')) {
+      return 2;
+    }
     return null;
   }
 
@@ -865,12 +862,17 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
   }
 
   String _planTitleForPriceId(String priceId) {
-    final adminName = StripeService.subscriptionNameForPriceId(priceId);
-    if (adminName.isNotEmpty) return adminName;
-    if (priceId == StripeService.premiumMonthlyPriceId) return 'Monthly';
-    if (priceId == StripeService.premium6MonthPriceId) return 'Six Month';
-    if (priceId == StripeService.premium1YearPriceId) return 'Yearly';
-    return '';
+    final idx = _planIndexForPriceId(priceId);
+    switch (idx) {
+      case 0:
+        return '1 Month';
+      case 1:
+        return '6 Months';
+      case 2:
+        return '12 Months';
+      default:
+        return '';
+    }
   }
 
   String _inferCurrentPlanTitle(Map<String, dynamic>? profile) {
@@ -924,94 +926,29 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
     return '';
   }
 
-  /// Dynamically calculates savings % by comparing the monthly plan cost
-  /// against a multi-month plan cost. Returns e.g. "Save 40%" or empty string.
-  String _calculateSavings(
-    String monthlyPriceId,
-    String otherPriceId,
-    int months,
-  ) {
-    final monthly = _prices[monthlyPriceId];
-    final other = _prices[otherPriceId];
-    if (monthly == null || other == null) return '';
-    final fullPrice = monthly.amount * months;
-    if (fullPrice <= 0) return '';
-    final savingsPercent = ((fullPrice - other.amount) / fullPrice * 100)
-        .round();
-    return savingsPercent > 0 ? 'Save $savingsPercent%' : '';
-  }
-
-  /// Check Firestore (and Stripe if needed) on page open.
+  /// Check Firestore on page open (IAP restores on init).
   Future<void> _checkCurrentPremiumStatus() async {
     try {
       final profile = await UserService.instance.getCurrentUserProfile();
-      final status = _subscriptionStatus(profile);
       final priceId = _subscriptionPriceId(profile);
       final currentPlanTitle = _inferCurrentPlanTitle(profile);
       final isPaid = UserService.instance.isPaidPremium(profile);
       final isOnTrial = UserService.instance.isOnFreeTrial(profile);
-      if (isPaid || isOnTrial) {
-        if (mounted) {
-          setState(() {
-            _isPaidPremium = isPaid;
-            _isOnFreeTrial = isOnTrial;
-            _currentPriceId = isPaid ? priceId : '';
-            _currentPlanTitle = isPaid ? currentPlanTitle : '';
-            _checkingStatus = false;
-            if (isPaid) {
-              final idx = _planIndexForPriceId(priceId) ??
-                  _planIndexForTitle(currentPlanTitle);
-              if (idx != null) _selectedPlanIndex = idx;
-            }
-          });
+      if (!mounted) return;
+      setState(() {
+        _isPaidPremium = isPaid;
+        _isOnFreeTrial = isOnTrial;
+        _currentPriceId = isPaid ? priceId : '';
+        _currentPlanTitle = isPaid ? currentPlanTitle : '';
+        _checkingStatus = false;
+        if (isPaid) {
+          final idx = _planIndexForPriceId(priceId) ??
+              _planIndexForTitle(currentPlanTitle);
+          if (idx != null) _selectedPlanIndex = idx;
         }
-        if (isPaid) return;
-        // On free trial — do not call Stripe verify (it can overwrite trial fields).
-        if (isOnTrial) return;
-      }
-      // Free users only: check if they already paid via Stripe outside the app.
-      final stripeConfirm = await StripeService.instance
-          .verifyAndActivatePremium();
-      UserService.instance.invalidateCurrentUserCache();
-      if (stripeConfirm) {
-        await UserService.instance.endTrialAfterPaidUpgrade();
-        final refreshed = await UserService.instance.getCurrentUserProfile();
-        final refreshedPriceId = _subscriptionPriceId(refreshed);
-        final refreshedPlanTitle = _inferCurrentPlanTitle(refreshed);
-        if (mounted) {
-          setState(() {
-            _isPaidPremium = UserService.instance.isPaidPremium(refreshed);
-            _isOnFreeTrial = UserService.instance.isOnFreeTrial(refreshed);
-            _currentPriceId = refreshedPriceId;
-            _currentPlanTitle = refreshedPlanTitle;
-            _checkingStatus = false;
-          });
-        }
-      } else {
-        if (mounted)
-          setState(() {
-            _checkingStatus = false;
-          });
-      }
+      });
     } catch (_) {
-      if (mounted)
-        setState(() {
-          _checkingStatus = false;
-        });
-    }
-  }
-
-
-  /// Returns the correct Stripe price ID for the currently selected plan.
-  String get _selectedPriceId {
-    switch (_selectedPlanIndex) {
-      case 0:
-        return StripeService.premiumMonthlyPriceId;
-      case 1:
-        return StripeService.premium6MonthPriceId;
-      case 2:
-      default:
-        return StripeService.premium1YearPriceId;
+      if (mounted) setState(() => _checkingStatus = false);
     }
   }
 
@@ -1056,7 +993,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                 onPressed: () async {
                   Navigator.pop(ctx);
                   try {
-                    await StripeService.instance.createPortalSession();
+                    await _openManageSubscriptions();
                   } catch (e) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -1089,13 +1026,19 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
         return;
       }
 
-      await PaymentFlowService.markCheckoutStarted();
-
-      await StripeService.instance.startSubscription(priceId: _selectedPriceId);
-      // Deep link fires when user returns from Stripe (handled by _onDeepLink).
-      // If launchUrl returns without a deep link (browser closed on Android),
-      // stop the spinner after a short delay.
-      await Future.delayed(const Duration(seconds: 2));
+      // Native in-app purchase. Activation is delivered asynchronously via the
+      // purchase stream → _onIapPremiumActivated.
+      final started = await IapService.instance.buy(_selectedProductId);
+      if (!started && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This plan isn\'t available yet. Please try again shortly.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1107,40 +1050,20 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
     }
   }
 
-  /// Manually check Stripe for an existing subscription and activate if found.
-  /// Useful when the user paid but the app never got the deep link.
+  /// Restore purchases via the App Store / Play Store.
   Future<void> _restorePurchase() async {
     setState(() => _isLoading = true);
     try {
-      await StripeService.instance.verifyAndActivatePremium();
-      UserService.instance.invalidateCurrentUserCache();
-      await UserService.instance.endTrialAfterPaidUpgrade();
+      // Restored purchases come back through the purchase stream and activate
+      // premium via _onIapPremiumActivated.
+      await IapService.instance.restore();
       if (!mounted) return;
-      final refreshed = await UserService.instance.getCurrentUserProfile();
-      final isPaid = UserService.instance.isPaidPremium(refreshed);
-      if (isPaid) {
-        setState(() {
-          _isPaidPremium = true;
-          _isOnFreeTrial = UserService.instance.isOnFreeTrial(refreshed);
-          _currentPriceId = _subscriptionPriceId(refreshed);
-          _currentPlanTitle = _inferCurrentPlanTitle(refreshed);
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Purchase restored successfully.'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'No active subscription found. Please complete payment first.',
-            ),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Checking for previous purchases…'),
+          backgroundColor: AppColors.goldDark,
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1297,7 +1220,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                 ],
 
                 // ── Plan cards (vertical stack) ────────────────────────
-                if (_pricesLoading) ...[
+                if (_iapLoading) ...[
                   // Shimmer-style skeleton placeholders while loading
                   for (int i = 0; i < 3; i++) ...[
                     Container(
@@ -1313,10 +1236,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                   // 1 Month
                   _VerticalPlanCard(
                     title: '1 Month',
-                    price:
-                        _prices[StripeService.premiumMonthlyPriceId]
-                            ?.formattedAmount ??
-                        'Loading...',
+                    price: _iapPrice(IapService.monthlyId),
                     isSelected: _selectedPlanIndex == 0,
                     isCurrentPlan: _isPlanCurrent(0),
                     onTap: () => setState(() => _selectedPlanIndex = 0),
@@ -1326,15 +1246,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                   // 6 Months
                   _VerticalPlanCard(
                     title: '6 Months',
-                    price:
-                        _prices[StripeService.premium6MonthPriceId]
-                            ?.formattedAmount ??
-                        'Loading...',
-                    subtitle: _calculateSavings(
-                      StripeService.premiumMonthlyPriceId,
-                      StripeService.premium6MonthPriceId,
-                      6,
-                    ),
+                    price: _iapPrice(IapService.sixMonthId),
                     isSelected: _selectedPlanIndex == 1,
                     isCurrentPlan: _isPlanCurrent(1),
                     onTap: () => setState(() => _selectedPlanIndex = 1),
@@ -1344,15 +1256,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                   // 12 Months — always shows "Most Popular" banner
                   _VerticalPlanCard(
                     title: '12 Months',
-                    price:
-                        _prices[StripeService.premium1YearPriceId]
-                            ?.formattedAmount ??
-                        'Loading...',
-                    subtitle: _calculateSavings(
-                      StripeService.premiumMonthlyPriceId,
-                      StripeService.premium1YearPriceId,
-                      12,
-                    ),
+                    price: _iapPrice(IapService.yearlyId),
                     isSelected: _selectedPlanIndex == 2,
                     isMostPopular: true,
                     isCurrentPlan: _isPlanCurrent(2),
@@ -1425,7 +1329,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody>
                             : () async {
                                 setState(() => _isLoading = true);
                                 try {
-                                  await StripeService.instance.createPortalSession();
+                                  await _openManageSubscriptions();
                                 } catch (e) {
                                   if (mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(

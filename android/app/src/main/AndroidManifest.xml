@@ -1,8 +1,21 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Intro/connection video recording works on devices without a camera too
+         (falls back gracefully in-app), so the hardware feature is not required. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- App does NOT use the Advertising ID. Firebase Analytics auto-adds this
+         permission during manifest merge; remove it so we can declare "No" for
+         the Play advertising-ID requirement and avoid collecting the ad ID. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"
+        tools:node="remove" />
 
     <!-- Package visibility queries for url_launcher to work on Android 11+ -->
     <queries>

@@ -11,16 +11,23 @@ import '../../../../services/storage_service.dart';
 import '../../../../services/security_monitoring_service.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
-import 'onboarding_step1_identity.dart';
-import 'onboarding_step2_status.dart';
-import 'onboarding_step3_lifestyle.dart';
-import 'onboarding_step4_cultural.dart';
-import 'onboarding_step5_personality.dart';
-import 'onboarding_step6_preferences.dart';
-import 'onboarding_step7_verification.dart';
-import 'onboarding_step8_exclusivity.dart';
-import 'main_dashboard.dart';
-import 'free_trial_page.dart';
+
+import 'onboarding_step1_welcome.dart';
+import 'onboarding_step2_basic_info.dart';
+import 'onboarding_step_intent_preferences.dart';
+import 'onboarding_step_bio_interests.dart';
+import 'onboarding_step_intro_video.dart';
+import 'onboarding_step_verification.dart';
+import 'onboarding_step7_review.dart';
+import 'onboarding_pending_review_page.dart';
+// `onboarding_step3_intent.dart`, `onboarding_step4_about_you.dart`,
+// `onboarding_step5_values.dart`, and `onboarding_step6_preferences.dart` are
+// no longer part of the required onboarding flow (replaced by
+// `onboarding_step_intent_preferences.dart` + `onboarding_step_intro_video.dart`
+// per the simplified onboarding spec). Their files are intentionally NOT
+// deleted yet — retained for potential reuse as optional profile-editing
+// screens (profession/education/bio/values/dealbreakers), a later, separate
+// task.
 
 class OnboardingFlow extends StatefulWidget {
   const OnboardingFlow({super.key});
@@ -35,20 +42,27 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   int _currentStep = 0;
   bool _isLoading = false;
   bool _isCompleting = false;
+  bool _showProfileReadySuccess = false;
   OnboardingData _onboardingData = OnboardingData();
-  String _preparingText = 'Analyzing relationship intent…';
+  String _preparingText = 'Building your Marriage Profile…';
 
-  static const int _totalSteps = 8;
+  // 7-step flow: Welcome → Basic Info → Intent & Preferences → Bio &
+  // Interests → Intro Video → Verification → Review ("Bio & Interests" added
+  // after the onboarding-simplification spec's 6-step flow, per user-feedback
+  // follow-up to (re-)collect an optional bio + interests during onboarding).
+  static const int _totalSteps = 7;
+  static const int _bioInterestsStepIndex = 3;
+  static const int _introVideoStepIndex = 4;
+  static const int _verificationStepIndex = 5;
 
   final List<String> _stepTitles = [
-    'Basic Identity',
-    'Status & Intent',
-    'Lifestyle & Career',
-    'Cultural & Language',
-    'Personality',
-    'Partner Preferences',
+    'Welcome',
+    'Basic Info',
+    'Intent & Preferences',
+    'About You',
+    'Intro Video',
     'Verification',
-    'Exclusivity',
+    'Review',
   ];
 
   @override
@@ -76,7 +90,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.detached) {
-      // Save progress automatically when the app goes to the background or is killed
       _saveProgress();
     }
   }
@@ -118,21 +131,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         _onboardingData.photos.isNotEmpty) {
       _onboardingData.profilePicture = _onboardingData.photos.first;
     }
-
-    final verificationPath =
-        prefs.getString(_draftKey('verification_photo', uid)) ?? '';
-    if (_onboardingData.verificationPhotoUrl.isEmpty &&
-        verificationPath.isNotEmpty &&
-        File(verificationPath).existsSync()) {
-      _onboardingData.verificationPhotoUrl = verificationPath;
-    }
-
-    final idPath = prefs.getString(_draftKey('id_photo', uid)) ?? '';
-    if (_onboardingData.idVerificationUrl.isEmpty &&
-        idPath.isNotEmpty &&
-        File(idPath).existsSync()) {
-      _onboardingData.idVerificationUrl = idPath;
-    }
   }
 
   Future<void> _clearLocalDraftMedia(String uid) async {
@@ -153,15 +151,12 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         return;
       }
 
-      // Pre-fill phone & email from Firebase Auth
       _onboardingData.phone = user.phoneNumber ?? '';
       _onboardingData.email = user.email ?? '';
 
-      // Load existing profile data
       final profile = await UserService.instance.getUserProfile(user.uid);
       if (profile != null) {
         _onboardingData = OnboardingData.fromMap(profile);
-        // Re-apply auth data (always latest)
         _onboardingData.phone = user.phoneNumber ?? _onboardingData.phone;
         _onboardingData.email = user.email ?? _onboardingData.email;
 
@@ -191,13 +186,20 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       _onboardingData.onboardingStep = _currentStep;
       await _persistLocalDraftMedia(user.uid);
       final data = _onboardingData.toMap();
-      // Remove local file paths before saving to Firestore
       data.remove('photos');
       data.remove('profilePicture');
       data.remove('verificationPhotoUrl');
       data.remove('idVerificationUrl');
+      // Video fields are only ever written by the explicit upload+complete
+      // flow (_completeOnboarding), never by this periodic draft autosave.
+      // Rules only permit introVideoStatus == 'pending' from the owner — the
+      // '' (not yet submitted) default would trip the rule and deny the
+      // ENTIRE write on every autosave before the user reaches that step.
+      data.remove('introVideoUrl');
+      data.remove('introVideoThumbnailUrl');
+      data.remove('introVideoStatus');
+      data.remove('introVideoSubmittedAt');
 
-      // Remove all restricted keys to comply with Firestore rules
       data.remove('account');
       data.remove('isVerified');
       data.remove('verificationStatus');
@@ -213,6 +215,10 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data.remove('billingPeriodEnd');
       data.remove('subscriptionPriceId');
       data.remove('subscriptionName');
+      // introVideoRejectionReason is admin-only in Firestore rules — the
+      // owner may never touch this key, not even to write null. Including
+      // it (even unset) trips the rule and denies the ENTIRE write.
+      data.remove('introVideoRejectionReason');
 
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
     } catch (e) {
@@ -242,11 +248,88 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     }
   }
 
-  // ─── Complete onboarding: upload photos + save all data ─────────────────
+  void _jumpToStep(int stepIndex) {
+    if (stepIndex >= 0 && stepIndex < _totalSteps) {
+      setState(() => _currentStep = stepIndex);
+      _pageController.animateToPage(
+        stepIndex,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOut,
+      );
+    }
+  }
+
+  // ─── Complete onboarding: upload photos + save profile ──────────────────
   Future<void> _completeOnboarding() async {
+    // Defense-in-depth against double-submission (the Submit button already
+    // disables itself while _isCompleting is true, but guard here too in
+    // case of a race, e.g. a queued tap landing right as loading starts).
+    if (_isCompleting) return;
+
+    // The profile photo is now mandatory (per user feedback). The picked
+    // local path is cached across app restarts via `_persistLocalDraftMedia`
+    // (same convention as the verification photos below), so this should
+    // only trip if the cached file was somehow removed from disk.
+    final photoPath = _onboardingData.profilePicture.isNotEmpty
+        ? _onboardingData.profilePicture
+        : (_onboardingData.photos.isNotEmpty ? _onboardingData.photos.first : '');
+    final hasLocalPhotoFile =
+        photoPath.isNotEmpty && File(photoPath).existsSync();
+    if (!hasLocalPhotoFile) {
+      _showError('Please add a profile photo to continue.');
+      _jumpToStep(_bioInterestsStepIndex);
+      return;
+    }
+
+    // The intro video is mandatory and is only ever set on this device,
+    // in-memory (introVideoLocalPath is intentionally not persisted across
+    // app restarts, same as local photo paths pre-upload). If it's missing
+    // — e.g. the app was killed/restarted after recording but before
+    // submitting — attempting to complete anyway would write
+    // introVideoStatus as '' instead of 'pending', which Firestore rules
+    // reject outright (denying the ENTIRE write, not just that field).
+    // Catch this up front with a clear, actionable message instead.
+    final localVideoPath = _onboardingData.introVideoLocalPath;
+    final hasLocalVideoFile = localVideoPath != null &&
+        localVideoPath.isNotEmpty &&
+        File(localVideoPath).existsSync();
+    if (!hasLocalVideoFile) {
+      _showError('Your intro video wasn\'t found. Please record it again.');
+      _jumpToStep(_introVideoStepIndex);
+      return;
+    }
+
+    // Selfie is required; government ID is optional (Guideline 5.1.1v).
+    final selfiePath = _onboardingData.verificationPhotoUrl;
+    final idPath = _onboardingData.idVerificationUrl;
+    final hasLocalSelfieFile =
+        selfiePath.isNotEmpty && File(selfiePath).existsSync();
+    final hasLocalIdFile = idPath.isNotEmpty && File(idPath).existsSync();
+    if (!hasLocalSelfieFile) {
+      _showError(
+        'Your verification selfie wasn\'t found. Please capture it again.',
+      );
+      _jumpToStep(_verificationStepIndex);
+      return;
+    }
+
+    // Terms of Service / Privacy Policy acceptance is a required, live-toggled
+    // checkbox on the Review step itself (see onboarding_step7_review.dart) —
+    // if it's somehow unset when this fires (e.g. a queued submit tap), abort
+    // and jump back to that same step rather than writing a profile without
+    // recorded consent.
+    if (!_onboardingData.termsAccepted) {
+      _showError(
+        'Please accept the Terms of Service and Privacy Policy to continue.',
+      );
+      _jumpToStep(_totalSteps - 1);
+      return;
+    }
+
     setState(() {
       _isCompleting = true;
-      _preparingText = 'Analyzing relationship intent…';
+      _showProfileReadySuccess = false;
+      _preparingText = 'Setting up your profile…';
     });
 
     Timer? cycleTimer;
@@ -258,10 +341,9 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         return;
       }
 
-      // Start the artificial premium delay (31 seconds)
-      final delayFuture = Future.delayed(const Duration(seconds: 31));
+      // Fast, responsive AI analysis sequence (~10 seconds)
+      final delayFuture = Future.delayed(const Duration(seconds: 10));
 
-      // Start a timer to cycle through premium matching preparation stages
       int elapsedSeconds = 0;
       cycleTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         elapsedSeconds++;
@@ -270,21 +352,19 @@ class _OnboardingFlowState extends State<OnboardingFlow>
           return;
         }
         setState(() {
-          if (elapsedSeconds >= 24) {
-            _preparingText = 'Constructing your exclusive profile…';
-          } else if (elapsedSeconds >= 18) {
-            _preparingText = 'Calibrating the match engine…';
-          } else if (elapsedSeconds >= 12) {
-            _preparingText = 'Securing identity & verification data…';
+          if (elapsedSeconds >= 8) {
+            _preparingText = 'Almost there…';
           } else if (elapsedSeconds >= 6) {
-            _preparingText = 'Scanning partner preferences…';
+            _preparingText = 'Uploading your intro video…';
+          } else if (elapsedSeconds >= 3) {
+            _preparingText = 'Saving your details…';
           }
         });
       });
 
-      // ─── Parallelize All Uploads ───
-
-      // 1. Prepare profile photo upload tasks
+      // 1. Prepare photo upload tasks (photos are now optional/secondary —
+      // min 0, was min 3 — so this must not break when `_localPhotos`/
+      // `photos` is empty).
       final List<Future<String?>> photoUploadTasks = [];
       for (int i = 0; i < _onboardingData.photos.length; i++) {
         final photoPath = _onboardingData.photos[i];
@@ -311,88 +391,174 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         }
       }
 
-      // 2. Prepare verification selfie upload task
-      Future<String?> selfieUploadTask = Future.value('');
-      if (_onboardingData.verificationPhotoUrl.isNotEmpty) {
-        final selfieFile = File(_onboardingData.verificationPhotoUrl);
-        if (selfieFile.path.startsWith('http')) {
-          selfieUploadTask = Future.value(selfieFile.path);
-        } else {
-          selfieUploadTask = selfieFile.exists().then((exists) async {
-            if (exists) {
-              try {
-                return await StorageService.instance.uploadProfilePhoto(
-                  uid: user.uid,
-                  file: selfieFile,
-                );
-              } catch (e) {
-                debugPrint('Error uploading selfie: $e');
-                return '';
-              }
-            }
-            return '';
-          });
-        }
+      // 2. Prepare intro video upload task, parallel to the photo uploads.
+      Future<String?> videoUploadTask = Future.value(null);
+      final videoLocalPath = _onboardingData.introVideoLocalPath;
+      if (videoLocalPath != null && videoLocalPath.isNotEmpty) {
+        final videoFile = File(videoLocalPath);
+        videoUploadTask = videoFile.exists().then((exists) async {
+          if (!exists) return null;
+          try {
+            return await StorageService.instance.uploadIntroVideo(
+              uid: user.uid,
+              file: videoFile,
+              onProgress: (progress) {
+                if (!mounted) return;
+                final percent = (progress.clamp(0.0, 1.0) * 100).round();
+                setState(() {
+                  _preparingText = 'Uploading your intro video… $percent%';
+                });
+              },
+            );
+          } catch (e) {
+            debugPrint('Error uploading intro video: $e');
+            return null;
+          }
+        });
       }
 
-      // 3. Prepare ID verification upload task
-      Future<String?> idUploadTask = Future.value('');
-      if (_onboardingData.idVerificationUrl.isNotEmpty) {
-        final idFile = File(_onboardingData.idVerificationUrl);
-        if (idFile.path.startsWith('http')) {
-          idUploadTask = Future.value(idFile.path);
-        } else {
-          idUploadTask = idFile.exists().then((exists) async {
-            if (exists) {
-              try {
-                return await StorageService.instance.uploadProfilePhoto(
-                  uid: user.uid,
-                  file: idFile,
-                );
-              } catch (e) {
-                debugPrint('Error uploading ID: $e');
-                return '';
-              }
-            }
-            return '';
-          });
-        }
+      // 2b. Prepare intro video thumbnail upload task, best-effort — a
+      // nice-to-have instant preview image, not required for onboarding to
+      // complete. Never let a thumbnail failure block or fail the overall
+      // completion (unlike the video upload itself, which is mandatory).
+      Future<String?> thumbnailUploadTask = Future.value(null);
+      final thumbnailLocalPath = _onboardingData.introVideoThumbnailLocalPath;
+      if (thumbnailLocalPath != null && thumbnailLocalPath.isNotEmpty) {
+        final thumbnailFile = File(thumbnailLocalPath);
+        thumbnailUploadTask = thumbnailFile.exists().then((exists) async {
+          if (!exists) return null;
+          try {
+            return await StorageService.instance.uploadIntroVideoThumbnail(
+              uid: user.uid,
+              file: thumbnailFile,
+            );
+          } catch (e) {
+            debugPrint('Error uploading intro video thumbnail: $e');
+            return null;
+          }
+        });
       }
 
-      // 4. Run all uploads in parallel
-      final results = await Future.wait([
+      // 3. Prepare verification photo upload tasks.
+      // Selfie is required; government ID is optional (Guideline 5.1.1v).
+      final selfieFile = File(_onboardingData.verificationPhotoUrl);
+      final Future<String?> selfieUploadTask = () async {
+        try {
+          return await StorageService.instance.uploadVerificationFile(
+            uid: user.uid,
+            file: selfieFile,
+            kind: 'selfie',
+          );
+        } catch (e) {
+          debugPrint('Error uploading verification selfie: $e');
+          return null;
+        }
+      }();
+
+      final Future<String?> idUploadTask = hasLocalIdFile
+          ? () async {
+              try {
+                return await StorageService.instance.uploadVerificationFile(
+                  uid: user.uid,
+                  file: File(idPath),
+                  kind: 'government_id',
+                );
+              } catch (e) {
+                debugPrint('Error uploading verification ID: $e');
+                return null;
+              }
+            }()
+          : Future<String?>.value(null);
+
+      final results = await Future.wait<dynamic>([
         Future.wait(photoUploadTasks),
+        videoUploadTask,
         selfieUploadTask,
         idUploadTask,
+        thumbnailUploadTask,
       ]);
 
       final List<String?> rawPhotoUrls = results[0] as List<String?>;
-      final String verificationUrl = (results[1] as String?) ?? '';
-      final String idUrl = (results[2] as String?) ?? '';
-
       final List<String> uploadedUrls = rawPhotoUrls.whereType<String>().toList();
       String profilePictureUrl = uploadedUrls.isNotEmpty ? uploadedUrls.first : '';
+      final String? uploadedVideoUrl = results[1] as String?;
+      final String? uploadedSelfieUrl = results[2] as String?;
+      final String? uploadedIdUrl = results[3] as String?;
+      final String? uploadedThumbnailUrl = results[4] as String?;
 
-      // Build final profile data
+      // We already confirmed a local video file exists (see the guard at the
+      // top of this method) — if the upload itself still failed (e.g. a
+      // network blip), do NOT proceed to write the profile: writing without
+      // introVideoStatus set to 'pending' would trip the security rule and
+      // deny the whole write, and writing the rest of the profile without a
+      // video would leave the account in a broken, incomplete state (video
+      // is mandatory for this app). Fail loudly and let the user retry.
+      if (uploadedVideoUrl == null || uploadedVideoUrl.isEmpty) {
+        _showError('Uploading your intro video failed. Please check your connection and try again.');
+        setState(() => _isCompleting = false);
+        return;
+      }
+
+      // Selfie is required; government ID is optional — only fail if selfie upload fails.
+      if (uploadedSelfieUrl == null || uploadedSelfieUrl.isEmpty) {
+        _showError('Uploading your verification selfie failed. Please check your connection and try again.');
+        setState(() => _isCompleting = false);
+        return;
+      }
+      // Optional ID: if user provided one but upload failed, warn but do not block.
+      if (hasLocalIdFile &&
+          (uploadedIdUrl == null || uploadedIdUrl.isEmpty)) {
+        debugPrint(
+          'Optional government ID upload failed; continuing without ID.',
+        );
+      }
+
+      // Build final profile data with structured marriageProfile
       final data = _onboardingData.toMap();
       data['uid'] = user.uid;
       data['name'] = _onboardingData.fullName;
       data['photos'] = uploadedUrls;
       data['images'] = uploadedUrls;
       data['profilePicture'] = profilePictureUrl;
-      data['verificationPhotoUrl'] = verificationUrl;
-      data['idVerificationUrl'] = idUrl;
       data['location'] = _onboardingData.location;
       data['age'] = _onboardingData.age ?? 0;
       data['highestQualification'] = _onboardingData.educationLevel;
       data['registrationCompleted'] = true;
       data['onboardingStep'] = _totalSteps;
 
-      // Note: We omit 'isVerified', 'verificationStatus', 'subscriptionName' from the update payload.
-      // They are already initialized as defaults during signup.
+      // uploadedVideoUrl is guaranteed non-empty here (checked above).
+      data['introVideoUrl'] = uploadedVideoUrl;
+      data['introVideoStatus'] = 'pending';
+      data['introVideoSubmittedAt'] = FieldValue.serverTimestamp();
+      // Thumbnail is best-effort — only set it if the upload actually
+      // succeeded; otherwise leave whatever `toMap()` already put in `data`
+      // (empty string) rather than writing a broken/missing value here.
+      if (uploadedThumbnailUrl != null && uploadedThumbnailUrl.isNotEmpty) {
+        data['introVideoThumbnailUrl'] = uploadedThumbnailUrl;
+      }
+
+      // uploadedSelfieUrl / uploadedIdUrl are guaranteed non-empty here
+      // (checked above) — overwrite the local-path values `toMap()` put in
+      // `data` with the actual uploaded URLs. `verificationStatus` is a
+      // rule-restricted field: the owner may only ever set it to exactly
+      // 'pending' (see firestore.rules), which is exactly what's needed here.
+      data['verificationPhotoUrl'] = uploadedSelfieUrl;
+      if (uploadedIdUrl != null && uploadedIdUrl.isNotEmpty) {
+        data['idVerificationUrl'] = uploadedIdUrl;
+      } else {
+        data['idVerificationUrl'] = '';
+      }
+      data['verificationStatus'] = 'pending';
+      data['idVerified'] = false;
+      data['profileVerified'] = false;
+      data['verificationSubmittedAt'] = FieldValue.serverTimestamp();
+
       data.remove('account');
       data.remove('isVerified');
-      data.remove('verificationStatus');
+      // NOTE: 'verificationStatus' is intentionally NOT removed here (unlike
+      // the periodic draft autosave in _saveProgress()) — it's deliberately
+      // set to 'pending' above now that verification is a required
+      // onboarding step, mirroring how introVideoStatus is set just above.
       data.remove('stripeCustomerId');
       data.remove('stripeSubscriptionId');
       data.remove('lastCheckoutSessionId');
@@ -405,41 +571,41 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       data.remove('billingPeriodEnd');
       data.remove('subscriptionPriceId');
       data.remove('subscriptionName');
+      // introVideoRejectionReason is admin-only in Firestore rules — the
+      // owner may never touch this key, not even to write null. Including
+      // it (even unset) trips the rule and denies the ENTIRE write.
+      data.remove('introVideoRejectionReason');
 
-      if (verificationUrl.isNotEmpty || idUrl.isNotEmpty) {
-        data['verificationSubmittedAt'] = FieldValue.serverTimestamp();
-      }
-
-      final visibility =
-          (_onboardingData.profileVisibility).toString().trim();
-      final isPrivate = visibility == 'Private';
-      data['showProfileToEveryone'] = !isPrivate;
-      data['showPhotosToEveryone'] = data['showPhotosToEveryone'] ?? true;
-
-      // Save to Firestore
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
       await _clearLocalDraftMedia(user.uid);
 
-      // Trigger secure background session tracking upon onboarding completion
-      unawaited(SecurityMonitoringService.instance.logSessionActivity('onboarding_completed'));
+      unawaited(SecurityMonitoringService.instance.logSessionActivity('marriage_onboarding_completed'));
 
-      // Wait for the full 31 seconds duration to complete to build premium anticipation
       await delayFuture;
 
-      // Navigate to the free trial offer page instead of directly to dashboard
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const FreeTrialPage()),
-          (route) => false,
-        );
+        setState(() {
+          _preparingText = 'Your profile is ready.';
+          _showProfileReadySuccess = true;
+        });
       }
     } catch (e) {
       debugPrint('Onboarding completion error: $e');
       _showError('Onboarding completion error: $e');
+      if (mounted) setState(() => _isCompleting = false);
     } finally {
       cycleTimer?.cancel();
     }
-    if (mounted) setState(() => _isCompleting = false);
+  }
+
+  void _proceedToApp() {
+    // Route through the intro-video pending-review screen instead of jumping
+    // straight to FreeTrialPage — FreeTrialPage remains the eventual
+    // destination, reached from there once the user acknowledges.
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const OnboardingPendingReviewPage()),
+      (route) => false,
+    );
   }
 
   void _showError(String msg) {
@@ -473,44 +639,39 @@ class _OnboardingFlowState extends State<OnboardingFlow>
                     controller: _pageController,
                     physics: const NeverScrollableScrollPhysics(),
                     children: [
-                      OnboardingStep1Identity(
+                      OnboardingStep1Welcome(
                         data: _onboardingData,
                         onNext: _goToNext,
                       ),
-                      OnboardingStep2Status(
-                        data: _onboardingData,
-                        onNext: _goToNext,
-                        onBack: _goBack,
-                      ),
-                      OnboardingStep3Lifestyle(
+                      OnboardingStep2BasicInfo(
                         data: _onboardingData,
                         onNext: _goToNext,
                         onBack: _goBack,
                       ),
-                      OnboardingStep4Cultural(
+                      OnboardingStepIntentPreferences(
                         data: _onboardingData,
                         onNext: _goToNext,
                         onBack: _goBack,
                       ),
-                      OnboardingStep5Personality(
+                      OnboardingStepBioInterests(
                         data: _onboardingData,
                         onNext: _goToNext,
                         onBack: _goBack,
                       ),
-                      OnboardingStep6Preferences(
+                      OnboardingStepIntroVideo(
                         data: _onboardingData,
                         onNext: _goToNext,
                         onBack: _goBack,
                       ),
-                      OnboardingStep7Verification(
+                      OnboardingStepVerification(
                         data: _onboardingData,
                         onNext: _goToNext,
                         onBack: _goBack,
                       ),
-                      OnboardingStep8Exclusivity(
+                      OnboardingStep7Review(
                         data: _onboardingData,
+                        onEditStep: _jumpToStep,
                         onComplete: _completeOnboarding,
-                        onBack: _goBack,
                         isLoading: _isCompleting,
                       ),
                     ],
@@ -527,48 +688,99 @@ class _OnboardingFlowState extends State<OnboardingFlow>
 
   Widget _buildPreparingOverlay() {
     return Positioned.fill(
-      child: AbsorbPointer(
-        child: ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: Container(
-              color: OnboardingColors.background.withOpacity(0.92),
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 40),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(
-                        color: OnboardingColors.primaryGold,
-                      ),
-                      const SizedBox(height: 32),
-                      Text(
-                        _preparingText,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: OnboardingColors.textPrimary,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: 0.3,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Swan is customizing your luxury match ecosystem',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: OnboardingColors.textSecondary,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
+      child: Stack(
+        children: [
+          // Blurred background — absorbs touches so underlying page is blocked
+          Positioned.fill(
+            child: AbsorbPointer(
+              child: ClipRect(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                  child: Container(
+                    color: OnboardingColors.background.withOpacity(0.95),
                   ),
                 ),
               ),
             ),
           ),
-        ),
+          // Foreground content — NOT wrapped in AbsorbPointer so taps work
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 36),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!_showProfileReadySuccess) ...[
+                    const CircularProgressIndicator(
+                      color: OnboardingColors.primaryGold,
+                      strokeWidth: 3,
+                    ),
+                    const SizedBox(height: 32),
+                    Text(
+                      _preparingText,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: OnboardingColors.textPrimary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Just a moment while we get everything ready',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: OnboardingColors.textSecondary,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ] else ...[
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: OnboardingColors.primaryGold.withOpacity(0.2),
+                        border: Border.all(color: OnboardingColors.primaryGold, width: 2),
+                      ),
+                      child: const Icon(
+                        Icons.check_rounded,
+                        color: OnboardingColors.primaryGold,
+                        size: 48,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text(
+                      'Your Profile is Ready!',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: OnboardingColors.textPrimary,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Your intro video is under review. Once it\'s approved, you\'ll appear in Discover and can start connecting.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: OnboardingColors.textSecondary,
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    NextButton(
+                      label: 'Continue',
+                      onPressed: _proceedToApp,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -578,7 +790,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       padding: const EdgeInsets.fromLTRB(8, 8, 24, 0),
       child: Column(
         children: [
-          // Top row: back button + step counter
           Row(
             children: [
               if (_currentStep > 0)
@@ -615,7 +826,6 @@ class _OnboardingFlowState extends State<OnboardingFlow>
             ],
           ),
           const SizedBox(height: 12),
-          // Progress bar
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
@@ -631,8 +841,8 @@ class _OnboardingFlowState extends State<OnboardingFlow>
                       color: isCompleted
                           ? OnboardingColors.primaryGold
                           : isCurrent
-                          ? OnboardingColors.primaryGold.withOpacity(0.5)
-                          : Colors.white.withOpacity(0.1),
+                              ? OnboardingColors.primaryGold.withOpacity(0.5)
+                              : Colors.white.withOpacity(0.1),
                     ),
                   ),
                 );

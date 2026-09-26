@@ -211,6 +211,8 @@ const stripePriceYearly = defineSecret('STRIPE_PRICE_YEARLY');
  */
 const smtpUser = defineSecret('SMTP_USER');
 const smtpPass = defineSecret('SMTP_PASS');
+/** App Store Server API private key (.p8 contents) for verifying iOS purchases. */
+const appStoreIapKey = defineSecret('APP_STORE_IAP_KEY');
 
 async function enforceRateLimit(uid, action, maxRequests, windowMs, key) {
   const rateKey = key || uid;
@@ -726,18 +728,20 @@ exports.verifySubscription = onCall(
       userData.subscriptionPlan === 'trial' &&
       userData.subscriptionStatus === 'trialing';
 
-    // ── Fast path: no Stripe customer means no paid subscription ───────────
+    // ── Fast path: no Stripe customer means IAP is the only paid path ──────
     if (!stripeCustomerId) {
       console.log(`[verifySubscription] No stripeCustomerId for uid=${uid}`);
       if (isInAppTrial) {
         return { isPremium: false, expiresAt: null };
       }
-      const status = userData.subscriptionStatus;
-      const plan = userData.subscriptionPlan;
-      const isPremiumAdmin =
-        (status === 'active' || status === 'trialing') &&
-        (plan === 'premium' || plan === 'gold');
-      return { isPremium: !!isPremiumAdmin, expiresAt: null };
+      // Do NOT trust subscriptionPlan/subscriptionStatus alone — Firestore
+      // rules restrict client writes on those fields to non-paid values, but
+      // as defense-in-depth we corroborate against iapTransactionId, which is
+      // only ever written by verifyIapPurchase via the Admin SDK.
+      const expiry = userData.billingPeriodEnd;
+      const notExpired = !expiry || expiry.toMillis() > Date.now();
+      const isPremiumIap = !!userData.iapTransactionId && notExpired;
+      return { isPremium: isPremiumIap, expiresAt: expiry ? expiry.toMillis() : null };
     }
 
     // ── Query Stripe for active subscriptions ────────────────────────────────
@@ -824,6 +828,168 @@ exports.verifySubscription = onCall(
     throw new HttpsError('internal', `Error verifying subscription: ${error.message}`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// In-App Purchase verification (Apple App Store + Google Play)
+//
+// Replaces the temporary client-side premium grant with secure server-side
+// receipt verification. Writes the SAME Firestore subscription fields the Stripe
+// webhook uses, so the app + admin panel are unaffected.
+// ─────────────────────────────────────────────────────────────────────────────
+const APP_STORE_KEY_ID = '85584667FU';
+const APP_STORE_ISSUER_ID = '04d91ed2-c0a2-446d-8dee-ab0eef9d63e8';
+const IOS_BUNDLE_ID = 'com.swanmatch.app';
+const ANDROID_PACKAGE = 'com.swanmatch.app';
+
+/** Maps a store product ID to the plan label/period stored on the user doc. */
+function iapPlanFromProductId(productId) {
+  const id = (productId || '').toLowerCase();
+  if (id.includes('6month') || id.includes('sixmonth')) {
+    return { name: 'Six Month', period: 'sixMonth' };
+  }
+  if (id.includes('year')) {
+    return { name: 'Yearly', period: 'yearly' };
+  }
+  return { name: 'Monthly', period: 'monthly' };
+}
+
+/** Decodes the payload of an Apple JWS (the API call itself is authenticated). */
+function decodeJwsPayload(jws) {
+  const parts = (jws || '').split('.');
+  if (parts.length < 2) return null;
+  try {
+    return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Verifies an iOS transaction via the App Store Server API (prod then sandbox). */
+async function verifyAppleTransaction(transactionId, signingKey) {
+  if (!transactionId) return { valid: false };
+  const { AppStoreServerAPIClient, Environment } =
+    require('@apple/app-store-server-library');
+  for (const env of [Environment.PRODUCTION, Environment.SANDBOX]) {
+    try {
+      const client = new AppStoreServerAPIClient(
+        signingKey, APP_STORE_KEY_ID, APP_STORE_ISSUER_ID, IOS_BUNDLE_ID, env,
+      );
+      const resp = await client.getAllSubscriptionStatuses(transactionId);
+      for (const group of resp.data || []) {
+        for (const lt of group.lastTransactions || []) {
+          const tx = decodeJwsPayload(lt.signedTransactionInfo);
+          if (!tx) continue;
+          const expiresMs = Number(tx.expiresDate || 0);
+          return {
+            valid: expiresMs > Date.now(),
+            productId: tx.productId,
+            expiresMs,
+          };
+        }
+      }
+    } catch (e) {
+      console.log(`Apple verify (${env}) error: ${e.message || e}`);
+    }
+  }
+  return { valid: false };
+}
+
+/** Verifies an Android purchase token via the Play Developer API. */
+async function verifyGooglePurchase(purchaseToken) {
+  if (!purchaseToken) return { valid: false };
+  const { google } = require('googleapis');
+  const auth = new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+  });
+  const authClient = await auth.getClient();
+  const androidpublisher = google.androidpublisher({ version: 'v3', auth: authClient });
+  const res = await androidpublisher.purchases.subscriptionsv2.get({
+    packageName: ANDROID_PACKAGE,
+    token: purchaseToken,
+  });
+  const data = res.data || {};
+  const active =
+    data.subscriptionState === 'SUBSCRIPTION_STATE_ACTIVE' ||
+    data.subscriptionState === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD';
+  const li = (data.lineItems || [])[0] || {};
+  const expiresMs = li.expiryTime ? new Date(li.expiryTime).getTime() : 0;
+  // With one subscription (`swan_premium`) + base plans, the productId no longer
+  // tells the tier — the BASE PLAN id does (`monthly` / `sixmonth` / `yearly`).
+  const basePlanId = li.offerDetails && li.offerDetails.basePlanId;
+  return { valid: active, productId: li.productId, planId: basePlanId, expiresMs };
+}
+
+/**
+ * verifyIapPurchase - Securely verifies a native purchase and grants premium.
+ * data: { productId, source: 'app_store'|'google_play', verificationData, transactionId }
+ */
+exports.verifyIapPurchase = onCall(
+  { secrets: [appStoreIapKey] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required.');
+    }
+    const uid = request.auth.uid;
+    const { productId, source, verificationData, transactionId } = request.data || {};
+    if (!productId || !source) {
+      throw new HttpsError('invalid-argument', 'Missing purchase data.');
+    }
+
+    await enforceRateLimit(uid, 'verifyIap', 10, 60 * 1000);
+
+    let result;
+    if (source === 'app_store') {
+      const signingKey = (appStoreIapKey.value() || '').trim();
+      if (!signingKey) {
+        throw new HttpsError('failed-precondition', 'App Store key not configured.');
+      }
+      result = await verifyAppleTransaction(transactionId, signingKey);
+    } else if (source === 'google_play') {
+      result = await verifyGooglePurchase(verificationData);
+    } else {
+      throw new HttpsError('invalid-argument', `Unknown source: ${source}`);
+    }
+
+    if (!result || !result.valid) {
+      throw new HttpsError('failed-precondition', 'Purchase could not be verified.');
+    }
+
+    const verifiedProductId = result.productId || productId;
+    // Prefer the base plan id (Android) for the tier; fall back to the product
+    // id (iOS product ids still encode the tier, e.g. `swan_premium_6month`).
+    const plan = iapPlanFromProductId(result.planId || verifiedProductId);
+    const db = admin.firestore();
+
+    const updateData = {
+      subscriptionPlan: 'premium',
+      subscriptionStatus: 'active',
+      subscriptionName: plan.name,
+      subscriptionPeriod: plan.period,
+      cancelAtPeriodEnd: false,
+      iapSource: source,
+      iapProductId: verifiedProductId,
+      premiumActivatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      freeTrialEndsAt: admin.firestore.FieldValue.delete(),
+      freeTrialStartedAt: admin.firestore.FieldValue.delete(),
+    };
+    if (transactionId) updateData.iapTransactionId = transactionId;
+    if (result.expiresMs && Number.isFinite(result.expiresMs)) {
+      updateData.billingPeriodEnd =
+        admin.firestore.Timestamp.fromMillis(result.expiresMs);
+    }
+
+    const userRef = db.collection('users').doc(uid);
+    const snap = await userRef.get();
+    if (!snap.exists) {
+      throw new HttpsError('not-found', 'User profile not found.');
+    }
+    await userRef.set(updateData, { merge: true });
+
+    console.log(`[verifyIapPurchase] premium granted uid=${uid} source=${source} product=${verifiedProductId}`);
+    return { isPremium: true, plan: plan.name, expiresAt: result.expiresMs || null };
+  },
+);
 
 /**
  * getStripePrices - Returns Stripe price details with server-side per-month
@@ -943,12 +1109,7 @@ exports.sendNotification = onCall(async (request) => {
   await enforceRateLimit(request.auth.uid, 'sendNotification', 10, 60 * 1000); // 10 requests per minute
 
   // RESTRICT: ONLY ADMINS CAN USE THIS FUNCTION
-  const email = request.auth.token.email || '';
-  const isAdmin = email === "sasikumar.s9951@gmail.com" || 
-                  email === "admin@gmail.com" || 
-                  email.endsWith("@swan-match.com");
-                  
-  if (!isAdmin) {
+  if (!isAdminAuth(request)) {
     throw new HttpsError('permission-denied', 'Only administrators can send notifications.');
   }
 
@@ -1105,14 +1266,14 @@ exports.hardDeleteExpiredAccounts = onSchedule(
 exports.checkAuthProviders = onCall(async (request) => {
   const email = request.data.email;
 
-  // Rate limit: 10 requests per minute per email address (prevents email enumeration abuse)
-  if (email && typeof email === 'string') {
-    await enforceRateLimit(null, 'checkAuthProviders', 10, 60 * 1000, `email_${email.toLowerCase().trim()}`);
-  }
-
   if (!email || typeof email !== 'string') {
     throw new HttpsError('invalid-argument', 'The function must be called with a valid "email".');
   }
+
+  // Rate limit per-email (prevents hammering one address) AND globally
+  // (prevents enumerating many different addresses by rotating targets).
+  await enforceRateLimit(null, 'checkAuthProviders', 10, 60 * 1000, `email_${email.toLowerCase().trim()}`);
+  await enforceRateLimit(null, 'checkAuthProviders', 60, 60 * 1000, 'global');
 
   try {
     const userRecord = await admin.auth().getUserByEmail(email);
@@ -1355,10 +1516,17 @@ exports.trackSignup = onCall(async (request) => {
 // ============================================================================
 
 function isAdminAuth(request) {
-  return request.auth && (
-    request.auth.token.email === 'sasikumar.s9951@gmail.com' ||
-    request.auth.token.email === 'admin@gmail.com' ||
-    (request.auth.token.email || '').endsWith('@swan-match.com')
+  // Mirrors firestore.rules' isAdmin(): prefer the unforgeable custom-claim
+  // "badge" set by the admin-web backend (set_admin_claims.js / adminRoutes.js)
+  // when an admin account is created. The email fallback is only a backup and
+  // requires a *verified* email — an unverified `x@swan-match.com` signup must
+  // not be able to call admin-gated functions (suspend/refund/etc).
+  if (!request.auth) return false;
+  if (request.auth.token.isAdmin === true) return true;
+  const email = request.auth.token.email || '';
+  return request.auth.token.email_verified === true && (
+    email === 'admin@swan-match.com' ||
+    email === 'sasikumar.s9951@gmail.com'
   );
 }
 
@@ -1510,6 +1678,60 @@ exports.submitAppeal = onCall(async (request) => {
 // REPORTS (with rate limiting)
 // ============================================================================
 
+/** Human-readable category labels for the admin dashboard. Shared by
+ *  submitReport and reportConnectionVideo. */
+const REPORT_CATEGORY_LABELS = {
+  harassment: 'Harassment / Threats',
+  fake_profile: 'Fake Profile / Catfish',
+  scam: 'Scam / Fraud',
+  inappropriate: 'Inappropriate Content',
+  underage: 'Underage User',
+  spam: 'Spam / Solicitation',
+  other: 'Other',
+};
+
+/**
+ * Auto-assigns a report priority (P1=critical, P2=high, P3=general):
+ * category-first (reliable), keyword fallback for 'other' or a
+ * missing/unrecognized category. Extracted so submitReport (chat-report flow)
+ * and reportConnectionVideo (pre-chat video-report flow) share identical
+ * triage logic rather than drifting apart.
+ */
+function assignReportPriority(reason, category) {
+  const CATEGORY_PRIORITY = {
+    harassment: 'P1',
+    underage: 'P1',
+    fake_profile: 'P2',
+    scam: 'P2',
+    inappropriate: 'P2',
+    spam: 'P3',
+    other: null, // null = fall through to keyword scan
+  };
+  const P1_KEYWORDS = ['threat', 'kill', 'harm', 'suicide', 'underage', 'minor', 'child', 'blackmail', 'extort'];
+  const P2_KEYWORDS = ['scam', 'fraud', 'fake', 'impersonat', 'catfish', 'money', 'escort', 'spam', 'harass', 'stalk'];
+
+  let priority = 'P3'; // Default
+  const cat = (category || '').toLowerCase().trim();
+
+  if (cat && CATEGORY_PRIORITY[cat] !== undefined) {
+    if (CATEGORY_PRIORITY[cat] !== null) {
+      priority = CATEGORY_PRIORITY[cat];
+    } else {
+      // 'other' category: fall back to keyword scan
+      const reasonLower = (reason || '').toLowerCase();
+      if (P1_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P1';
+      else if (P2_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P2';
+    }
+  } else {
+    // No category sent (old app version): full keyword scan
+    const reasonLower = (reason || '').toLowerCase();
+    if (P1_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P1';
+    else if (P2_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P2';
+  }
+
+  return priority;
+}
+
 /** Submit a report. Rate limited: 5 reports per hour per user. */
 exports.submitReport = onCall(async (request) => {
   if (!request.auth) {
@@ -1575,49 +1797,8 @@ exports.submitReport = onCall(async (request) => {
   }
 
   // Auto-assign priority: category-first (reliable), keyword fallback for 'other' or missing
-  const CATEGORY_PRIORITY = {
-    harassment: 'P1',
-    underage: 'P1',
-    fake_profile: 'P2',
-    scam: 'P2',
-    inappropriate: 'P2',
-    spam: 'P3',
-    other: null, // null = fall through to keyword scan
-  };
-
-  let priority = 'P3'; // Default
+  const priority = assignReportPriority(reason, category);
   const cat = (category || '').toLowerCase().trim();
-
-  if (cat && CATEGORY_PRIORITY[cat] !== undefined) {
-    if (CATEGORY_PRIORITY[cat] !== null) {
-      priority = CATEGORY_PRIORITY[cat];
-    } else {
-      // 'other' category: fall back to keyword scan
-      const reasonLower = reason.toLowerCase();
-      const P1_KEYWORDS = ['threat', 'kill', 'harm', 'suicide', 'underage', 'minor', 'child', 'blackmail', 'extort'];
-      const P2_KEYWORDS = ['scam', 'fraud', 'fake', 'impersonat', 'catfish', 'money', 'escort', 'spam', 'harass', 'stalk'];
-      if (P1_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P1';
-      else if (P2_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P2';
-    }
-  } else {
-    // No category sent (old app version): full keyword scan
-    const reasonLower = reason.toLowerCase();
-    const P1_KEYWORDS = ['threat', 'kill', 'harm', 'suicide', 'underage', 'minor', 'child', 'blackmail', 'extort'];
-    const P2_KEYWORDS = ['scam', 'fraud', 'fake', 'impersonat', 'catfish', 'money', 'escort', 'spam', 'harass', 'stalk'];
-    if (P1_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P1';
-    else if (P2_KEYWORDS.some(k => reasonLower.includes(k))) priority = 'P2';
-  }
-
-  // Human-readable category labels for admin dashboard
-  const CATEGORY_LABELS = {
-    harassment: 'Harassment / Threats',
-    fake_profile: 'Fake Profile / Catfish',
-    scam: 'Scam / Fraud',
-    inappropriate: 'Inappropriate Content',
-    underage: 'Underage User',
-    spam: 'Spam / Solicitation',
-    other: 'Other',
-  };
 
   // Create report
   await db.collection('reports').add({
@@ -1625,7 +1806,7 @@ exports.submitReport = onCall(async (request) => {
     reportedBy: reporterUid,
     reason: reason.trim(),
     category: cat || null,
-    categoryLabel: CATEGORY_LABELS[cat] || null,
+    categoryLabel: REPORT_CATEGORY_LABELS[cat] || null,
     priority, // P1=critical, P2=high, P3=general
     reportedAt: admin.firestore.FieldValue.serverTimestamp(),
     isReported: true,
@@ -1639,39 +1820,29 @@ exports.submitReport = onCall(async (request) => {
     reportedUids: admin.firestore.FieldValue.arrayUnion(reportedUid),
   });
 
-  // Remove connections (interests, likes, matches, chat)
+  // Remove connections (connection record, chat)
   try {
-    // Mark interests as blocked
-    const sentInterests = await db.collection('interests')
-      .where('fromUserId', '==', reporterUid)
-      .where('toUserId', '==', reportedUid)
-      .get();
-    const receivedInterests = await db.collection('interests')
-      .where('fromUserId', '==', reportedUid)
-      .where('toUserId', '==', reporterUid)
-      .get();
-
-    const batch = db.batch();
-    for (const doc of [...sentInterests.docs, ...receivedInterests.docs]) {
-      batch.update(doc.ref, {
-        status: 'blocked',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    // Video-first redesign: instead of tearing down likes/matches/interests
+    // docs, decline the connections/{connectionId} doc between these two
+    // users (same sorted-id convention used by submitConnectionRequest /
+    // respondToConnection) and flag it reportedAt so
+    // expireConnectionRequests/cleanupRejectedIntroVideos-style jobs
+    // preserve the video as evidence until an admin resolves the report.
+    // Reporting can happen before any connection ever existed (e.g.
+    // reporting someone from their Discover profile before connecting) —
+    // in that case there's nothing to update, so just skip it.
+    const connectionId = [reporterUid, reportedUid].sort().join('_');
+    const connectionRef = db.collection('connections').doc(connectionId);
+    const connectionSnap = await connectionRef.get();
+    if (connectionSnap.exists) {
+      await connectionRef.update({
+        status: 'declined',
+        reportedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
 
-    // Delete likes (both directions)
-    batch.delete(db.collection('likes').doc(reporterUid).collection('likedUsers').doc(reportedUid));
-    batch.delete(db.collection('likes').doc(reportedUid).collection('likedUsers').doc(reporterUid));
-
-    // Delete match
-    const matchId = reporterUid < reportedUid ? `${reporterUid}_${reportedUid}` : `${reportedUid}_${reporterUid}`;
-    batch.delete(db.collection('matches').doc(matchId));
-
-    await batch.commit();
-
-    // Delete chat thread
-    const chatId = [reporterUid, reportedUid].sort().join('_');
-    const chatRef = db.collection('chats').doc(chatId);
+    // Delete chat thread (chatId shares the same sorted-id convention).
+    const chatRef = db.collection('chats').doc(connectionId);
     const msgs = await chatRef.collection('messages').get();
     const msgBatch = db.batch();
     for (const m of msgs.docs) {
@@ -2789,52 +2960,58 @@ async function processMatchEngagementNudges() {
   const db = admin.firestore();
   const nowMs = Date.now();
   const oneDayAgo = nowMs - 24 * 60 * 60 * 1000;
-  
-  // Find matches older than 24 hours where we haven't sent a nudge
-  const matchesSnap = await db.collection('matches')
-    .where('createdAt', '<=', admin.firestore.Timestamp.fromMillis(oneDayAgo))
+
+  // Video-first redesign: "matched more than 24h ago with no messages sent
+  // yet" is now expressed against connections/{status:'accepted'}, using
+  // resolvedAt (when the pairing actually became active) instead of the old
+  // matches doc's createdAt. Chat-idleness check is unchanged — it already
+  // keys off chats/{chatId}/messages, and chatId === connectionId by the
+  // shared id convention.
+  const connectionsSnap = await db.collection('connections')
+    .where('status', '==', 'accepted')
+    .where('resolvedAt', '<=', admin.firestore.Timestamp.fromMillis(oneDayAgo))
     .get();
 
   let nudgedCount = 0;
-  
-  for (const doc of matchesSnap.docs) {
-    const matchData = doc.data();
-    const matchId = doc.id;
-    
+
+  for (const doc of connectionsSnap.docs) {
+    const connectionData = doc.data();
+    const connectionId = doc.id;
+
     // Check if already nudged
-    if (matchData.nudgeSent) continue;
-    
+    if (connectionData.nudgeSent) continue;
+
     // Query chat messages to verify if the thread is truly idle (0 messages)
-    const messagesSnap = await db.collection('chats').doc(matchId).collection('messages').limit(1).get();
+    const messagesSnap = await db.collection('chats').doc(connectionId).collection('messages').limit(1).get();
     if (messagesSnap.empty) {
       // Chat is idle! Identify users
-      const userIds = matchData.userIds || matchId.split('_');
+      const userIds = [connectionData.senderId, connectionData.receiverId].filter(Boolean);
       if (userIds.length === 2) {
         const [uid1, uid2] = userIds;
-        
+
         // Retrieve FCM tokens for both users and send a push nudge
         for (const targetUid of [uid1, uid2]) {
           const userDoc = await db.collection('users').doc(targetUid).get();
           if (userDoc.exists) {
             const userData = userDoc.data();
             const fcmTokens = collectFcmTokens(userData);
-            
+
             if (fcmTokens.length > 0) {
               const otherUid = targetUid === uid1 ? uid2 : uid1;
               const otherDoc = await db.collection('users').doc(otherUid).get();
               const otherName = otherDoc.exists ? (otherDoc.data()?.name || otherDoc.data()?.firstName || 'Someone') : 'Someone';
-              
+
               const title = 'Yellow Alert! 💛';
               const body = `You matched with ${otherName}! Don't leave them waiting, send a message to say hello 👋`;
-              
-              const sendPromises = fcmTokens.map(token => 
+
+              const sendPromises = fcmTokens.map(token =>
                 admin.messaging().send({
                   token,
                   notification: { title, body },
                   data: {
                     click_action: 'FLUTTER_NOTIFICATION_CLICK',
                     type: 'chat',
-                    chatId: matchId,
+                    chatId: connectionId,
                     senderId: otherUid,
                     title,
                     body,
@@ -2852,30 +3029,37 @@ async function processMatchEngagementNudges() {
             }
           }
         }
-        
-        // Mark match as nudged
+
+        // Mark connection as nudged
         await doc.ref.update({
           nudgeSent: true,
           nudgedAt: admin.firestore.FieldValue.serverTimestamp()
         });
-        
+
         // Log nudge event
         await db.collection('engagement_nudges').add({
-          matchId,
+          connectionId,
           userIds,
           nudgedAt: admin.firestore.FieldValue.serverTimestamp()
         });
-        
+
         nudgedCount++;
       }
     }
   }
-  
+
   return { nudgedMatches: nudgedCount };
 }
 
 exports.nudgeMatchEngagement = onCall(async (request) => {
-  // Allow admins or users to invoke nudge checks
+  // Admin-only: the real recurring case is already covered by
+  // scheduledMatchEngagementNudge. This manual trigger was previously
+  // callable by anyone (no auth check at all) — locking it down to admins
+  // prevents unauthenticated notification-spam / cost amplification.
+  if (!isAdminAuth(request)) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  await enforceRateLimit(request.auth.uid, 'nudgeMatchEngagement', 5, 60 * 1000);
   return await processMatchEngagementNudges();
 });
 
@@ -2884,6 +3068,740 @@ exports.scheduledMatchEngagementNudge = onSchedule("0 18 * * *", async (event) =
   const result = await processMatchEngagementNudges();
   console.log(`[scheduledMatchEngagementNudge] Completed successfully. Nudged matches: ${result.nudgedMatches}`);
 });
+
+// ============================================================================
+// VIDEO-FIRST REDESIGN: CONNECT / TOPIC / VIDEO / ACCEPT
+// Stage 3 (cutover) complete — this is now the only connection path; the old
+// likes/matches/interests/journeys collections and their rules/functions
+// have been removed.
+// ============================================================================
+
+/**
+ * Daily Connects quota per tier. Not specified numerically anywhere in the
+ * redesign plan's cross-repo contract (only that a daily counter must exist
+ * and be enforced server-side) — chosen to mirror the free=1/trial=3 split
+ * already used for the legacy dailyInterests/trialInterestsTotal counters in
+ * lib/services/subscription_limits_service.dart. Premium = unlimited
+ * (never checked below). Revisit if product wants different numbers.
+ */
+const DAILY_CONNECTS_LIMIT = { free: 1, trial: 3 };
+
+/**
+ * Server-side port of UserService.isOnFreeTrial()/isPaidPremium()
+ * (lib/services/user_service.dart), close enough to bucket a user doc into
+ * 'free' | 'trial' | 'premium'. Needed because the daily-Connects quota (and
+ * the dailyAccepts/totalAccepts split on accept) must be enforced inside a
+ * Cloud Function — Firestore rules can't do time-windowed aggregation or
+ * read arbitrary Stripe-shaped fields for this kind of tiering.
+ */
+function computeUserTierServerSide(userData) {
+  if (!userData) return 'free';
+
+  const plan = (userData.subscriptionPlan || '').toString().toLowerCase();
+  const status = (userData.subscriptionStatus || '').toString().toLowerCase();
+
+  // In-app 7-day free trial (not a Stripe subscription).
+  let isOnFreeTrial = false;
+  if (plan === 'trial' && status === 'trialing') {
+    const endsAt = userData.freeTrialEndsAt;
+    if (endsAt && typeof endsAt.toDate === 'function') {
+      isOnFreeTrial = endsAt.toDate().getTime() > Date.now();
+    } else {
+      isOnFreeTrial = true;
+    }
+  }
+  if (isOnFreeTrial) return 'trial';
+
+  // Paid Stripe premium (excludes in-app free trial).
+  const statuses = [];
+  if (status) statuses.push(status);
+  const sub = userData.subscription;
+  if (sub && typeof sub === 'object') {
+    const nestedStatus = (sub.status || '').toString().toLowerCase();
+    if (nestedStatus) statuses.push(nestedStatus);
+  }
+  const hasStripeSub = !!(userData.stripeSubscriptionId || '').toString();
+  const hasPaidPlan = plan === 'premium' || plan === 'gold';
+  const hasStripePrice = !!(sub && typeof sub === 'object' && (sub.priceId || '').toString());
+
+  for (const s of statuses) {
+    if (s !== 'active' && s !== 'trialing') continue;
+    if (hasStripeSub || hasPaidPlan || hasStripePrice) return 'premium';
+  }
+  if (hasStripeSub && (status === 'active' || status === 'trialing')) return 'premium';
+
+  return 'free';
+}
+
+/**
+ * Lazily resets + enforces + stages an increment of dailyConnects on
+ * users/{uid}/meta/subscriptionUsage, inside an already-open transaction.
+ * Ports the *daily* reset shape of
+ * SubscriptionLimitsService._getOrResetUsage()'s dailySwipes handling (reset
+ * every 24h for every non-premium tier) rather than the *lifetime-total*
+ * shape used for dailyInterests/trialInterestsTotal — the redesign plan is
+ * explicit that Connects should "reset every 24h same way dailySwipes used
+ * to work", not accumulate as a trial-lifetime total.
+ *
+ * Deliberate deviation from the client's exact behavior: the Dart
+ * recordSwipe() bumps `lastResetAt` to now() on *every* recorded swipe (not
+ * only when the 24h window actually rolls over), which — if ported literally
+ * — would mean the daily window keeps sliding forward for an active user and
+ * effectively never resets. That reads as a pre-existing quirk in the
+ * client-only code, not an intentional design; since dailyConnects is a
+ * brand-new field with no other reader/writer, this port only updates
+ * `lastResetAt` when a reset actually fires, which is what "resets every
+ * 24h" requires to actually happen.
+ *
+ * Caller must have already read `usageSnap` via `transaction.get()` (all
+ * reads in a transaction must precede all writes) and must commit the
+ * transaction itself.
+ */
+function checkAndStageDailyConnectsIncrement(transaction, usageRef, usageSnap, tier) {
+  const data = usageSnap.exists ? (usageSnap.data() || {}) : {};
+  const lastReset = data.lastResetAt && typeof data.lastResetAt.toDate === 'function'
+    ? data.lastResetAt.toDate()
+    : new Date(0);
+  const hoursSince = (Date.now() - lastReset.getTime()) / (1000 * 60 * 60);
+  const shouldReset = !usageSnap.exists || hoursSince >= 24;
+
+  const currentDailyConnects = shouldReset ? 0 : ((typeof data.dailyConnects === 'number') ? data.dailyConnects : 0);
+
+  if (tier !== 'premium') {
+    const limit = DAILY_CONNECTS_LIMIT[tier] ?? DAILY_CONNECTS_LIMIT.free;
+    if (currentDailyConnects >= limit) {
+      throw new HttpsError(
+        'resource-exhausted',
+        `You've used all ${limit} Connects for today. Upgrade to Premium for unlimited Connects.`
+      );
+    }
+  }
+
+  const update = { dailyConnects: currentDailyConnects + 1 };
+  if (shouldReset) {
+    update.lastResetAt = admin.firestore.FieldValue.serverTimestamp();
+  }
+  transaction.set(usageRef, update, { merge: true });
+}
+
+/**
+ * Extracts the Storage object path from a Firebase download URL, a gs://
+ * URL, or an already-bare object path, and verifies it starts with
+ * `expectedPrefix`. Returns null (never throws) if the URL can't be
+ * resolved to a path under that prefix — this is what stops a client from
+ * passing an arbitrary/forged `videoUrl` into submitConnectionRequest;
+ * the caller still separately confirms the object actually exists in the
+ * bucket via bucket.file(path).exists().
+ */
+function extractStoragePathUnderPrefix(videoUrl, expectedPrefix) {
+  if (!videoUrl || typeof videoUrl !== 'string') return null;
+  try {
+    let path = null;
+    if (videoUrl.startsWith('gs://')) {
+      const withoutScheme = videoUrl.slice('gs://'.length);
+      const slashIdx = withoutScheme.indexOf('/');
+      path = slashIdx === -1 ? '' : withoutScheme.slice(slashIdx + 1);
+    } else if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+      const parsed = new URL(videoUrl);
+      // Firebase Storage download URLs encode the object path after '/o/'.
+      const match = parsed.pathname.match(/\/o\/(.+)$/);
+      if (match) path = decodeURIComponent(match[1]);
+    } else {
+      // Assume it's already a bare object path.
+      path = videoUrl;
+    }
+    if (!path || !path.startsWith(expectedPrefix)) return null;
+    return path;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * submitConnectionRequest({ receiverId, topic, videoUrl }) — onCall.
+ * Client uploads the response video to Storage first, then calls this. Not
+ * a direct client Firestore write: the daily-Connects quota can't be
+ * enforced by Firestore rules (no time-windowed aggregation in rules), so
+ * quota enforcement must happen here.
+ */
+exports.submitConnectionRequest = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+  const uid = request.auth.uid;
+
+  await enforceRateLimit(uid, 'submitConnectionRequest', 10, 3600 * 1000);
+
+  const { receiverId, topic, videoUrl, videoThumbnailUrl } = request.data || {};
+
+  if (!receiverId || typeof receiverId !== 'string') {
+    throw new HttpsError('invalid-argument', 'receiverId is required.');
+  }
+  if (receiverId === uid) {
+    throw new HttpsError('invalid-argument', 'Cannot connect with yourself.');
+  }
+  if (!topic || typeof topic !== 'string' || topic.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'topic is required.');
+  }
+  if (!videoUrl || typeof videoUrl !== 'string') {
+    throw new HttpsError('invalid-argument', 'videoUrl is required.');
+  }
+  if (videoThumbnailUrl !== undefined && videoThumbnailUrl !== null && videoThumbnailUrl !== '' &&
+      typeof videoThumbnailUrl !== 'string') {
+    throw new HttpsError('invalid-argument', 'videoThumbnailUrl must be a string.');
+  }
+
+  const db = admin.firestore();
+  const connectionId = [uid, receiverId].sort().join('_');
+  const trimmedTopic = topic.trim();
+
+  // videoUrl must point at this project's temp-connection-videos storage
+  // path for *this* connection — never trust a client-supplied arbitrary URL.
+  const expectedPrefix = `temp-connection-videos/${connectionId}/`;
+  const storagePath = extractStoragePathUnderPrefix(videoUrl, expectedPrefix);
+  if (!storagePath) {
+    throw new HttpsError('invalid-argument', 'videoUrl is not a valid connection video path.');
+  }
+
+  const bucket = admin.storage().bucket();
+  const [videoExists] = await bucket.file(storagePath).exists();
+  if (!videoExists) {
+    throw new HttpsError('failed-precondition', 'Video upload not found. Please try again.');
+  }
+
+  // Thumbnail is best-effort: client-side generation can fail, so an
+  // absent/empty videoThumbnailUrl is fine and never blocks the request.
+  // When present, it must resolve to a real object under this connection's
+  // own temp-connection-videos prefix, same trust model as videoUrl.
+  let resolvedThumbnailUrl = '';
+  if (typeof videoThumbnailUrl === 'string' && videoThumbnailUrl.trim().length > 0) {
+    const thumbnailStoragePath = extractStoragePathUnderPrefix(videoThumbnailUrl, expectedPrefix);
+    if (!thumbnailStoragePath) {
+      throw new HttpsError('invalid-argument', 'videoThumbnailUrl is not a valid connection video path.');
+    }
+    const [thumbnailExists] = await bucket.file(thumbnailStoragePath).exists();
+    if (!thumbnailExists) {
+      throw new HttpsError('failed-precondition', 'Thumbnail upload not found. Please try again.');
+    }
+    resolvedThumbnailUrl = videoThumbnailUrl;
+  }
+
+  const receiverRef = db.collection('users').doc(receiverId);
+  const senderRef = db.collection('users').doc(uid);
+  const connectionRef = db.collection('connections').doc(connectionId);
+  const usageRef = senderRef.collection('meta').doc('subscriptionUsage');
+  const notificationRef = db.collection('notifications').doc();
+
+  await db.runTransaction(async (transaction) => {
+    const [receiverSnap, senderSnap, connectionSnap, usageSnap] = await Promise.all([
+      transaction.get(receiverRef),
+      transaction.get(senderRef),
+      transaction.get(connectionRef),
+      transaction.get(usageRef),
+    ]);
+
+    if (!receiverSnap.exists) {
+      throw new HttpsError('not-found', 'Receiver not found.');
+    }
+    const receiverData = receiverSnap.data() || {};
+    if (receiverData.introVideoStatus !== 'approved') {
+      throw new HttpsError('failed-precondition', 'This user is not available to connect with right now.');
+    }
+
+    if (connectionSnap.exists) {
+      const existingStatus = connectionSnap.data()?.status;
+      if (existingStatus === 'pending' || existingStatus === 'accepted') {
+        throw new HttpsError('already-exists', 'A connection request already exists between you and this user.');
+      }
+    }
+
+    const senderData = senderSnap.exists ? senderSnap.data() : null;
+    const tier = computeUserTierServerSide(senderData);
+    checkAndStageDailyConnectsIncrement(transaction, usageRef, usageSnap, tier);
+
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(now.toMillis() + 72 * 60 * 60 * 1000);
+
+    // Full overwrite (not merge): if a prior declined/expired doc exists for
+    // this pair, this starts a clean new request lifecycle.
+    transaction.set(connectionRef, {
+      senderId: uid,
+      receiverId,
+      topic: trimmedTopic,
+      videoUrl,
+      videoThumbnailUrl: resolvedThumbnailUrl,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt,
+      resolvedAt: null,
+      reportedAt: null,
+    });
+
+    transaction.set(notificationRef, {
+      toUserId: receiverId,
+      fromUserId: uid,
+      title: 'New Connection Request',
+      message: `Someone sent you a Connect request on "${trimmedTopic}".`,
+      type: 'connection_request',
+      connectionId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return { success: true, connectionId };
+});
+
+/**
+ * respondToConnection({ connectionId, action: 'accept'|'decline' }) — onCall.
+ * Not a direct client write: accept must atomically create the chats doc AND
+ * delete the temp Storage video, and this project cannot use Storage
+ * triggers (see functions/index.js's original Eventarc/IAM note near the
+ * bottom of this file) to fan that out safely from a plain rules-gated
+ * client write. A defense-in-depth Firestore rule also exists on
+ * connections/{connectionId} as a backstop against a forged direct write,
+ * but this callable is the only supported path.
+ */
+exports.respondToConnection = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+  const uid = request.auth.uid;
+  const { connectionId, action } = request.data || {};
+
+  if (!connectionId || typeof connectionId !== 'string') {
+    throw new HttpsError('invalid-argument', 'connectionId is required.');
+  }
+  if (action !== 'accept' && action !== 'decline') {
+    throw new HttpsError('invalid-argument', "action must be 'accept' or 'decline'.");
+  }
+
+  const db = admin.firestore();
+  const connectionRef = db.collection('connections').doc(connectionId);
+  const chatRef = db.collection('chats').doc(connectionId);
+
+  let senderId = null;
+  let receiverId = null;
+
+  await db.runTransaction(async (transaction) => {
+    const connectionSnap = await transaction.get(connectionRef);
+    if (!connectionSnap.exists) {
+      throw new HttpsError('not-found', 'Connection not found.');
+    }
+    const data = connectionSnap.data();
+    senderId = data.senderId;
+    receiverId = data.receiverId;
+
+    if (uid !== receiverId) {
+      throw new HttpsError('permission-denied', 'Only the receiver can respond to this connection request.');
+    }
+    if (data.status !== 'pending') {
+      throw new HttpsError('failed-precondition', 'This connection request is no longer pending.');
+    }
+
+    if (action === 'accept') {
+      const receiverUserRef = db.collection('users').doc(receiverId);
+      const [chatSnap, receiverUserSnap] = await Promise.all([
+        transaction.get(chatRef),
+        transaction.get(receiverUserRef),
+      ]);
+
+      transaction.update(connectionRef, {
+        status: 'accepted',
+        resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Create the chat doc only if one doesn't already exist (mirrors
+      // ChatService.ensureChatThread()'s field shape, lib/services/chat_service.dart).
+      if (!chatSnap.exists) {
+        transaction.set(chatRef, {
+          id: connectionId,
+          participants: [senderId, receiverId],
+          lastMessage: '',
+          lastMessageSenderId: senderId,
+          lastMessageAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+
+      // Mirrors SubscriptionLimitsService.recordAccept(): trial accumulates a
+      // lifetime total, free/other tiers use a daily counter, premium is
+      // exempt entirely.
+      const receiverTier = computeUserTierServerSide(receiverUserSnap.exists ? receiverUserSnap.data() : null);
+      if (receiverTier !== 'premium') {
+        const usageRef = receiverUserRef.collection('meta').doc('subscriptionUsage');
+        const field = receiverTier === 'trial' ? 'totalAccepts' : 'dailyAccepts';
+        transaction.set(usageRef, { [field]: admin.firestore.FieldValue.increment(1) }, { merge: true });
+      }
+    } else {
+      transaction.update(connectionRef, {
+        status: 'declined',
+        resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  });
+
+  // Storage cleanup happens after the transaction commits (best-effort,
+  // logged-not-thrown — mirrors hardDeleteExpiredAccounts' resilience style)
+  // for both accept and decline: the temp video is never needed again once
+  // the request is resolved either way.
+  try {
+    const bucket = admin.storage().bucket();
+    const [files] = await bucket.getFiles({ prefix: `temp-connection-videos/${connectionId}/` });
+    if (files.length > 0) {
+      await Promise.all(files.map((f) => f.delete().catch((e) =>
+        console.warn(`[respondToConnection] Could not delete file ${f.name}: ${e.message}`)
+      )));
+    }
+  } catch (err) {
+    console.error(`[respondToConnection] Storage cleanup error for ${connectionId}: ${err.message}`);
+  }
+
+  // Notify the sender on accept only — decline is silent by design.
+  if (action === 'accept') {
+    try {
+      await db.collection('notifications').add({
+        toUserId: senderId,
+        fromUserId: receiverId,
+        title: 'Connection Accepted',
+        message: 'Your Connect request was accepted! Start chatting now.',
+        type: 'connection_accepted',
+        connectionId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      console.error(`[respondToConnection] Notification error for ${connectionId}: ${err.message}`);
+    }
+  }
+
+  return { success: true, action };
+});
+
+/**
+ * disconnectConnection({ connectionId }) — onCall.
+ * Unmatch for an already-ACCEPTED connection. Unlike respondToConnection's
+ * accept/decline (receiver-only, pending-only), this is caller-agnostic:
+ * either participant (sender or receiver) may end an active connection.
+ * Sets status back to 'declined' rather than inventing a new terminal
+ * status — 'declined' already means "not an active connection" everywhere
+ * else (e.g. the Discover exclusion filter only excludes pending/accepted),
+ * so this is exactly the desired "both parties reappear in Discover" effect.
+ * Does NOT touch chats/{connectionId} or its messages: this is an unmatch,
+ * not a data-deletion request, and the two people may still want their chat
+ * history. A fresh submitConnectionRequest is required to reconnect, which
+ * is expected — chats/create's rule requires status == 'accepted'.
+ */
+exports.disconnectConnection = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+  const uid = request.auth.uid;
+  const { connectionId } = request.data || {};
+
+  if (!connectionId || typeof connectionId !== 'string') {
+    throw new HttpsError('invalid-argument', 'connectionId is required.');
+  }
+
+  const db = admin.firestore();
+  const connectionRef = db.collection('connections').doc(connectionId);
+
+  let senderId = null;
+  let receiverId = null;
+  let otherUserId = null;
+
+  await db.runTransaction(async (transaction) => {
+    const connectionSnap = await transaction.get(connectionRef);
+    if (!connectionSnap.exists) {
+      throw new HttpsError('not-found', 'Connection not found.');
+    }
+    const data = connectionSnap.data();
+    senderId = data.senderId;
+    receiverId = data.receiverId;
+
+    if (uid !== senderId && uid !== receiverId) {
+      throw new HttpsError('permission-denied', 'You are not a participant in this connection.');
+    }
+    if (data.status !== 'accepted') {
+      throw new HttpsError('failed-precondition', 'Only an active (accepted) connection can be disconnected.');
+    }
+
+    otherUserId = uid === senderId ? receiverId : senderId;
+
+    transaction.update(connectionRef, {
+      status: 'declined',
+      resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  console.log(`[disconnectConnection] uid=${uid} disconnected connectionId=${connectionId}`);
+
+  // Notify the other participant — unlike respondToConnection's silent
+  // decline (which fires before the two people ever chatted), this ends an
+  // established connection the other side has been actively using, so they
+  // should be told why it disappeared rather than finding out silently.
+  try {
+    await db.collection('notifications').add({
+      toUserId: otherUserId,
+      fromUserId: uid,
+      title: 'Connection Ended',
+      message: 'A connection has ended.',
+      type: 'connection_ended',
+      connectionId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error(`[disconnectConnection] Notification error for ${connectionId}: ${err.message}`);
+  }
+
+  return { success: true };
+});
+
+/**
+ * reportConnectionVideo({ connectionId, reason, category }) — onCall.
+ * Distinct from submitReport because the calling context (reporting before
+ * ever chatting) differs from the existing chat-report flow, but shares its
+ * priority-assignment helper (assignReportPriority) and category labels
+ * (REPORT_CATEGORY_LABELS) so moderation triage stays consistent.
+ */
+exports.reportConnectionVideo = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Must be signed in.');
+  }
+  const reporterUid = request.auth.uid;
+
+  await enforceRateLimit(reporterUid, 'reportConnectionVideo', 5, 3600 * 1000);
+
+  const { connectionId, reason, category } = request.data || {};
+  if (!connectionId || typeof connectionId !== 'string') {
+    throw new HttpsError('invalid-argument', 'connectionId is required.');
+  }
+  if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'Reason is required.');
+  }
+  if (reason.length > 500) {
+    throw new HttpsError('invalid-argument', 'Reason too long (max 500 characters).');
+  }
+
+  const db = admin.firestore();
+  const connectionRef = db.collection('connections').doc(connectionId);
+  const connectionSnap = await connectionRef.get();
+  if (!connectionSnap.exists) {
+    throw new HttpsError('not-found', 'Connection not found.');
+  }
+  const data = connectionSnap.data();
+  if (reporterUid !== data.senderId && reporterUid !== data.receiverId) {
+    throw new HttpsError('permission-denied', 'You are not a participant in this connection.');
+  }
+  // Never trust a client-supplied target — derive it from the connection doc.
+  const reportedUid = reporterUid === data.senderId ? data.receiverId : data.senderId;
+
+  const priority = assignReportPriority(reason, category);
+  const cat = (category || '').toLowerCase().trim();
+
+  await db.collection('reports').add({
+    reportedUid,
+    reportedBy: reporterUid,
+    reason: reason.trim(),
+    category: cat || null,
+    categoryLabel: REPORT_CATEGORY_LABELS[cat] || null,
+    priority,
+    reportedAt: admin.firestore.FieldValue.serverTimestamp(),
+    isReported: true,
+    status: 'Open',
+    contentType: 'video',
+    connectionId,
+    videoUrl: data.videoUrl || null,
+  });
+
+  // Blocks the cleanup job from deleting the video until an admin resolves
+  // the report (see expireConnectionRequests below).
+  await connectionRef.update({
+    reportedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+
+  return { success: true };
+});
+
+/**
+ * expireConnectionRequests — runs every 30 minutes.
+ * Template: hardDeleteExpiredAccounts (per-doc try/catch resilience, above).
+ * Sweeps connections stuck in 'pending' past their 72h expiresAt window,
+ * freeing the temp Storage video and flipping status to 'expired' — never
+ * hard-deleted, which keeps an audit trail and lets
+ * submitConnectionRequest's duplicate-check correctly allow a fresh request
+ * after expiry.
+ */
+exports.expireConnectionRequests = onSchedule(
+  { schedule: 'every 30 minutes' },
+  async (_event) => {
+    const db = admin.firestore();
+    const now = admin.firestore.Timestamp.now();
+
+    console.log('[expireConnectionRequests] Starting run at', new Date().toISOString());
+
+    // Firestore can't cleanly combine this range filter (expiresAt<=now)
+    // with an equality-null filter (reportedAt==null) in one query here, so
+    // reportedAt is filtered in-memory after the range query instead.
+    const snapshot = await db
+      .collection('connections')
+      .where('status', '==', 'pending')
+      .where('expiresAt', '<=', now)
+      .limit(200)
+      .get();
+
+    if (snapshot.empty) {
+      console.log('[expireConnectionRequests] No expired pending connections found.');
+      return;
+    }
+
+    const candidates = snapshot.docs.filter((doc) => !doc.data().reportedAt);
+    console.log(`[expireConnectionRequests] Found ${snapshot.size} expired, ${candidates.length} eligible (not reported).`);
+
+    for (const doc of candidates) {
+      const connectionId = doc.id;
+      try {
+        // Re-check status is still 'pending' to avoid a race with a
+        // concurrent respondToConnection call that may have just
+        // accepted/declined it since the query ran.
+        const freshSnap = await doc.ref.get();
+        if (!freshSnap.exists || freshSnap.data().status !== 'pending') {
+          console.log(`[expireConnectionRequests] Skipping ${connectionId}: no longer pending.`);
+          continue;
+        }
+
+        const bucket = admin.storage().bucket();
+        const [files] = await bucket.getFiles({ prefix: `temp-connection-videos/${connectionId}/` });
+        if (files.length > 0) {
+          await Promise.all(files.map((f) => f.delete().catch((e) =>
+            console.warn(`[expireConnectionRequests] Could not delete file ${f.name}: ${e.message}`)
+          )));
+          console.log(`[expireConnectionRequests] Deleted ${files.length} storage file(s) for ${connectionId}`);
+        }
+
+        await doc.ref.update({
+          status: 'expired',
+          resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        console.log(`[expireConnectionRequests] Expired connection ${connectionId}`);
+      } catch (err) {
+        console.error(`[expireConnectionRequests] Failed for ${connectionId}: ${err.message}`);
+        // Continue processing remaining connections
+      }
+    }
+
+    console.log('[expireConnectionRequests] Run complete.');
+  }
+);
+
+/**
+ * cleanupRejectedIntroVideos — runs daily at 04:00 UTC.
+ * Reclaims Storage for intro videos rejected 7+ days ago (gives the user a
+ * window to see the rejection and re-upload before the file is reclaimed).
+ * introVideoStatus itself is left untouched here ('rejected' stays
+ * 'rejected') — only the Storage object is deleted. This replaces the
+ * originally-considered adminRejectIntroVideo callable, keeping admin-web's
+ * "always a direct Firestore write, never a callable, no Storage SDK"
+ * convention fully intact.
+ */
+exports.cleanupRejectedIntroVideos = onSchedule(
+  { schedule: '0 4 * * *', timeZone: 'UTC' },
+  async (_event) => {
+    const db = admin.firestore();
+    const sevenDaysAgo = admin.firestore.Timestamp.fromMillis(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    console.log('[cleanupRejectedIntroVideos] Starting run at', new Date().toISOString());
+
+    const snapshot = await db
+      .collection('users')
+      .where('introVideoStatus', '==', 'rejected')
+      .where('introVideoStatusUpdatedAt', '<=', sevenDaysAgo)
+      .limit(200)
+      .get();
+
+    if (snapshot.empty) {
+      console.log('[cleanupRejectedIntroVideos] No rejected intro videos old enough to clean up.');
+      return;
+    }
+
+    console.log(`[cleanupRejectedIntroVideos] Found ${snapshot.size} user(s) to clean up.`);
+
+    for (const doc of snapshot.docs) {
+      const uid = doc.id;
+      try {
+        const bucket = admin.storage().bucket();
+        const [files] = await bucket.getFiles({ prefix: `intro-videos/${uid}/` });
+        if (files.length > 0) {
+          await Promise.all(files.map((f) => f.delete().catch((e) =>
+            console.warn(`[cleanupRejectedIntroVideos] Could not delete file ${f.name}: ${e.message}`)
+          )));
+          console.log(`[cleanupRejectedIntroVideos] Deleted ${files.length} storage file(s) for uid=${uid}`);
+        }
+      } catch (err) {
+        console.error(`[cleanupRejectedIntroVideos] Failed for uid=${uid}: ${err.message}`);
+        // Continue processing remaining users
+      }
+    }
+
+    console.log('[cleanupRejectedIntroVideos] Run complete.');
+  }
+);
+
+/**
+ * onIntroVideoStatusChanged — reactive trigger on users/{uid} update.
+ * Follows the same before/after-diff v2 trigger style as onUserSoftDeleted
+ * above. Fires a notification whenever introVideoStatus changes value
+ * (covers admin-web's direct updateDoc writes without requiring admin-web to
+ * also create a notification), and is the sole writer of
+ * introVideoStatusUpdatedAt so that field reliably reflects "when did status
+ * last change" for cleanupRejectedIntroVideos, regardless of who changed the
+ * status. (Re-triggering on its own introVideoStatusUpdatedAt-only write is
+ * a no-op: the early-return check below only compares introVideoStatus.)
+ */
+exports.onIntroVideoStatusChanged = onDocumentUpdated('users/{uid}', async (event) => {
+  const before = event.data.before.data() || {};
+  const after = event.data.after.data() || {};
+  const uid = event.params.uid;
+
+  if (before.introVideoStatus === after.introVideoStatus) {
+    return;
+  }
+
+  try {
+    await event.data.after.ref.update({
+      introVideoStatusUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error(`[onIntroVideoStatusChanged] Failed to stamp introVideoStatusUpdatedAt for ${uid}: ${err.message}`);
+  }
+
+  const status = after.introVideoStatus;
+  if (status !== 'approved' && status !== 'rejected') {
+    return;
+  }
+
+  const title = status === 'approved' ? 'Intro Video Approved' : 'Intro Video Needs Attention';
+  const message = status === 'approved'
+    ? 'Your intro video was approved! You are now visible in Discover.'
+    : (after.introVideoRejectionReason
+        ? `Your intro video was not approved: ${after.introVideoRejectionReason}`
+        : 'Your intro video was not approved. Please review and re-upload.');
+
+  try {
+    await admin.firestore().collection('notifications').add({
+      toUserId: uid,
+      fromUserId: 'system',
+      title,
+      message,
+      type: status === 'approved' ? 'intro_video_approved' : 'intro_video_rejected',
+      introVideoRejectionReason: status === 'rejected' ? (after.introVideoRejectionReason || null) : null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error(`[onIntroVideoStatusChanged] Failed to create notification for ${uid}: ${err.message}`);
+  }
+});
+
+// ─── Swan AI (Groq dev / OpenAI prod) ───────────────────────────────────────
+const swanAi = require('./swan_ai');
+exports.generateCompatibilityNarrative = swanAi.generateCompatibilityNarrative;
 
 // ============================================================================
 // STEP 16: SERVERLESS IMAGE THUMBNAIL GENERATION (REMOVED TO BYPASS IAM BLOCKS)

@@ -73,10 +73,22 @@ class UserModel {
 	final bool showProfileToEveryone;
 	final bool showPhotosToEveryone;
 	final int onboardingStep;
+	final Map<String, dynamic>? marriageProfile;
+	final List<String> dealbreakers;
 	final bool isDeleted;
 	final String status;
 	final DateTime? deletedAt;
 	final DateTime? scheduledHardDeleteAt;
+
+	// ─── Video-First Redesign Fields ───────────────────────────────────────
+	final String introVideoUrl;
+	final String introVideoThumbnailUrl;
+	final String introVideoStatus; // '' | 'pending' | 'approved' | 'rejected'
+	final String? introVideoRejectionReason;
+	final DateTime? introVideoSubmittedAt;
+	final List<String> skills; // parallel to `interests`
+	final String datingIntention; // flat mirror of marriageProfile.intent.lookingFor
+	final Map<String, dynamic>? datingPreferences; // flat mirror of marriageProfile.partnerPreferences
 
 	final DateTime createdAt;
 	final DateTime updatedAt;
@@ -153,10 +165,20 @@ class UserModel {
 		this.showProfileToEveryone = true,
 		this.showPhotosToEveryone = true,
 		this.onboardingStep = 0,
+		this.marriageProfile,
+		this.dealbreakers = const [],
 		this.isDeleted = false,
 		this.status = '',
 		this.deletedAt,
 		this.scheduledHardDeleteAt,
+		this.introVideoUrl = '',
+		this.introVideoThumbnailUrl = '',
+		this.introVideoStatus = '',
+		this.introVideoRejectionReason,
+		this.introVideoSubmittedAt,
+		this.skills = const [],
+		this.datingIntention = '',
+		this.datingPreferences,
 		required this.createdAt,
 		required this.updatedAt,
 	});
@@ -237,10 +259,20 @@ class UserModel {
 		bool? showProfileToEveryone,
 		bool? showPhotosToEveryone,
 		int? onboardingStep,
+		Map<String, dynamic>? marriageProfile,
+		List<String>? dealbreakers,
 		bool? isDeleted,
 		String? status,
 		DateTime? deletedAt,
 		DateTime? scheduledHardDeleteAt,
+		String? introVideoUrl,
+		String? introVideoThumbnailUrl,
+		String? introVideoStatus,
+		String? introVideoRejectionReason,
+		DateTime? introVideoSubmittedAt,
+		List<String>? skills,
+		String? datingIntention,
+		Map<String, dynamic>? datingPreferences,
 		DateTime? createdAt,
 		DateTime? updatedAt,
 	}) {
@@ -317,10 +349,20 @@ class UserModel {
 			showPhotosToEveryone:
 					showPhotosToEveryone ?? this.showPhotosToEveryone,
 			onboardingStep: onboardingStep ?? this.onboardingStep,
+			marriageProfile: marriageProfile ?? this.marriageProfile,
+			dealbreakers: dealbreakers ?? this.dealbreakers,
 			isDeleted: isDeleted ?? this.isDeleted,
 			status: status ?? this.status,
 			deletedAt: deletedAt ?? this.deletedAt,
 			scheduledHardDeleteAt: scheduledHardDeleteAt ?? this.scheduledHardDeleteAt,
+			introVideoUrl: introVideoUrl ?? this.introVideoUrl,
+			introVideoThumbnailUrl: introVideoThumbnailUrl ?? this.introVideoThumbnailUrl,
+			introVideoStatus: introVideoStatus ?? this.introVideoStatus,
+			introVideoRejectionReason: introVideoRejectionReason ?? this.introVideoRejectionReason,
+			introVideoSubmittedAt: introVideoSubmittedAt ?? this.introVideoSubmittedAt,
+			skills: skills ?? this.skills,
+			datingIntention: datingIntention ?? this.datingIntention,
+			datingPreferences: datingPreferences ?? this.datingPreferences,
 			createdAt: createdAt ?? this.createdAt,
 			updatedAt: updatedAt ?? this.updatedAt,
 		);
@@ -402,10 +444,23 @@ class UserModel {
 			'showProfileToEveryone': showProfileToEveryone,
 			'showPhotosToEveryone': showPhotosToEveryone,
 			'onboardingStep': onboardingStep,
+			'marriageProfile': marriageProfile,
+			'dealbreakers': dealbreakers,
 			'isDeleted': isDeleted,
 			'status': status,
 			'deletedAt': deletedAt == null ? null : Timestamp.fromDate(deletedAt!),
 			'scheduledHardDeleteAt': scheduledHardDeleteAt == null ? null : Timestamp.fromDate(scheduledHardDeleteAt!),
+			// Video-first redesign fields
+			'introVideoUrl': introVideoUrl,
+			'introVideoThumbnailUrl': introVideoThumbnailUrl,
+			'introVideoStatus': introVideoStatus,
+			'introVideoRejectionReason': introVideoRejectionReason,
+			'introVideoSubmittedAt': introVideoSubmittedAt == null
+					? null
+					: Timestamp.fromDate(introVideoSubmittedAt!),
+			'skills': skills,
+			'datingIntention': datingIntention,
+			'datingPreferences': datingPreferences,
 			'createdAt': Timestamp.fromDate(createdAt),
 			'updatedAt': Timestamp.fromDate(updatedAt),
 		};
@@ -563,10 +618,25 @@ class UserModel {
 			showProfileToEveryone: map['showProfileToEveryone'] != false,
 			showPhotosToEveryone: map['showPhotosToEveryone'] != false,
 			onboardingStep: toInt(map['onboardingStep']),
+			marriageProfile: map['marriageProfile'] as Map<String, dynamic>?,
+			dealbreakers: ((map['dealbreakers'] ?? <dynamic>[]) as List<dynamic>)
+					.map((item) => item.toString())
+					.toList(),
 			isDeleted: parseBool(map['isDeleted']),
 			status: (map['status'] ?? '') as String,
 			deletedAt: readDate(map['deletedAt']),
 			scheduledHardDeleteAt: readDate(map['scheduledHardDeleteAt']),
+			// Video-first redesign fields
+			introVideoUrl: (map['introVideoUrl'] ?? '') as String,
+			introVideoThumbnailUrl: (map['introVideoThumbnailUrl'] ?? '') as String,
+			introVideoStatus: (map['introVideoStatus'] ?? '') as String,
+			introVideoRejectionReason: map['introVideoRejectionReason'] as String?,
+			introVideoSubmittedAt: readDate(map['introVideoSubmittedAt']),
+			skills: ((map['skills'] ?? <dynamic>[]) as List<dynamic>)
+					.map((item) => item.toString())
+					.toList(),
+			datingIntention: (map['datingIntention'] ?? '') as String,
+			datingPreferences: map['datingPreferences'] as Map<String, dynamic>?,
 			createdAt: readDate(map['createdAt']) ?? DateTime.now(),
 			updatedAt: readDate(map['updatedAt']) ?? DateTime.now(),
 		);

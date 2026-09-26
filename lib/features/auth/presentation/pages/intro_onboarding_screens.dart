@@ -225,7 +225,7 @@ class _IntroOnboardingScreensState extends State<IntroOnboardingScreens> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Not Dating.\nIntentional\nConnection.',
+                'Meaningful\nConnections.\nMarriage-Focused.',
                 style: GoogleFonts.playfairDisplay(
                   color: Colors.white,
                   fontSize: 36,
@@ -324,7 +324,7 @@ class _IntroOnboardingScreensState extends State<IntroOnboardingScreens> {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Text(
-                'Compatibility\nFirst',
+                'Know Before\nYou Connect',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.playfairDisplay(
                   color: Colors.white,
@@ -335,7 +335,7 @@ class _IntroOnboardingScreensState extends State<IntroOnboardingScreens> {
               ),
               const SizedBox(height: 16),
               Text(
-                'Values. Vision.\nLifestyle.',
+                'Discover shared values,\ngoals, and lifestyle.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(
                   color: Colors.white.withOpacity(0.7),

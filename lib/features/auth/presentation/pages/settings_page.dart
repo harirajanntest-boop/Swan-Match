@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,12 +7,14 @@ import '../../../../core/constants/colors.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'custom_login_page.dart';
 import 'blocked_profiles_page.dart';
 import 'ignored_profiles_page.dart';
 import 'saved_profiles_page.dart';
 import 'help_support_page.dart';
+import 'set_my_topic_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
   final bool scrollToSecurity;
@@ -461,8 +464,96 @@ class _SettingsPageState extends State<SettingsPage>
     }
   }
 
+  Future<void> _linkApple() async {
+    try {
+      await AuthService.instance.linkWithApple();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Apple account linked successfully!')),
+      );
+      setState(() {});
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (!mounted) return;
+      if (e.code == AuthorizationErrorCode.canceled) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Apple linking could not be completed (${e.code.name}). Please try again.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      final errorMsg = e.toString();
+      if (errorMsg.contains('Email mismatch') ||
+          errorMsg.contains('already linked') ||
+          errorMsg.contains('already used')) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.onyx,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+              side: BorderSide(color: Colors.redAccent.withOpacity(0.3)),
+            ),
+            title: const Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.redAccent, size: 28),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Apple Account Issue',
+                    style: TextStyle(color: Colors.white, fontSize: 17),
+                  ),
+                ),
+              ],
+            ),
+            content: Text(
+              errorMsg.replaceFirst('Exception: ', ''),
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.8),
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'OK',
+                  style: TextStyle(
+                    color: AppColors.goldMedium,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(AuthService.instance.readableAuthError(e))),
+        );
+      }
+    }
+  }
+
   Future<void> _linkEmailDialog() async {
-    final emailController = TextEditingController();
+    final registeredEmail = await AuthService.instance.getRegisteredEmail();
+    if (!mounted) return;
+
+    if (registeredEmail.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No registered email found on your profile. Update your email in Edit Profile first.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final emailController = TextEditingController(text: registeredEmail);
     final passwordController = TextEditingController();
     bool isLoading = false;
 
@@ -480,11 +571,25 @@ class _SettingsPageState extends State<SettingsPage>
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                Text(
+                  'Use the same email you registered with. Create a password for this account.',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 16),
                 TextField(
                   controller: emailController,
-                  style: const TextStyle(color: Colors.white),
+                  readOnly: true,
+                  enableInteractiveSelection: false,
+                  style: const TextStyle(color: Colors.white70),
                   decoration: InputDecoration(
-                    hintText: 'Email',
+                    labelText: 'Registered email',
+                    labelStyle: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                    ),
                     hintStyle: TextStyle(
                       color: Colors.white.withValues(alpha: 0.3),
                     ),
@@ -501,7 +606,7 @@ class _SettingsPageState extends State<SettingsPage>
                 const SizedBox(height: 12),
                 _PasswordTextField(
                   controller: passwordController,
-                  hint: 'Password',
+                  hint: 'Create password',
                 ),
               ],
             ),
@@ -520,6 +625,16 @@ class _SettingsPageState extends State<SettingsPage>
                         final email = emailController.text.trim();
                         final pass = passwordController.text;
                         if (email.isEmpty || pass.isEmpty) return;
+                        if (pass.length < 6) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Password must be at least 6 characters.',
+                              ),
+                            ),
+                          );
+                          return;
+                        }
 
                         setDialogState(() => isLoading = true);
                         try {
@@ -537,13 +652,24 @@ class _SettingsPageState extends State<SettingsPage>
                           setState(() {});
                         } catch (e) {
                           if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  AuthService.instance.readableAuthError(e),
+                            final errorMsg = e.toString();
+                            if (errorMsg.contains('Email mismatch')) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    errorMsg.replaceFirst('Exception: ', ''),
+                                  ),
                                 ),
-                              ),
-                            );
+                              );
+                            } else {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    AuthService.instance.readableAuthError(e),
+                                  ),
+                                ),
+                              );
+                            }
                           }
                         } finally {
                           setDialogState(() => isLoading = false);
@@ -710,6 +836,20 @@ class _SettingsPageState extends State<SettingsPage>
                                 ),
                               ),
                             ),
+                            StreamBuilder<Map<String, dynamic>?>(
+                              stream: UserService.instance.watchCurrentUserProfile(),
+                              builder: (context, snapshot) {
+                                final topic =
+                                    (snapshot.data?['myTopic'] ?? '').toString().trim();
+                                return _SettingsActionRow(
+                                  label: "My Connect Topic",
+                                  subtitle: topic.isNotEmpty
+                                      ? topic
+                                      : "Not set — tap to add the question others answer to connect with you",
+                                  onTap: () => SetMyTopicDialog.show(context),
+                                );
+                              },
+                            ),
                           ],
                         ),
 
@@ -719,11 +859,30 @@ class _SettingsPageState extends State<SettingsPage>
                           title: "Account Security",
                           icon: Icons.security_outlined,
                           children: [
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                              child: Text(
+                                Platform.isIOS
+                                    ? 'Link Google, Apple, and Email with the same registered email address so you can sign in with any of them.'
+                                    : 'Link Google and Email with the same registered email address.',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.45),
+                                  fontSize: 12,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
                             _buildLinkingRow(
                               label: "Google Account",
                               providerId: "google.com",
                               onLink: _linkGoogle,
                             ),
+                            if (Platform.isIOS)
+                              _buildLinkingRow(
+                                label: "Apple Account",
+                                providerId: "apple.com",
+                                onLink: _linkApple,
+                              ),
                             _buildLinkingRow(
                               label: "Email & Password",
                               providerId: "password",

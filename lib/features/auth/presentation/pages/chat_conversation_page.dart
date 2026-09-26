@@ -59,6 +59,8 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     ChatPresenceService.instance.enterChat(widget.otherUserId);
     _scrollController.addListener(_scrollListener);
     _loadMessageStream();
+    // Mark any already-received messages as seen on open (read receipts).
+    ChatService.instance.markMessagesSeen(widget.otherUserId);
     // Real-time presence (isOnline field in the user doc)
     _presenceStream = FirebaseFirestore.instance
         .collection('users')
@@ -721,6 +723,16 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                     // Don't show a spinner — use whatever data we have.
                     final messages = snapshot.data ?? const <MessageModel>[];
 
+                    // Read receipts: if new messages from the other user arrived
+                    // while this chat is open, mark them seen (→ sender sees the
+                    // double tick). markMessagesSeen() no-ops if nothing's unseen.
+                    if (messages.any(
+                        (m) => m.senderId == widget.otherUserId && !m.seen)) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        ChatService.instance.markMessagesSeen(widget.otherUserId);
+                      });
+                    }
+
                     if (messages.isEmpty &&
                         snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(
@@ -1001,6 +1013,7 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
       ),
     );
   }
+
 }
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
@@ -1073,15 +1086,20 @@ class _MessageBubble extends StatelessWidget {
                       ),
                       if (isMe) ...[
                         const SizedBox(width: 4),
-                        // Clock = pending; double-tick = delivered
+                        // Clock = sending; single tick = delivered (not yet
+                        // seen); blue double tick = seen by the recipient.
                         Icon(
                           msg.hasPendingWrites
                               ? Icons.access_time_rounded
-                              : Icons.done_all_rounded,
+                              : (msg.seen
+                                  ? Icons.done_all_rounded
+                                  : Icons.done_rounded),
                           size: 12,
                           color: msg.hasPendingWrites
                               ? AppColors.obsidian.withValues(alpha: 0.4)
-                              : AppColors.obsidian.withValues(alpha: 0.8),
+                              : (msg.seen
+                                  ? const Color(0xFF34B7F1)
+                                  : AppColors.obsidian.withValues(alpha: 0.8)),
                         ),
                       ],
                     ],

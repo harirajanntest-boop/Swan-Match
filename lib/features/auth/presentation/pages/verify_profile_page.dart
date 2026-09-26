@@ -80,6 +80,7 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
       final photo = await _picker.pickImage(
         source: ImageSource.camera,
         imageQuality: 80,
+        maxWidth: 1280,
         preferredCameraDevice: CameraDevice.front,
       );
       if (photo != null && mounted) {
@@ -94,6 +95,7 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
       final image = await _picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 85,
+        maxWidth: 1280,
       );
       if (image != null && mounted) {
         setState(() => _idFile = File(image.path));
@@ -140,7 +142,9 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
         'verificationSubmittedAt': FieldValue.serverTimestamp(),
         'verificationStatus': 'pending',
         'profileApprovalStatus': 'pending',
-        'isVerified': false,
+        // isVerified is admin-only (firestore.rules blocks client writes to
+        // it unconditionally) — clearing it on resubmission must happen via
+        // the admin backend when it reviews the new submission, not here.
         'idVerified': false,
         'profileVerified': false,
         'reuplaoded': false,

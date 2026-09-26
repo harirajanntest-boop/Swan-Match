@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
 
 // ─── Shared Colors ──────────────────────────────────────────────────────────
+// Aligned with AppColors (core/constants/colors.dart) — muted warm gold palette
 class OnboardingColors {
-  static const Color background = Color(0xFF0D0D0D);
-  static const Color primaryGold = Color(0xFFD4A017);
-  static const Color goldDark = Color(0xFFC8960C);
+  static const Color background = Color(0xFF080808);   // AppColors.obsidian
+  static const Color primaryGold = Color(0xFFc6a85c);  // AppColors.goldMedium
+  static const Color goldDark = Color(0xFFa08840);     // AppColors.goldDark
+  static const Color goldLight = Color(0xFFdec47e);    // AppColors.goldLight
   static const Color textPrimary = Color(0xFFFFFFFF);
   static const Color textSecondary = Color(0x8AFFFFFF);
-  static const Color inputUnderline = Color(0xFFD4A017);
-  static const Color selectedBorder = Color(0xFFD4A017);
+  static const Color inputUnderline = Color(0xFFc6a85c);
+  static const Color selectedBorder = Color(0xFFc6a85c);
   static const Color unselectedBorder = Color(0x3DFFFFFF);
-  static const Color cardBackground = Color(0xFF1A1A1A);
+  static const Color cardBackground = Color(0xFF151515); // AppColors.onyx
   static const Color fieldBackground = Color(0xFF1E1E1E);
   static const Color disabledButton = Color(0x1FFFFFFF);
   static const Color skipButton = Color(0x61FFFFFF);
@@ -39,7 +41,7 @@ class NextButton extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: enabled
             ? const LinearGradient(
-                colors: [OnboardingColors.goldDark, OnboardingColors.primaryGold],
+                colors: [OnboardingColors.goldDark, OnboardingColors.primaryGold, OnboardingColors.goldLight],
               )
             : null,
         color: enabled ? null : OnboardingColors.disabledButton,

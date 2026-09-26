@@ -72,18 +72,13 @@ class StripeService {
   /// True after [ensurePriceIdsLoaded] succeeds.
   static bool get arePriceIdsLoaded => _priceIdsLoaded;
 
-  static String get premiumMonthlyPriceId => _requirePriceId(_premiumMonthlyPriceId);
-  static String get premium6MonthPriceId => _requirePriceId(_premium6MonthPriceId);
-  static String get premium1YearPriceId => _requirePriceId(_premium1YearPriceId);
-
-  static String _requirePriceId(String id) {
-    if (!_priceIdsLoaded || id.isEmpty) {
-      throw StateError(
-        'Stripe price IDs not loaded. Call StripeService.ensurePriceIdsLoaded() first.',
-      );
-    }
-    return id;
-  }
+  // NOTE: Stripe is replaced by native in-app purchase. These getters are now
+  // only read in harmless comparisons (e.g. _isPlanCurrent), so they return the
+  // raw value ('' when unloaded) instead of throwing — a throw here would crash
+  // the subscription page build (grey screen).
+  static String get premiumMonthlyPriceId => _premiumMonthlyPriceId;
+  static String get premium6MonthPriceId => _premium6MonthPriceId;
+  static String get premium1YearPriceId => _premium1YearPriceId;
 
   /// Fetches price IDs from Cloud Functions (monthly from STRIPE_PRICE_MONTHLY secret).
   static Future<void> ensurePriceIdsLoaded() {

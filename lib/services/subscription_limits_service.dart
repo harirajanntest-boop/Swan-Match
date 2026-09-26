@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'user_service.dart';
+import 'connection_service.dart';
 
 enum UserTier { free, trial, premium }
 
@@ -107,12 +108,8 @@ class SubscriptionLimitsService {
   static final SubscriptionLimitsService instance = SubscriptionLimitsService._();
 
   static const int freeSwipesPerDay = 3;
-  static const int freeInterestsPerDay = 1;
-  static const int freeAcceptsPerDay = 1;
 
   static const int trialSwipesPerDay = 5;
-  static const int trialInterestsTotal = 3;
-  static const int trialAcceptsTotal = 3;
   static const int trialMessagePartners = 3;
   static const int trialActiveChatPartners = 1;
 
@@ -226,96 +223,6 @@ class SubscriptionLimitsService {
     }, SetOptions(merge: true));
   }
 
-  Future<LimitCheck> canSendInterest() async {
-    final tier = await currentTier();
-    if (tier == UserTier.premium) {
-      return const LimitCheck(allowed: true);
-    }
-
-    final usage = await _getOrResetUsage();
-
-    if (tier == UserTier.trial) {
-      final sent = (usage['totalInterestsSent'] as int?) ?? 0;
-      if (sent < trialInterestsTotal) return const LimitCheck(allowed: true);
-      return LimitCheck(
-        allowed: false,
-        reason:
-            'You\'ve sent all $trialInterestsTotal trial interests. Upgrade to Premium for unlimited interests.',
-      );
-    }
-
-    final sent = (usage['dailyInterests'] as int?) ?? 0;
-    if (sent < freeInterestsPerDay) return const LimitCheck(allowed: true);
-    return LimitCheck(
-      allowed: false,
-      reason:
-          'You\'ve used your $freeInterestsPerDay free interest for today. Upgrade to Premium for unlimited interests.',
-    );
-  }
-
-  Future<void> recordInterestSent() async {
-    if (await currentTier() == UserTier.premium) return;
-    final ref = _usageRef;
-    if (ref == null) return;
-    final tier = await currentTier();
-    if (tier == UserTier.trial) {
-      await ref.set({
-        'totalInterestsSent': FieldValue.increment(1),
-        'lastResetAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } else {
-      await ref.set({
-        'dailyInterests': FieldValue.increment(1),
-        'lastResetAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    }
-  }
-
-  Future<LimitCheck> canAcceptInterest() async {
-    final tier = await currentTier();
-    if (tier == UserTier.premium) {
-      return const LimitCheck(allowed: true);
-    }
-
-    final usage = await _getOrResetUsage();
-
-    if (tier == UserTier.trial) {
-      final accepts = (usage['totalAccepts'] as int?) ?? 0;
-      if (accepts < trialAcceptsTotal) return const LimitCheck(allowed: true);
-      return LimitCheck(
-        allowed: false,
-        reason:
-            'You\'ve accepted all $trialAcceptsTotal trial connections. Upgrade to Premium for unlimited accepts.',
-      );
-    }
-
-    final accepts = (usage['dailyAccepts'] as int?) ?? 0;
-    if (accepts < freeAcceptsPerDay) return const LimitCheck(allowed: true);
-    return LimitCheck(
-      allowed: false,
-      reason:
-          'You\'ve used your $freeAcceptsPerDay free accept for today. Upgrade to Premium for unlimited accepts.',
-    );
-  }
-
-  Future<void> recordAccept() async {
-    if (await currentTier() == UserTier.premium) return;
-    final ref = _usageRef;
-    if (ref == null) return;
-    final tier = await currentTier();
-    if (tier == UserTier.trial) {
-      await ref.set({
-        'totalAccepts': FieldValue.increment(1),
-        'lastResetAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } else {
-      await ref.set({
-        'dailyAccepts': FieldValue.increment(1),
-        'lastResetAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    }
-  }
-
   List<String> _partnerIds(Map<String, dynamic> usage) {
     final raw = usage['messagePartnerIds'];
     if (raw is List) {
@@ -324,8 +231,22 @@ class SubscriptionLimitsService {
     return [];
   }
 
+  /// Human-readable fallback reason shown when there's no accepted
+  /// connection between the current user and [otherUserId] yet. Replaces the
+  /// richer `chatUnlockStatus` reason string that `JourneyService` used to
+  /// return — `ConnectionService.hasAcceptedConnection` is a plain boolean,
+  /// so this is synthesized here instead of coming from the gate itself.
+  static const String _noConnectionReason =
+      'Accept a connection request to start chatting.';
+
   /// Whether [otherUserId] can receive a new message thread from the current user.
   Future<LimitCheck> canSendMessageTo(String otherUserId) async {
+    final hasConnection =
+        await ConnectionService.instance.hasAcceptedConnection(otherUserId);
+    if (!hasConnection) {
+      return const LimitCheck(allowed: false, reason: _noConnectionReason);
+    }
+
     final tier = await currentTier();
     if (tier == UserTier.premium) {
       return const LimitCheck(allowed: true);
@@ -397,8 +318,15 @@ class SubscriptionLimitsService {
     return true;
   }
 
-  /// Open chat UI — blocked for free users when other party is premium.
+  /// Open chat UI — blocked until an accepted `connections` doc exists
+  /// between the two users, then gated by subscription tier as before.
   Future<LimitCheck> canOpenChat(String otherUserId) async {
+    final hasConnection =
+        await ConnectionService.instance.hasAcceptedConnection(otherUserId);
+    if (!hasConnection) {
+      return const LimitCheck(allowed: false, reason: _noConnectionReason);
+    }
+
     if (await isChatBlockedForFreeUser(otherUserId: otherUserId)) {
       return const LimitCheck(
         allowed: false,

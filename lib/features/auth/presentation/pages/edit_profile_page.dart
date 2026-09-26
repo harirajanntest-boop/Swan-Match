@@ -33,13 +33,10 @@ class _EditProfilePageState extends State<EditProfilePage>
     "Basic Details": Icons.person_outline,
     "Status & Intent": Icons.favorite_outline,
     "Location": Icons.location_on_outlined,
-    "Education & Profession": Icons.work_outline,
-    "Socioeconomic": Icons.attach_money_outlined,
-    "Lifestyle": Icons.fitness_center_outlined,
     "Cultural & Language": Icons.language_outlined,
-    "Personality": Icons.emoji_emotions_outlined,
     "Partner Preferences": Icons.tune_rounded,
     "Interests": Icons.interests_outlined,
+    "Skills": Icons.auto_awesome_outlined,
     "Bio": Icons.edit_note_outlined,
   };
 
@@ -360,90 +357,6 @@ class _EditProfilePageState extends State<EditProfilePage>
     return controller.text.trim();
   }
 
-  Future<void> _manageHoroscope(Map<String, dynamic> profile) async {
-    final starController = TextEditingController(
-      text: (profile['star'] ?? '').toString(),
-    );
-    final rassiController = TextEditingController(
-      text: (profile['rassi'] ?? '').toString(),
-    );
-    final doshamController = TextEditingController(
-      text: (profile['dosham'] ?? '').toString(),
-    );
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          backgroundColor: AppColors.onyx,
-          title: const Text(
-            'Manage Horoscope',
-            style: TextStyle(color: Colors.white),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: starController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: 'Star',
-                  labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: rassiController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: 'Rassi',
-                  labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: doshamController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  labelText: 'Dosham',
-                  labelStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: Colors.white70),
-              ),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text(
-                'Save',
-                style: TextStyle(color: AppColors.goldMedium),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true) return;
-
-    await UserService.instance.updateCurrentUserProfile(<String, dynamic>{
-      'star': starController.text.trim(),
-      'rassi': rassiController.text.trim(),
-      'dosham': doshamController.text.trim(),
-    });
-
-    if (!mounted) return;
-    setState(() => _expandedSection = 'Religious Information');
-    showLinearMessage(context, 'Horoscope details updated.');
-  }
-
   /// Promotes [index] to position 0 in the photos array so it becomes the
   /// profile picture visible to all other users.
   Future<void> _setPhotoAsMain(Map<String, dynamic> profile, int index) async {
@@ -684,79 +597,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       }
     }
 
-    if (section == 'Education & Profession') {
-      switch (label) {
-        case 'Highest Qualification':
-          return const [
-            'High School',
-            'Bachelor\'s Degree',
-            'Master\'s Degree',
-            'PhD',
-            'Other',
-          ];
-        case 'What Are You Looking For?':
-          return const [
-            'Serious Relationship',
-            'Casual Dating',
-            'Friendship',
-            'Marriage',
-          ];
-      }
-    }
-
-    if (section == 'Lifestyle') {
-      switch (label) {
-        case 'Drinking':
-          return const ['Never', 'Socially', 'Regularly'];
-        case 'Smoking':
-          return const ['Never', 'Socially', 'Regularly'];
-        case 'Workout':
-          return const [
-            'Never',
-            '1-2 times/week',
-            '3-4 times/week',
-            '5+ times/week',
-          ];
-      }
-    }
-
-    if (section == 'Values & Identity') {
-      switch (label) {
-        case 'Communication Style':
-          return const ['Direct', 'Diplomatic', 'Reserved', 'Expressive'];
-        case 'Love Language':
-          return const [
-            'Words of Affirmation',
-            'Acts of Service',
-            'Receiving Gifts',
-            'Quality Time',
-            'Physical Touch',
-          ];
-        case 'Education Level':
-          return const [
-            'High School',
-            'Undergraduate',
-            'Postgraduate',
-            'Doctorate',
-          ];
-        case 'Zodiac':
-          return const [
-            'Aries',
-            'Taurus',
-            'Gemini',
-            'Cancer',
-            'Leo',
-            'Virgo',
-            'Libra',
-            'Scorpio',
-            'Sagittarius',
-            'Capricorn',
-            'Aquarius',
-            'Pisces',
-          ];
-      }
-    }
-
     return const <String>[];
   }
 
@@ -871,12 +711,63 @@ class _EditProfilePageState extends State<EditProfilePage>
     );
   }
 
+  // Lifestyle fields are multi-value LISTS — they must be edited with a
+  // multi-select that saves a List (the generic text editor saved a String,
+  // which made the display fall back to "+ Add Details").
+  static const Map<String, String> _tagListFields = {
+    'Your Interests': 'interests',
+    'Your Skills': 'skills',
+    'Other Languages': 'otherLanguages',
+  };
+  static const List<String> _interestOptions = [
+    'Travel', 'Reading', 'Music', 'Cooking', 'Photography', 'Sports', 'Art',
+    'Technology', 'Movies', 'Yoga & Meditation', 'Dancing', 'Hiking', 'Gaming',
+    'Volunteering', 'Fashion', 'Gardening', 'Writing', 'Fitness',
+  ];
+  static const List<String> _skillOptions = [
+    'Public Speaking', 'Leadership', 'Coding', 'Cooking', 'Investing',
+    'Financial Planning', 'Language Learning', 'Painting', 'Singing',
+    'Playing an Instrument', 'Networking', 'Negotiation', 'Problem Solving',
+    'DIY & Crafts', 'Teaching', 'Event Planning', 'Sales', 'Marketing',
+    'Design', 'Writing',
+  ];
+  static const List<String> _languageOptions = [
+    'English', 'Spanish', 'French', 'Arabic', 'Hindi', 'Mandarin', 'Portuguese',
+    'Bengali', 'Russian', 'Japanese', 'Korean', 'German', 'Italian', 'Tamil',
+    'Telugu', 'Turkish', 'Urdu', 'Other',
+  ];
+
+  List<String> _tagOptionsFor(String label) {
+    switch (label) {
+      case 'Your Interests':
+        return _interestOptions;
+      case 'Your Skills':
+        return _skillOptions;
+      case 'Other Languages':
+        return _languageOptions;
+      default:
+        return const <String>[];
+    }
+  }
+
   Future<void> _editProfileField({
     required Map<String, dynamic> profile,
     required String section,
     required String label,
     required String currentValue,
   }) async {
+    // Route multi-select list fields to the tag picker.
+    final tagKey = _tagListFields[label];
+    if (tagKey != null) {
+      await _editTagSelection(
+        profile: profile,
+        fieldKey: tagKey,
+        title: label,
+        options: _tagOptionsFor(label),
+      );
+      return;
+    }
+
     final initial = _cleanValue(currentValue);
     final updated = await _chooseOrTypeValue(
       title: label,
@@ -932,7 +823,94 @@ class _EditProfilePageState extends State<EditProfilePage>
       if (combined.isNotEmpty) updates['name'] = combined;
     }
 
-    await UserService.instance.updateCurrentUserProfile(updates);
+    try {
+      await UserService.instance.updateCurrentUserProfile(updates);
+      if (mounted) showLinearMessage(context, 'Saved.');
+    } catch (e) {
+      if (mounted) {
+        showLinearMessage(context, 'Could not save: $e', isError: true);
+      }
+    }
+  }
+
+  /// Multi-select editor for list fields (e.g. lifestyle tags). Saves a List
+  /// so the value round-trips correctly and stays consistent with onboarding.
+  Future<void> _editTagSelection({
+    required Map<String, dynamic> profile,
+    required String fieldKey,
+    required String title,
+    required List<String> options,
+  }) async {
+    final current = <String>{
+      ...((profile[fieldKey] as List?)?.map((e) => e.toString()) ??
+          const <String>[]),
+    };
+
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogCtx) {
+        final selected = <String>{...current};
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              backgroundColor: AppColors.onyx,
+              title: Text(title, style: const TextStyle(color: Colors.white)),
+              content: SingleChildScrollView(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: options.map((opt) {
+                    final isSel = selected.contains(opt);
+                    return FilterChip(
+                      label: Text(opt),
+                      selected: isSel,
+                      selectedColor: AppColors.goldMedium,
+                      backgroundColor: Colors.white.withOpacity(0.06),
+                      checkmarkColor: AppColors.obsidian,
+                      labelStyle: TextStyle(
+                        color: isSel ? AppColors.obsidian : Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      onSelected: (v) => setModalState(() {
+                        if (v) {
+                          selected.add(opt);
+                        } else {
+                          selected.remove(opt);
+                        }
+                      }),
+                    );
+                  }).toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogCtx),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: Colors.white70)),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      Navigator.pop(dialogCtx, selected.toList()),
+                  child: const Text('Save',
+                      style: TextStyle(color: AppColors.goldMedium)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+    try {
+      await UserService.instance
+          .updateCurrentUserProfile(<String, dynamic>{fieldKey: result});
+      if (mounted) showLinearMessage(context, 'Saved.');
+    } catch (e) {
+      if (mounted) {
+        showLinearMessage(context, 'Could not save: $e', isError: true);
+      }
+    }
   }
 
   Map<String, Object?> _fieldMap(String section, String label) {
@@ -955,14 +933,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       switch (label) {
         case 'Looking For':
           return {'key': 'lookingFor'};
-        case 'Marital Status':
-          return {'key': 'maritalStatus'};
-        case 'Has Children':
-          return {'key': 'hasChildren'};
-        case 'Children Details':
-          return {'key': 'childrenDetails'};
-        case 'Willing to Relocate':
-          return {'key': 'willingToRelocate'};
       }
     }
 
@@ -977,75 +947,14 @@ class _EditProfilePageState extends State<EditProfilePage>
       }
     }
 
-    if (section == 'Education & Profession') {
-      switch (label) {
-        case 'Education Level':
-          return {'key': 'educationLevel'};
-        case 'Highest Qualification':
-          return {'key': 'highestQualification'};
-        case 'Profession':
-          return {'key': 'profession'};
-        case 'Industry':
-          return {'key': 'industry'};
-      }
-    }
-
-    if (section == 'Socioeconomic') {
-      switch (label) {
-        case 'Income Range':
-          return {'key': 'incomeRange'};
-        case 'Net Worth Range':
-          return {'key': 'netWorthRange'};
-        case 'Lifestyle Tags':
-          return {'key': 'lifestyleTags'};
-      }
-    }
-
-    if (section == 'Lifestyle') {
-      switch (label) {
-        case 'Drinking':
-          return {'key': 'drinking'};
-        case 'Smoking':
-          return {'key': 'smoking'};
-        case 'Workout':
-          return {'key': 'workout'};
-        case 'Pets':
-          return {'key': 'pets'};
-      }
-    }
-
     if (section == 'Cultural & Language') {
       switch (label) {
         case 'Religion':
           return {'key': 'religion'};
-        case 'Spiritual Level':
-          return {'key': 'spiritualLevel'};
-        case 'Ethnicity':
-          return {'key': 'ethnicity'};
         case 'Primary Language':
           return {'key': 'primaryLanguage'};
         case 'Other Languages':
           return {'key': 'otherLanguages'};
-        case 'Family Values Importance':
-          return {'key': 'familyValuesImportance'};
-      }
-    }
-
-    if (section == 'Values & Identity') {
-      switch (label) {
-        case 'Communication Style':
-          return {'key': 'communicationStyle'};
-        case 'Love Language':
-          return {'key': 'loveLanguage'};
-        case 'Zodiac':
-          return {'key': 'zodiac'};
-      }
-    }
-
-    if (section == 'Personality') {
-      switch (label) {
-        case 'Personality Traits':
-          return {'key': 'personalityTraits'};
       }
     }
 
@@ -1055,16 +964,6 @@ class _EditProfilePageState extends State<EditProfilePage>
           return {'key': 'minAgePreference'};
         case 'Max Age Preference':
           return {'key': 'maxAgePreference'};
-        case 'Preferred Location':
-          return {'key': 'preferredLocation'};
-        case 'Preferred Education':
-          return {'key': 'preferredEducation'};
-        case 'Preferred Profession':
-          return {'key': 'preferredProfession'};
-        case 'Preferred Religion':
-          return {'key': 'preferredReligion'};
-        case 'Preferred Lifestyle':
-          return {'key': 'preferredLifestyle'};
       }
     }
 
@@ -1072,6 +971,13 @@ class _EditProfilePageState extends State<EditProfilePage>
       switch (label) {
         case 'Your Interests':
           return {'key': 'interests'};
+      }
+    }
+
+    if (section == 'Skills') {
+      switch (label) {
+        case 'Your Skills':
+          return {'key': 'skills'};
       }
     }
 
@@ -1109,13 +1015,6 @@ class _EditProfilePageState extends State<EditProfilePage>
       return '+ Add Details';
     }
 
-    String boolValue(String key) {
-      final raw = profile[key];
-      if (raw == null) return '+ Add Details';
-      if (raw is bool) return raw ? 'Yes' : 'No';
-      return raw.toString();
-    }
-
     return {
       // ── Step 1: Basic Identity ──────────────────────────────────────────────
       "Basic Details": {
@@ -1126,58 +1025,28 @@ class _EditProfilePageState extends State<EditProfilePage>
         "Age": _formatAge(profile['dateOfBirth'], fallbackAge: profile['age']),
       },
       // ── Step 2: Status & Intent ──────────────────────────────────────────────
-      "Status & Intent": {
-        "Looking For": value('lookingFor'),
-        "Marital Status": value('maritalStatus'),
-        "Has Children": boolValue('hasChildren'),
-        "Children Details": value('childrenDetails'),
-        "Willing to Relocate": boolValue('willingToRelocate'),
-      },
+      "Status & Intent": {"Looking For": value('lookingFor')},
       // ── Location ─────────────────────────────────────────────────────────────
       "Location": {
         "City": value('city'),
         "Country": value('country'),
         "Distance Preference": '${value('distanceKm', fallback: '50')} km',
       },
-      // ── Step 3: Education & Profession ────────────────────────────────────────
-      "Education & Profession": {
-        "Education Level": value('educationLevel'),
-        "Highest Qualification": value('highestQualification'),
-        "Profession": value('profession'),
-        "Industry": value('industry'),
-      },
-      // ── Step 3: Socioeconomic ─────────────────────────────────────────────────
-      "Socioeconomic": {
-        "Income Range": value('incomeRange'),
-        "Net Worth Range": value('netWorthRange'),
-        "Lifestyle Tags": listValue('lifestyleTags'),
-      },
-      // ── Step 5: Lifestyle ─────────────────────────────────────────────────────
-      "Lifestyle": {"Drinking": value('drinking'), "Smoking": value('smoking')},
       // ── Step 4: Cultural & Language ───────────────────────────────────────────
       "Cultural & Language": {
         "Religion": value('religion'),
-        "Spiritual Level": value('spiritualLevel'),
-        "Ethnicity": value('ethnicity'),
         "Primary Language": value('primaryLanguage'),
         "Other Languages": listValue('otherLanguages'),
-        "Family Values Importance":
-            '${value('familyValuesImportance', fallback: '3')} / 5',
       },
-      // ── Step 5: Personality ───────────────────────────────────────────────────
-      "Personality": {"Personality Traits": listValue('personalityTraits')},
       // ── Step 6: Partner Preferences ──────────────────────────────────────────
       "Partner Preferences": {
         "Min Age Preference": value('minAgePreference', fallback: '18'),
         "Max Age Preference": value('maxAgePreference', fallback: '50'),
-        "Preferred Location": value('preferredLocation'),
-        "Preferred Education": value('preferredEducation'),
-        "Preferred Profession": value('preferredProfession'),
-        "Preferred Religion": value('preferredReligion'),
-        "Preferred Lifestyle": listValue('preferredLifestyle'),
       },
       // ── Interests ─────────────────────────────────────────────────────────────
       "Interests": {"Your Interests": listValue('interests')},
+      // ── Skills (parallel to Interests, new field) ────────────────────────────
+      "Skills": {"Your Skills": listValue('skills')},
       "Bio": {"About You": value('bio', fallback: 'No bio yet')},
     };
   }

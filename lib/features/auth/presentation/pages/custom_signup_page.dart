@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
@@ -153,16 +154,23 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   Future<void> _upsertProfileSafely({
     required String uid,
     required Map<String, dynamic> baseData,
+    bool isNewUser = false,
   }) async {
     try {
-      final existing = await UserService.instance.getUserProfile(
-        uid,
-        forceRefresh: true,
-      );
-
       final data = <String, dynamic>{...baseData};
-      if (existing == null) {
+
+      if (isNewUser) {
+        // Caller guarantees a brand-new account, so we can skip the
+        // existence read and always seed the restricted defaults.
         data.addAll(_restrictedProfileFields());
+      } else {
+        final existing = await UserService.instance.getUserProfile(
+          uid,
+          forceRefresh: true,
+        );
+        if (existing == null) {
+          data.addAll(_restrictedProfileFields());
+        }
       }
 
       await UserService.instance.upsertUserProfile(uid: uid, data: data);
@@ -226,19 +234,19 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       final user = credential.user;
 
       if (user != null) {
-        // Track signup for velocity detection
-        try {
-          await FirebaseFunctions.instance
-              .httpsCallable('trackSignup')
-              .call({});
-        } catch (_) {}
+        // Track signup for velocity detection — fire-and-forget (non-critical).
+        FirebaseFunctions.instance
+            .httpsCallable('trackSignup')
+            .call({})
+            .then((_) {}, onError: (_) {});
 
-        // Send verification email
-        await AuthService.instance.sendVerificationEmail();
+        // Send verification email in the background so it doesn't block routing.
+        AuthService.instance.sendVerificationEmail().catchError((_) {});
 
-        // Create Firestore Profile
+        // Create Firestore Profile (brand-new account → skip existence read).
         await _upsertProfileSafely(
           uid: user.uid,
+          isNewUser: true,
           baseData: {
             'uid': user.uid,
             'name': name,
@@ -492,8 +500,11 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
       // Valid Age -> Create profile and route
       final age = _calculateAge(_selectedDob!);
       final googlePhoto = user.photoURL ?? '';
+      // Reached only when the Google account had no existing profile
+      // (guarded by the profile == null check in _handleGoogleSignIn).
       await _upsertProfileSafely(
         uid: user.uid,
+        isNewUser: true,
         baseData: {
           'uid': user.uid,
           'name': user.displayName ?? '',
@@ -522,9 +533,78 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     }
   }
 
-  // ─── Apple Sign-In (placeholder) ───
+  // ─── Apple Sign-In ───
   Future<void> _handleAppleSignIn() async {
-    _showError('Apple Sign-In coming soon.');
+    if (_isAppleLoading) return;
+    setState(() => _isAppleLoading = true);
+
+    try {
+      if (FirebaseAuth.instance.currentUser != null) {
+        try {
+          await AuthService.instance.signOut();
+        } catch (_) {}
+      }
+
+      final userCredential = await AuthService.instance.signInWithApple();
+      if (userCredential == null) {
+        setState(() => _isAppleLoading = false);
+        return;
+      }
+
+      final user = userCredential.user;
+      if (user == null) {
+        _showError('Failed to get user from Apple.');
+        return;
+      }
+
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
+
+      if (profile != null) {
+        // Existing user -> route.
+        await _routeUser(user);
+      } else {
+        // New Apple user -> terms first, then DOB (Apple doesn't provide age).
+        if (!mounted) return;
+        final termsAccepted = await _showTermsDialog();
+        if (termsAccepted != true) {
+          await user.delete();
+          await AuthService.instance.signOut();
+          return;
+        }
+        if (!mounted) return;
+        await _showGoogleDobDialog(user);
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) return;
+      if (!mounted) return;
+      debugPrint('APPLE_SIGNIN_AUTH_ERROR code=${e.code} msg=${e.message}');
+      _showError(
+        'Apple Sign-In could not be completed (${e.code.name}). Please try again or use email signup.',
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'account-exists-with-different-credential') {
+        _showError(
+          'An account already exists with this email using a different sign-in method. Please log in with that method.',
+        );
+        return;
+      }
+      // A rejected Apple credential is a config issue (provider not enabled /
+      // Sign in with Apple capability missing), NOT a wrong password.
+      final isAppleConfig =
+          e.code == 'invalid-credential' || e.code == 'operation-not-allowed';
+      _showError(isAppleConfig
+          ? 'Apple Sign-In isn\'t available right now (${e.code}). Please try another method.'
+          : AuthService.instance.readableAuthError(e));
+    } catch (e) {
+      if (!mounted) return;
+      debugPrint('APPLE_SIGNIN_UNKNOWN_ERROR: $e');
+      _showError(
+        'Apple Sign-In failed. Please try again or use email / Google signup.',
+      );
+    } finally {
+      if (mounted) setState(() => _isAppleLoading = false);
+    }
   }
 
   void _showError(String message) {

@@ -27,13 +27,6 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isInterestParticipant(data) {
-      return isSignedIn() && (
-        request.auth.uid == data.fromUserId ||
-        request.auth.uid == data.toUserId
-      );
-    }
-
     function isChatParticipant(data) {
       return isSignedIn() && request.auth.uid in data.participants;
     }
@@ -54,13 +47,36 @@ service cloud.firestore {
          'lastCheckoutSessionId', 'lastInvoiceId',
          'subscription', 'paymentStatus', 'customerEmail',
          'customerName', 'billingPeriodStart', 'billingPeriodEnd',
-         'subscriptionPriceId', 'subscriptionName']
+         'subscriptionPriceId', 'subscriptionName',
+         'cancelAtPeriodEnd', 'premiumActivatedAt',
+         'iapSource', 'iapProductId', 'iapTransactionId']
       ) && (
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['profileApprovalStatus']) ||
         request.resource.data.profileApprovalStatus == 'pending'
       ) && (
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus']) ||
         request.resource.data.verificationStatus == 'pending'
+      ) && (
+        // Video-first redesign: the owner may submit/resubmit an intro video
+        // (status -> 'pending') but only isAdmin() (admin-web's direct write)
+        // may ever move it to 'approved'/'rejected'.
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['introVideoStatus']) ||
+        request.resource.data.introVideoStatus == 'pending'
+      ) && (
+        // Rejection reason is admin-only, always — the owner never writes it,
+        // not even to clear it on resubmit (resubmission only touches
+        // introVideoStatus/introVideoUrl/introVideoSubmittedAt).
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['introVideoRejectionReason'])
+      ) && (
+        // The client (owner) may only move itself into non-paid states
+        // (free / trial). Only the backend (Admin SDK, which bypasses these
+        // rules) may ever set 'premium' or 'gold' — closes the free-premium
+        // self-grant hole where a user wrote subscriptionPlan/Status directly.
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscriptionPlan']) ||
+        request.resource.data.subscriptionPlan in ['free', 'trial']
+      ) && (
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscriptionStatus']) ||
+        request.resource.data.subscriptionStatus in ['free', 'trialing', 'expired']
       )) || isAdmin();
       allow delete: if isAdmin();
 
@@ -76,23 +92,46 @@ service cloud.firestore {
       }
     }
 
-    match /likes/{userId} {
-      allow read, write: if isOwner(userId);
-      match /likedUsers/{likedUserId} {
-        allow read: if isOwner(userId) || request.auth.uid == likedUserId;
-        allow write: if isOwner(userId) || request.auth.uid == likedUserId;
-      }
+    // ── Video-first redesign: Connect/Topic/Video/Accept gate ───────────────
+    // id = sorted(senderId, receiverId).join('_') — same convention as
+    // matches/chats, so the existing chatIdInvolvesUser() regex idiom is
+    // reused as-is for the id-ownership check.
+    match /connections/{connectionId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == resource.data.senderId ||
+        request.auth.uid == resource.data.receiverId ||
+        isAdmin()
+      );
+      // Create: sender only. The doc id must actually be the sorted
+      // senderId_receiverId pair (not just contain the caller's uid
+      // somewhere), and status must start the lifecycle at 'pending'.
+      allow create: if isSignedIn() &&
+        chatIdInvolvesUser(connectionId) &&
+        request.auth.uid == request.resource.data.senderId &&
+        request.resource.data.receiverId is string &&
+        request.resource.data.receiverId != request.auth.uid &&
+        request.resource.data.status == 'pending' &&
+        connectionId == (
+          request.resource.data.senderId < request.resource.data.receiverId
+            ? request.resource.data.senderId + '_' + request.resource.data.receiverId
+            : request.resource.data.receiverId + '_' + request.resource.data.senderId
+        );
+      // Update: defense-in-depth backstop only — the supported path is the
+      // respondToConnection callable. Only the receiver may flip a pending
+      // request to accepted/declined, and only those two fields may change.
+      allow update: if isSignedIn() &&
+        request.auth.uid == resource.data.receiverId &&
+        resource.data.status == 'pending' &&
+        request.resource.data.status in ['accepted', 'declined'] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'resolvedAt']);
+      allow delete: if isAdmin();
     }
 
-    match /rejections/{userId} {
-      allow read, write: if isOwner(userId);
-      match /rejectedUsers/{rejectedUserId} {
-        allow read, write: if isOwner(userId) || request.auth.uid == rejectedUserId;
-      }
-    }
-
-    match /matches/{matchId} {
-      allow read, write: if chatIdInvolvesUser(matchId) || isAdmin();
+    // Predefined Connect-flow topics: admin-authored, client picks one at
+    // random from active == true docs.
+    match /topics/{topicId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     match /messages/{chatId} {
@@ -109,26 +148,21 @@ service cloud.firestore {
         chatIdInvolvesUser(chatId) ||
         isAdmin()
       );
-      allow create: if isSignedIn() && isChatParticipant(request.resource.data);
+      // Video-first redesign: chatId === connectionId by construction, so a
+      // chat may only be created once the matching connections doc has been
+      // accepted. This is the only new get() call added by this rule set,
+      // and it only runs on chat *creation* (rare) — not on every message
+      // read/write.
+      allow create: if isSignedIn() && isChatParticipant(request.resource.data) && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/connections/$(chatId)).data.status == 'accepted'
+      );
       allow update, delete: if isSignedIn() && (
         isChatParticipant(resource.data) || isAdmin()
       );
       match /messages/{messageId} {
         allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
       }
-    }
-
-    match /interests/{interestId} {
-      allow read: if isSignedIn() && (
-        isInterestParticipant(resource.data) || isAdmin()
-      );
-      allow create: if isSignedIn() &&
-        request.auth.uid == request.resource.data.fromUserId &&
-        request.resource.data.toUserId is string &&
-        request.resource.data.toUserId != request.auth.uid;
-      allow update, delete: if isSignedIn() && (
-        isInterestParticipant(resource.data) || isAdmin()
-      );
     }
 
     match /notifications/{docId} {

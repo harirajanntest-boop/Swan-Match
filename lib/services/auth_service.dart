@@ -1,10 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show Platform;
+import 'dart:math';
 
+import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
+import '../shared/helpers/agent_debug_log.dart';
 import 'push_notification_service.dart';
 import 'user_service.dart';
 
@@ -326,8 +332,44 @@ class AuthService {
   final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   Future<UserCredential?> signInWithGoogle({bool delayedAuth = false}) async {
-    final account = await _googleSignIn.signIn();
-    if (account == null) return null;
+    // #region agent log
+    agentDebugLog(
+      location: 'auth_service.dart:signInWithGoogle',
+      message: 'google sign-in started',
+      hypothesisId: 'B',
+      data: {'delayedAuth': delayedAuth},
+    );
+    // #endregion
+
+    GoogleSignInAccount? account;
+    try {
+      account = await _googleSignIn.signIn();
+    } catch (e, st) {
+      // #region agent log
+      agentDebugLog(
+        location: 'auth_service.dart:signInWithGoogle',
+        message: 'google sign-in failed at GoogleSignIn.signIn',
+        hypothesisId: 'A',
+        data: {
+          'errorType': e.runtimeType.toString(),
+          'error': e.toString(),
+          'stackTop': st.toString().split('\n').take(3).join(' | '),
+        },
+      );
+      // #endregion
+      rethrow;
+    }
+
+    if (account == null) {
+      // #region agent log
+      agentDebugLog(
+        location: 'auth_service.dart:signInWithGoogle',
+        message: 'google sign-in cancelled by user',
+        hypothesisId: 'E',
+      );
+      // #endregion
+      return null;
+    }
 
     final auth = await account.authentication;
     final googleCredential = GoogleAuthProvider.credential(
@@ -358,6 +400,97 @@ class AuthService {
       await UserService.instance.syncAuthProviders();
       return result;
     }
+  }
+
+  // ─── Sign in with Apple ──────────────────────────────────────────────────
+  // Returns the Apple-provided full name on FIRST sign-in only (Apple sends it
+  // once); null on subsequent sign-ins. Caller uses it to seed the profile name.
+  String? lastAppleFullName;
+
+  String _generateNonce([int length = 32]) {
+    const charset =
+        '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+    final random = Random.secure();
+    return List.generate(
+      length,
+      (_) => charset[random.nextInt(charset.length)],
+    ).join();
+  }
+
+  String _sha256(String input) =>
+      sha256.convert(utf8.encode(input)).toString();
+
+  Future<UserCredential?> signInWithApple({bool linkIfSignedIn = false}) async {
+    // Guard: Apple Sign-In must be available on this device (iPhone / iPad).
+    final available = await SignInWithApple.isAvailable();
+    if (!available) {
+      throw FirebaseAuthException(
+        code: 'operation-not-allowed',
+        message:
+            'Sign in with Apple is not available on this device. Please use another sign-in method.',
+      );
+    }
+
+    // Apple requires a nonce: we send the SHA256 hash and pass the raw value to
+    // Firebase, which verifies they match (prevents replay attacks).
+    final rawNonce = _generateNonce();
+    final hashedNonce = _sha256(rawNonce);
+
+    final appleCredential = await SignInWithApple.getAppleIDCredential(
+      scopes: [
+        AppleIDAuthorizationScopes.email,
+        AppleIDAuthorizationScopes.fullName,
+      ],
+      nonce: hashedNonce,
+    );
+
+    // Capture the name Apple returns on first sign-in (given + family).
+    final given = appleCredential.givenName ?? '';
+    final family = appleCredential.familyName ?? '';
+    final fullName = '$given $family'.trim();
+    lastAppleFullName = fullName.isEmpty ? null : fullName;
+
+    // Surface a clear, specific error if Apple returned no identity token
+    // (otherwise Firebase rejects with a confusing "invalid-credential").
+    if (appleCredential.identityToken == null ||
+        appleCredential.identityToken!.isEmpty) {
+      throw FirebaseAuthException(
+        code: 'invalid-credential',
+        message: 'Apple Sign-In could not be completed. Please try again.',
+      );
+    }
+
+    // Firebase Apple auth expects idToken + rawNonce only.
+    // Do NOT pass authorizationCode as accessToken — that can cause
+    // invalid-credential failures (especially on iPad review devices).
+    final oauthCredential = OAuthProvider('apple.com').credential(
+      idToken: appleCredential.identityToken,
+      rawNonce: rawNonce,
+    );
+
+    // Login / signup must always authenticate (not silently link). Auto-linking
+    // when a stale Firebase session exists is a common iPad review failure.
+    if (linkIfSignedIn && _auth.currentUser != null) {
+      final result =
+          await _auth.currentUser!.linkWithCredential(oauthCredential);
+      await UserService.instance.syncAuthProviders();
+      return result;
+    }
+
+    final result = await _auth.signInWithCredential(oauthCredential);
+
+    // Apple only gives the display name the very first time — persist it to the
+    // Firebase user so later sessions still have it.
+    if (lastAppleFullName != null &&
+        (result.user?.displayName == null ||
+            result.user!.displayName!.isEmpty)) {
+      try {
+        await result.user?.updateDisplayName(lastAppleFullName);
+      } catch (_) {}
+    }
+
+    await UserService.instance.syncAuthProviders();
+    return result;
   }
 
   Future<UserCredential> linkPendingGoogleCredential() async {
@@ -481,10 +614,52 @@ class AuthService {
 
   // ─── Account Linking ───
 
+  /// Providers every account must have linked for recovery/security.
+  /// Matches the Account Security section in Settings.
+  /// Apple is required on iOS only (Sign in with Apple is not available on Android).
+  static const List<String> requiredLinkProviderIds = [
+    'google.com',
+    'password',
+  ];
+
   List<String> getLinkedProviderIds() {
     final user = _auth.currentUser;
     if (user == null) return [];
     return user.providerData.map((p) => p.providerId).toList();
+  }
+
+  /// Human-readable labels for required providers that are not yet linked.
+  /// Empty list means the account is fully linked.
+  List<String> getMissingRequiredLinkLabels() {
+    final linked = getLinkedProviderIds();
+    final missing = <String>[];
+    if (!linked.contains('google.com')) missing.add('Google');
+    if (!linked.contains('password')) missing.add('Email');
+    // Apple Sign-In is iOS-only; require it when available on this device.
+    if (Platform.isIOS && !linked.contains('apple.com')) {
+      missing.add('Apple');
+    }
+    return missing;
+  }
+
+  bool get hasAllRequiredProvidersLinked =>
+      getMissingRequiredLinkLabels().isEmpty;
+
+  /// Registered account email from Firestore, falling back to Firebase Auth.
+  Future<String> getRegisteredEmail() async {
+    final user = _auth.currentUser;
+    if (user == null) return '';
+
+    String registeredEmail = '';
+    try {
+      final profile = await UserService.instance.getUserProfile(user.uid);
+      registeredEmail =
+          (profile?['email'] ?? '').toString().trim().toLowerCase();
+    } catch (_) {}
+    if (registeredEmail.isEmpty) {
+      registeredEmail = (user.email ?? '').trim().toLowerCase();
+    }
+    return registeredEmail;
   }
 
   Future<void> linkWithGoogle() async {
@@ -496,20 +671,7 @@ class AuthService {
 
     // ── Validate that the Google email matches the registered email ──
     final googleEmail = account.email.trim().toLowerCase();
-
-    // Get the registered email from Firestore profile or Firebase Auth
-    String registeredEmail = '';
-    try {
-      final profile = await UserService.instance.getUserProfile(user.uid);
-      registeredEmail = (profile?['email'] ?? '')
-          .toString()
-          .trim()
-          .toLowerCase();
-    } catch (_) {}
-    // Fallback to Firebase Auth email
-    if (registeredEmail.isEmpty) {
-      registeredEmail = (user.email ?? '').trim().toLowerCase();
-    }
+    final registeredEmail = await getRegisteredEmail();
 
     if (registeredEmail.isNotEmpty && googleEmail != registeredEmail) {
       // Emails don't match → reject linking
@@ -527,23 +689,113 @@ class AuthService {
     );
 
     await user.linkWithCredential(credential);
+    await UserService.instance.syncAuthProviders();
+  }
+
+  /// Links Sign in with Apple to the currently signed-in account (same pattern
+  /// as [linkWithGoogle]). When Apple returns an email, it must match the
+  /// registered account email. If Apple Hide My Email / no email is returned
+  /// (common on re-authorization), linking is still allowed.
+  Future<void> linkWithApple() async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('No user logged in.');
+
+    if (!Platform.isIOS) {
+      throw Exception('Sign in with Apple is only available on iPhone and iPad.');
+    }
+
+    final available = await SignInWithApple.isAvailable();
+    if (!available) {
+      throw Exception(
+        'Sign in with Apple is not available on this device.',
+      );
+    }
+
+    final rawNonce = _generateNonce();
+    final hashedNonce = _sha256(rawNonce);
+
+    final appleCredential = await SignInWithApple.getAppleIDCredential(
+      scopes: [
+        AppleIDAuthorizationScopes.email,
+        AppleIDAuthorizationScopes.fullName,
+      ],
+      nonce: hashedNonce,
+    );
+
+    if (appleCredential.identityToken == null ||
+        appleCredential.identityToken!.isEmpty) {
+      throw Exception('Apple Sign-In could not be completed. Please try again.');
+    }
+
+    final appleEmail = (appleCredential.email ?? '').trim().toLowerCase();
+    final registeredEmail = await getRegisteredEmail();
+
+    // Same rule as Google: if Apple gives a real email, it must match.
+    // Empty email = Hide My Email / subsequent auth — cannot verify here.
+    if (appleEmail.isNotEmpty &&
+        registeredEmail.isNotEmpty &&
+        appleEmail != registeredEmail) {
+      throw Exception(
+        'Email mismatch: Please use Apple Sign-In with your registered email '
+        '($registeredEmail). Apple returned $appleEmail which does not match '
+        'your account.',
+      );
+    }
+
+    final oauthCredential = OAuthProvider('apple.com').credential(
+      idToken: appleCredential.identityToken,
+      rawNonce: rawNonce,
+    );
+
+    try {
+      await user.linkWithCredential(oauthCredential);
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'credential-already-in-use' ||
+          e.code == 'provider-already-linked') {
+        throw Exception(
+          'This Apple ID is already linked to another Swan Match account. '
+          'Use a different Apple ID, or sign in with that account instead.',
+        );
+      }
+      if (e.code == 'email-already-in-use') {
+        throw Exception(
+          'This Apple email is already used by another account. '
+          'Use the Apple ID that matches your registered email ($registeredEmail).',
+        );
+      }
+      rethrow;
+    }
+
+    await UserService.instance.syncAuthProviders();
   }
 
   Future<void> linkWithEmailAndPassword(String email, String password) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No user logged in.');
 
+    final trimmedEmail = email.trim().toLowerCase();
+    final registeredEmail = await getRegisteredEmail();
+
+    if (registeredEmail.isNotEmpty && trimmedEmail != registeredEmail) {
+      throw Exception(
+        'Email mismatch: Please use your registered email ($registeredEmail). '
+        'You entered $trimmedEmail which does not match your account.',
+      );
+    }
+
     final credential = EmailAuthProvider.credential(
-      email: email,
+      email: trimmedEmail,
       password: password,
     );
     await user.linkWithCredential(credential);
+    await UserService.instance.syncAuthProviders();
   }
 
   Future<void> linkWithPhoneCredential(PhoneAuthCredential credential) async {
     final user = _auth.currentUser;
     if (user == null) throw Exception('No user logged in.');
     await user.linkWithCredential(credential);
+    await UserService.instance.syncAuthProviders();
   }
 
   Future<void> changePassword(

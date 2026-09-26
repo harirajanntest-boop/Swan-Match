@@ -1,8 +1,11 @@
 /**
- * Swan Match — Create 50 Test Users (25 Male + 25 Female)
+ * Swan Match — Create Test Users (default 25 Male + 25 Female)
  *
  * Run from the functions/ directory:
  *   cd functions && node ../scripts/create_test_users.js
+ *
+ * Optionally pass a count per gender (max 25, limited by the name/city pools):
+ *   cd functions && node ../scripts/create_test_users.js 10
  *
  * All test user doc IDs start with "test_male_" or "test_female_"
  * so they can be bulk-deleted easily with delete_test_users.js
@@ -266,13 +269,14 @@ function buildUser(index, gender) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function run() {
-  console.log('🦢 Creating 50 test users (25 male + 25 female)...\n');
+  const perGender = Math.min(25, Math.max(1, parseInt(process.argv[2], 10) || 25));
+  console.log(`🦢 Creating ${perGender * 2} test users (${perGender} male + ${perGender} female)...\n`);
 
-  // Firestore batch limit is 500 — we only need 50, one batch is fine
+  // Firestore batch limit is 500 — we only need up to 50, one batch is fine
   const batch = db.batch();
   let count = 0;
 
-  for (let i = 0; i < 25; i++) {
+  for (let i = 0; i < perGender; i++) {
     const male = buildUser(i, 'Male');
     batch.set(db.collection('users').doc(male.docId), male.data);
     console.log(`  ✅ ${male.docId}  →  ${male.data.name}, ${male.data.age}, ${male.data.city}`);

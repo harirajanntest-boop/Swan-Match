@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/gestures.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
 import 'package:swam_match_app/services/auth_service.dart';
@@ -48,14 +49,16 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
   }
 
   // ─── Route user based on Firestore profile status ───
-  Future<void> _routeUser(User user) async {
+  Future<void> _routeUser(User user, {Map<String, dynamic>? profile}) async {
     if (!mounted) return;
     try {
-      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
+      // Reuse a profile the caller already fetched; only hit Firestore if absent.
+      final userProfile =
+          profile ?? await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
       if (!mounted) return;
 
-      if (profile != null &&
-          UserService.instance.isAccountSuspended(profile)) {
+      if (userProfile != null &&
+          UserService.instance.isAccountSuspended(userProfile)) {
         if (!mounted) return;
         await AccountSuspensionHelper.blockIfSuspended(context);
         return;
@@ -77,7 +80,7 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         }
       }
 
-      if (profile != null && profile['registrationCompleted'] == true) {
+      if (userProfile != null && userProfile['registrationCompleted'] == true) {
         // User has completed all details → Dashboard
         Navigator.pushAndRemoveUntil(
           context,
@@ -131,8 +134,9 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         _showError('Login failed. Please try again.');
         return;
       }
-      // Report successful login to clear throttle counter
-      await AuthService.instance.reportLoginSuccess(email);
+      // Report successful login to clear throttle counter — fire-and-forget so
+      // it doesn't block routing into the app.
+      AuthService.instance.reportLoginSuccess(email).catchError((_) {});
 
       // Check if terms already accepted
       final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
@@ -149,7 +153,8 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
         });
       }
 
-      await _routeUser(user);
+      // Reuse the profile fetched above instead of letting _routeUser refetch.
+      await _routeUser(user, profile: profile);
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       // Report failed login attempt only if we successfully cleared the throttle check
@@ -209,8 +214,8 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
       final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
 
       if (profile != null) {
-        // Existing User -> terms already accepted, just route
-        await _routeUser(user);
+        // Existing User -> terms already accepted, just route (reuse profile).
+        await _routeUser(user, profile: profile);
       } else {
         // New Google User -> ask terms first, then DOB
         if (!mounted) return;
@@ -460,9 +465,79 @@ class _CustomLoginPageState extends State<CustomLoginPage> {
     }
   }
 
-  // ─── Apple Sign-In (placeholder) ───
+  // ─── Apple Sign-In ───
   Future<void> _handleAppleSignIn() async {
-    _showError('Apple Sign-In coming soon.');
+    if (_isAppleLoading) return;
+    setState(() => _isAppleLoading = true);
+
+    try {
+      // Clear any stale anonymous/partial session so we authenticate fresh
+      // (avoids failed "link" attempts that surface as login errors on iPad).
+      if (FirebaseAuth.instance.currentUser != null) {
+        try {
+          await AuthService.instance.signOut();
+        } catch (_) {}
+      }
+
+      final userCredential = await AuthService.instance.signInWithApple();
+      if (userCredential == null) {
+        setState(() => _isAppleLoading = false);
+        return;
+      }
+
+      final user = userCredential.user;
+      if (user == null) {
+        _showError('Failed to get user from Apple.');
+        return;
+      }
+
+      final profile = await UserService.instance.getUserProfile(user.uid, forceRefresh: true);
+
+      if (profile != null) {
+        // Existing user -> route (reuse profile).
+        await _routeUser(user, profile: profile);
+      } else {
+        // New Apple user -> terms first, then DOB (Apple doesn't provide age).
+        if (!mounted) return;
+        final termsAccepted = await _showTermsDialog();
+        if (termsAccepted != true) {
+          await user.delete();
+          await AuthService.instance.signOut();
+          return;
+        }
+        if (!mounted) return;
+        await _showGoogleDobDialog(user);
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) return;
+      if (!mounted) return;
+      debugPrint('APPLE_SIGNIN_AUTH_ERROR code=${e.code} msg=${e.message}');
+      _showError(
+        'Apple Sign-In could not be completed (${e.code.name}). Please try again or use email login.',
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      debugPrint('APPLE_SIGNIN_FB_ERROR code=${e.code} msg=${e.message}');
+      if (e.code == 'account-exists-with-different-credential') {
+        _showError(
+          'An account already exists with this email using a different sign-in method. Please log in with that method.',
+        );
+        return;
+      }
+      final isAppleConfig = e.code == 'invalid-credential' ||
+          e.code == 'operation-not-allowed';
+      _showError(isAppleConfig
+          ? 'Apple Sign-In isn\'t available right now (${e.code}). Please try another method.'
+          : AuthService.instance.readableAuthError(e));
+    } catch (e) {
+      if (!mounted) return;
+      debugPrint('APPLE_SIGNIN_UNKNOWN_ERROR: $e');
+      _showError(
+        'Apple Sign-In failed. Please try again or use email / Google login.',
+      );
+    } finally {
+      if (mounted) setState(() => _isAppleLoading = false);
+    }
   }
 
   Future<void> _launchUrl(String urlString) async {

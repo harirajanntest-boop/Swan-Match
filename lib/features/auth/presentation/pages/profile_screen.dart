@@ -12,7 +12,8 @@ import 'edit_profile_page.dart';
 import 'verify_profile_page.dart';
 import 'subscription_page.dart';
 import 'about_me_screen.dart';
-import 'values_screen.dart';
+import 'intent_verification_screen.dart';
+import 'intro_video_detail_page.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -101,6 +102,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
       p['idVerified'] == true ||
       p['profileVerified'] == true ||
       (p['verificationStatus']?.toString().toLowerCase() == 'approved');
+
+  // ─── Intro video status (drives the "My Intro Video" menu row trailing
+  // text) — same status vocabulary as `introVideoStatus` on the profile doc,
+  // following the exact same trailing-text pattern as the "Verification"
+  // menu row below ("Live"/"Under review"/"Rejected"/"Not added").
+  String _introVideoStatus(Map<String, dynamic> p) =>
+      (p['introVideoStatus'] ?? '').toString().trim().toLowerCase();
+
+  String _introVideoTrailing(Map<String, dynamic> p) {
+    switch (_introVideoStatus(p)) {
+      case 'approved':
+        return 'Live';
+      case 'pending':
+        return 'Under review';
+      case 'rejected':
+        return 'Rejected';
+      default:
+        return 'Not added';
+    }
+  }
+
+  Color _introVideoTrailingColor(Map<String, dynamic> p) {
+    switch (_introVideoStatus(p)) {
+      case 'approved':
+        return Colors.greenAccent;
+      case 'pending':
+        return Colors.orangeAccent;
+      case 'rejected':
+        return Colors.redAccent;
+      default:
+        return Colors.white38;
+    }
+  }
 
   bool _isPremium(Map<String, dynamic> p) => UserService.instance.isPremium(p);
   bool _isOnFreeTrial(Map<String, dynamic> p) => UserService.instance.isOnFreeTrial(p);
@@ -217,6 +251,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
             final profile = snapshot.data ?? const <String, dynamic>{};
             return Column(
               children: [
+                if (Navigator.of(context).canPop())
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                  ),
                 // ─── Avatar with edit overlay ───
                 Center(
                   child: Stack(
@@ -414,6 +460,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     padding: EdgeInsets.zero,
                     children: [
                       _MenuItem(
+                        icon: Icons.videocam_outlined,
+                        label: 'My Intro Video',
+                        trailing: _introVideoTrailing(profile),
+                        trailingColor: _introVideoTrailingColor(profile),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const IntroVideoDetailPage(),
+                          ),
+                        ),
+                      ),
+                      _MenuItem(
                         icon: Icons.person_outline_rounded,
                         label: 'About Me',
                         onTap: () => Navigator.push(
@@ -434,12 +492,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ),
                       _MenuItem(
-                        icon: Icons.favorite_border_rounded,
-                        label: 'Values',
-                        onTap: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const ValuesScreen(),
+                        icon: Icons.flag_outlined,
+                        label: 'Confirm Intent',
+                        onTap: () => showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => const IntentVerificationScreen(
+                            forceOpen: true,
                           ),
                         ),
                       ),

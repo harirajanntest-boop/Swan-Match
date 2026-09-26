@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "439342747193-pji08t8n9krq9606velk8374bcvk3ju6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.swam_match_app",
+            "certificate_hash": "c5b2c67366897376901ec71fb84b02f0e91d353a"
+          }
+        },
+        {
           "client_id": "439342747193-rhenheupqe4t2bmv869p8a2nag64sajt.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
@@ -57,6 +65,14 @@
         }
       },
       "oauth_client": [
+        {
+          "client_id": "439342747193-k4q8g6rqtptv25fpirm0psnmmom89ucg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.swanmatch.app",
+            "certificate_hash": "c5b2c67366897376901ec71fb84b02f0e91d353a"
+          }
+        },
         {
           "client_id": "439342747193-reebsaklijc2k8o8a8autnc6egdkrrsm.apps.googleusercontent.com",
           "client_type": 1,

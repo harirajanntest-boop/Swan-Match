@@ -82,6 +82,31 @@ class ChatService {
 		return true;
 	}
 
+	/// Marks every message the other user sent to me as "seen". Call this when
+	/// the current user opens the conversation, so the SENDER's app flips its
+	/// sent messages from a single tick (delivered) to a double tick (seen).
+	Future<void> markMessagesSeen(String otherUserId) async {
+		final uid = _auth.currentUser?.uid;
+		if (uid == null) return;
+		final chatId = chatIdFor(uid, otherUserId);
+		try {
+			// Messages addressed TO me (sent by the other user). Single-field
+			// filter avoids needing a composite index; we skip already-seen ones.
+			final snap =
+					await _messagesRef(chatId).where('receiverId', isEqualTo: uid).get();
+			final unseen =
+					snap.docs.where((d) => d.data()['seen'] != true).toList();
+			if (unseen.isEmpty) return;
+			final batch = _firestore.batch();
+			for (final d in unseen) {
+				batch.update(d.reference, {'seen': true});
+			}
+			await batch.commit();
+		} catch (_) {
+			// best-effort — never block the UI on read-receipt writes
+		}
+	}
+
 	/// Deletes the entire chat thread (messages subcollection and chat doc)
 	/// between two users. Safe to call whether or not the chat exists.
 	Future<void> deleteChatThreadBetween(String firstUserId, String secondUserId) async {

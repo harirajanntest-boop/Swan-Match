@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/utils/stream_utils.dart';
+import '../shared/helpers/profile_visibility_helper.dart';
 import 'chat_service.dart';
 
 class UserService {
@@ -45,11 +46,17 @@ class UserService {
     payload.remove('password');
     payload.remove('confirmPassword');
 
-    if (!(data.containsKey('createdAt'))) {
+    // NEVER overwrite createdAt on an update — re-stamping it on every edit
+    // resets the join date AND can trip immutable-field security rules, which
+    // silently rejects the whole write. Only set it when the doc is new.
+    payload.remove('createdAt');
+    final ref = _userRef(uid);
+    final existing = await ref.get();
+    if (!existing.exists) {
       payload['createdAt'] = FieldValue.serverTimestamp();
     }
 
-    await _userRef(uid).set(payload, SetOptions(merge: true));
+    await ref.set(payload, SetOptions(merge: true));
   }
 
   Future<void> updateCurrentUserProfile(Map<String, dynamic> updates) async {
@@ -588,9 +595,12 @@ class UserService {
     if (!hadTrialFields) return;
 
     _invalidateCache(uid);
+    // subscriptionPlan/subscriptionStatus are NOT written here — isPaidPremium()
+    // already returned true above, meaning the server (Stripe webhook or
+    // verifyIapPurchase, both via Admin SDK) already set them correctly. This
+    // call's only job is clearing the now-stale trial fields, none of which
+    // are rules-restricted.
     await _userRef(uid).set({
-      'subscriptionPlan': 'premium',
-      'subscriptionStatus': profile?['subscriptionStatus'] ?? 'active',
       'freeTrialEndsAt': FieldValue.delete(),
       'freeTrialStartedAt': FieldValue.delete(),
       'trialEndedAt': FieldValue.serverTimestamp(),
@@ -674,9 +684,9 @@ class UserService {
             matches = true;
           }
 
-          if (matches && 
-              data['registrationCompleted'] == true && 
-              data['profileApprovalStatus'] == 'approved') {
+          if (matches &&
+              data['registrationCompleted'] == true &&
+              ProfileVisibilityHelper.isDiscoverVisible(data)) {
             users.add(<String, dynamic>{...data, 'uid': doc.id});
           }
         }

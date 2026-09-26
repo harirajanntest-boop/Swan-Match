@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -9,16 +8,12 @@ import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:swam_match_app/firebase_options.dart';
 import 'package:swam_match_app/core/constants/colors.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
-import 'package:swam_match_app/services/payment_flow_service.dart';
 import 'package:swam_match_app/services/push_notification_service.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/payment_status_page.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/splash_page.dart';
-import 'package:swam_match_app/features/auth/presentation/pages/profile_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:swam_match_app/services/stripe_service.dart';
 import 'package:swam_match_app/services/user_service.dart';
+import 'package:swam_match_app/core/navigation/app_route_observer.dart';
 
 /// Global Firebase Analytics instance — use anywhere in the app:
 /// `analytics.logEvent(name: 'swipe_right', parameters: {'target_uid': uid})`
@@ -59,18 +54,12 @@ class SwamMatchApp extends StatefulWidget {
 
 class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver {
   late final Future<String?> _initFuture;
-  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
-  final AppLinks _appLinks = AppLinks();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initFuture = _initializeApp();
-    _initFuture.then((_) async {
-      await PaymentFlowService.reconcileCheckoutState();
-      if (mounted) _initDeepLinks();
-    });
   }
 
   @override
@@ -79,75 +68,39 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
     super.dispose();
   }
 
-  void _initDeepLinks() {
-    _appLinks.uriLinkStream.listen(_handlePaymentUri, onError: (_) {});
-    _appLinks.getInitialLink().then((uri) {
-      if (uri != null) _handlePaymentUri(uri);
-    });
-  }
-
-  bool _isPaymentSuccessUri(Uri uri) {
-    final host = uri.host.toLowerCase();
-    final path = uri.path.toLowerCase();
-    return host == 'payment-success' ||
-        path.contains('payment-success') ||
-        uri.toString().contains('payment-success');
-  }
-
-  bool _isPaymentCancelUri(Uri uri) {
-    final host = uri.host.toLowerCase();
-    final path = uri.path.toLowerCase();
-    return host == 'payment-cancel' ||
-        path.contains('payment-cancel') ||
-        uri.toString().contains('payment-cancel');
-  }
-
-  Future<void> _handlePaymentUri(Uri uri) async {
-    if (_isPaymentSuccessUri(uri)) {
-      await PaymentFlowService.handlePaymentSuccessDeepLink();
-    } else if (_isPaymentCancelUri(uri)) {
-      await PaymentFlowService.clearCheckoutPending();
-      final nav = _navigatorKey.currentState;
-      if (nav == null) return;
-      nav.pushNamedAndRemoveUntil('/payment-cancel', (route) => false);
-    }
-  }
-
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       UserService.instance.updateOnlineStatus(true);
-      _onAppResumed();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       UserService.instance.updateOnlineStatus(false);
     }
   }
 
-  Future<void> _onAppResumed() async {
-    await PaymentFlowService.presentCongratulationsIfPaid();
-  }
-
   Future<String?> _initializeApp() async {
+    // Firebase core is the ONLY step that must succeed for the app to run.
+    // (main() already called it; this returns the existing instance.) If this
+    // fails, the app legitimately can't work → show "Firebase setup required".
     try {
-      await _performInitialization().timeout(const Duration(seconds: 12));
-      return null;
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      ).timeout(const Duration(seconds: 15));
     } catch (error) {
-      debugPrint("Initialization error: $error");
+      debugPrint("Firebase core init error: $error");
       return error.toString();
     }
+
+    // Everything else is best-effort and must NEVER block the app or trigger
+    // the "Firebase setup required" screen. Run it fire-and-forget so a hang —
+    // e.g. push notifications on the iOS Simulator, which has no APNs, or App
+    // Check on the Simulator — can't cascade into the fatal error path. (The old
+    // code awaited these under a 12s outer timeout while their own timeouts
+    // summed to 16s, so the Simulator always tripped the fatal path.)
+    unawaited(_initBestEffortServices());
+    return null;
   }
 
-  Future<void> _performInitialization() async {
-    // CRITICAL: Firebase core is the ONLY step that must succeed for the app to
-    // run. (It was already called in main(); calling again returns the existing
-    // instance.) Everything below is best-effort — a failure or hang here must
-    // NOT block the app or trigger the "Firebase setup required" screen. For
-    // example, push notifications cannot obtain an APNs token on the iOS
-    // Simulator and would otherwise hang until the outer timeout fired.
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-
+  Future<void> _initBestEffortServices() async {
     try {
       await FirebaseAppCheck.instance.activate(
         androidProvider:
@@ -186,12 +139,10 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
         final initError = initDone ? snapshot.data : null;
         final hasFirebaseError = initError != null;
 
-        PaymentFlowService.navigatorKey = _navigatorKey;
-
         return MaterialApp(
-          navigatorKey: _navigatorKey,
           debugShowCheckedModeBanner: false,
           title: 'Swan Match',
+          navigatorObservers: [appRouteObserver],
           theme: ThemeData(
             brightness: Brightness.dark,
             fontFamily: GoogleFonts.poppins().fontFamily,
@@ -247,14 +198,6 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
               : hasFirebaseError
                   ? FirebaseSetupRequiredPage(error: initError)
                   : const SplashPage(),
-          routes: !initDone || hasFirebaseError
-              ? const {}
-              : {
-                  '/profile': (context) => const ProfileScreen(),
-                  '/payment-success': (context) =>
-                      const PaymentStatusPage(isSuccess: true),
-                  '/payment-cancel': (context) => const PaymentStatusPage(isSuccess: false),
-                },
         );
       },
     );

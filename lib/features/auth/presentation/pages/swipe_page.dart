@@ -1,29 +1,39 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../../../core/navigation/app_route_observer.dart';
 import 'package:flutter/services.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:video_player/video_player.dart';
 import '../../../../core/constants/colors.dart';
 import '../../../../services/match_service.dart';
 import '../../../../services/user_service.dart';
-import '../../../../services/interest_service.dart';
-import '../../../../models/interest_model.dart';
+import '../../../../services/connection_service.dart';
 import '../../../../models/user_model.dart';
 import '../../../../shared/widgets/linear_message.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
 import '../../../../shared/helpers/profile_visibility_helper.dart';
+import '../../../../shared/helpers/dealbreaker_matcher.dart';
 import 'notifications_page.dart';
 import 'match_profile_detail_page.dart';
+import 'connect_record_page.dart';
 import 'settings_page.dart';
 import 'subscription_page.dart';
-import 'edit_profile_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../../services/auth_service.dart';
 import '../../../../services/subscription_limits_service.dart';
-import 'package:swam_match_app/main.dart' show analytics;
+
+// Both the main per-card video init and the next-card preload wrap
+// `VideoPlayerController.initialize()` in this timeout. Without it, a
+// slow/dropped network connection can leave `initialize()` hanging
+// indefinitely, leaving the card stuck on its thumbnail forever with no
+// error state and no way to recover.
+const Duration _kVideoInitTimeout = Duration(seconds: 18);
 
 class ScoredUser {
   final UserModel user;
@@ -35,36 +45,66 @@ class ScoredUser {
 class SwipePage extends StatefulWidget {
   final void Function({Map<String, dynamic>? profile})? onOpenMatches;
   final VoidCallback? onOpenUpgrade;
+  // Whether Discover is the currently-selected bottom-nav tab. `main_dashboard`
+  // keeps all tabs alive in an `IndexedStack` (to preserve scroll/feed state
+  // across tab switches), which means this page and its video keep running
+  // even while hidden behind another tab unless told otherwise — this flag
+  // is how the active `_ReelCard`'s video gets paused/muted-out the moment
+  // the user leaves the Discover tab, not just when scrolled off within it.
+  final bool isTabActive;
 
-  const SwipePage({super.key, this.onOpenMatches, this.onOpenUpgrade});
+  const SwipePage({
+    super.key,
+    this.onOpenMatches,
+    this.onOpenUpgrade,
+    this.isTabActive = true,
+  });
 
   @override
   State<SwipePage> createState() => _SwipePageState();
 }
 
-class _SwipePageState extends State<SwipePage> {
+class _SwipePageState extends State<SwipePage> with RouteAware {
   final PageController _pageController = PageController();
   int _currentPage = 0;
 
   List<UserModel> _profiles = [];
-  Set<String> likedUids = {};
-  /// Prevents double-tap duplicate interest sends.
-  final Set<String> _interestActionLocks = {};
+  // Per-session shuffle seed: keeps the Discover order stable while the user
+  // browses, but re-shuffles on each fresh load/refresh so they don't see the
+  // same fixed order every time.
+  int _discoverSeed = DateTime.now().microsecondsSinceEpoch;
   Set<String> blockedUids = {};
+  // Users the current user has already sent a Connect request to (pending
+  // or accepted) — used to remove them from the Discover feed entirely (the
+  // old swipe-based app's behavior). Mirrors the old `likedUids`/interest-
+  // lock pattern but sourced from ConnectionService instead of InterestService.
+  Set<String> _connectedOrPendingUserIds = {};
   bool _isLoading = false;
+  // True while this page has been covered by a pushed route (e.g. the user
+  // tapped a card and `MatchProfileDetailPage` is now on top) — this page
+  // stays mounted underneath (`Navigator.push` doesn't dispose it), so
+  // without this the active card's video/audio would silently keep playing
+  // behind the new screen. Combined into `isActive` below to pause it.
+  bool _routeCovered = false;
   UserModel? _currentUser;
   StreamSubscription<Map<String, dynamic>?>? _profileSubscription;
-  StreamSubscription<Map<String, String>>? _sentInterestSub;
-  StreamSubscription<Map<String, String>>? _recvInterestSub;
+  StreamSubscription<Set<String>>? _connectionsSub;
   Timer? _discoverReloadDebounce;
   String _lastProfileSignature = '';
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _discoverSubscription;
   bool _discoverStreamStarted = false;
   List<UserModel> _lastRawCandidates = [];
 
+  // ── Next-card video preloading ───────────────────────────────────────────
+  // Buffers the intro video for the card just past the current one so it's
+  // ready to play the instant the user scrolls there, instead of starting
+  // from zero. Only ever holds at most one preloaded controller at a time.
+  VideoPlayerController? _preloadController;
+  Future<void>? _preloadInitFuture;
+  String? _preloadUid;
+
   late final Stream<Map<String, dynamic>?> _userProfileStream;
-  late final Stream<Map<String, String>> _sentInterestStatusStream;
-  late final Stream<Map<String, String>> _receivedInterestStatusStream;
+  late final Stream<Set<String>> _connectionUserIdsStream;
 
   // Local filter states
   String _genderFilter = 'All';
@@ -114,31 +154,59 @@ class _SwipePageState extends State<SwipePage> {
     'Other',
   ];
 
+  // ── Discover debug log (debug builds only) ───────────────────────────────
+  // Writes every PASS/BLOCK decision from the Discover filter pipeline to a
+  // file so it can be reviewed after the run, instead of scrolling terminal
+  // output. No-op (and stripped by kDebugMode) in release builds.
+  File? _discoverDebugLogFile;
+
+  Future<void> _initDiscoverDebugLog() async {
+    if (!kDebugMode) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/discover_debug.log');
+      // Overwrite at the start of each run so the file only reflects the
+      // current session, not every run since the app was installed.
+      await file.writeAsString(
+        '=== Discover debug log started ${DateTime.now()} ===\n',
+      );
+      _discoverDebugLogFile = file;
+      debugPrint('SwipePage: discover debug log -> ${file.path}');
+    } catch (e) {
+      debugPrint('SwipePage: could not open discover debug log: $e');
+    }
+  }
+
+  void _logDiscover(String status, String uid, String reason,
+      [String extra = '']) {
+    if (!kDebugMode) return;
+    final line = 'SwipePage: $status $uid reason=$reason $extra';
+    debugPrint(line);
+    try {
+      _discoverDebugLogFile?.writeAsStringSync(
+        '${DateTime.now().toIso8601String()} $line\n',
+        mode: FileMode.append,
+      );
+    } catch (_) {
+      // Best-effort only — never let logging break the Discover feed.
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _initDiscoverDebugLog();
     _userProfileStream = UserService.instance.watchCurrentUserProfile();
-    _sentInterestStatusStream = InterestService.instance
-        .watchMySentInterestStatusByUserId();
-    _receivedInterestStatusStream = InterestService.instance
-        .watchInterestsForMe()
-        .map((items) {
-          final latest = <String, InterestModel>{};
-          for (final item in items) {
-            final prev = latest[item.fromUserId];
-            if (prev == null || item.updatedAt.isAfter(prev.updatedAt)) {
-              latest[item.fromUserId] = item;
-            }
-          }
-          return latest.map((k, v) => MapEntry(k, v.status.toLowerCase()));
-        });
+    _connectionUserIdsStream =
+        ConnectionService.instance.watchMyPendingOrAcceptedConnectionUserIds();
     _profileSubscription = _userProfileStream.listen(_handleProfileUpdate);
-    _sentInterestSub = _sentInterestStatusStream.listen(
-      (_) => _scheduleDiscoverReload(),
-    );
-    _recvInterestSub = _receivedInterestStatusStream.listen(
-      (_) => _scheduleDiscoverReload(),
-    );
+    _connectionsSub = _connectionUserIdsStream.listen((ids) {
+      if (!mounted) return;
+      setState(() => _connectedOrPendingUserIds = ids);
+      // Keep exclusion lists (e.g. blockedUids) fresh when connection state
+      // changes, mirroring the old interest-stream-triggered reload.
+      _scheduleDiscoverReload();
+    });
     _loadProfiles();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncDiscoverFilterLimits();
@@ -195,14 +263,35 @@ class _SwipePageState extends State<SwipePage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
     _profileSubscription?.cancel();
-    _sentInterestSub?.cancel();
-    _recvInterestSub?.cancel();
+    _connectionsSub?.cancel();
     _discoverReloadDebounce?.cancel();
     _discoverSubscription?.cancel();
     _pageController.dispose();
+    _clearPreload();
     super.dispose();
+  }
+
+  // ─── RouteAware: pause the active card's video while covered ────────────
+  @override
+  void didPushNext() {
+    if (mounted) setState(() => _routeCovered = true);
+  }
+
+  @override
+  void didPopNext() {
+    if (mounted) setState(() => _routeCovered = false);
   }
 
   void _handleProfileUpdate(Map<String, dynamic>? profile) {
@@ -236,48 +325,10 @@ class _SwipePageState extends State<SwipePage> {
     ].join('|');
   }
 
-  // ─── Pre-cache the next 3 profiles' photos so swipes feel instant ───
-  void _precacheNext(List<Map<String, dynamic>> matches, int currentIndex) {
-    // Pre-cache up to 3 upcoming profiles
-    for (int offset = 1; offset <= 3; offset++) {
-      final idx = currentIndex + offset;
-      if (idx >= matches.length) break;
-      final next = matches[idx];
-      final photos = _photosOf(next);
-      for (final url in photos.take(2)) {
-        precacheImage(
-          CachedNetworkImageProvider(url),
-          context,
-        );
-      }
-    }
-  }
-
-  List<String> _photosOf(Map<String, dynamic> m) {
-    final photos = m['photos'];
-    if (photos is List && photos.isNotEmpty) {
-      return photos
-          .map((e) => e.toString())
-          .where((e) => e.isNotEmpty)
-          .toList();
-    }
-    // Check all known photo field names — Firestore uses 'profilePicture'
-    final single =
-        (m['profilePicture'] ??
-                m['photoUrl'] ??
-                m['profilePhoto'] ??
-                m['profilePic'] ??
-                '')
-            .toString();
-    return single.isNotEmpty ? [single] : [];
-  }
-
   List<Map<String, dynamic>> _applyFilters(
     List<Map<String, dynamic>> matches,
     Map<String, dynamic> profile,
-    Map<String, dynamic> hiddenMap,
-    Map<String, String> sentStatus,
-    Map<String, String> receivedStatus, {
+    Map<String, dynamic> hiddenMap, {
     bool includeSkipped = false,
   }) {
     final blocked = List<String>.from(profile['blockedUids'] ?? []);
@@ -301,7 +352,14 @@ class _SwipePageState extends State<SwipePage> {
         .toString()
         .trim()
         .toLowerCase();
-    const noReligionPref = {'any', 'open to all', 'all', 'no preference', ''};
+    const noReligionPref = {
+      'any',
+      'open to all',
+      'all',
+      'no preference',
+      'same as mine',
+      '',
+    };
 
     // Opposite gender only (from the signed-in user's gender).
     List<String> allowedGenders = [];
@@ -317,14 +375,34 @@ class _SwipePageState extends State<SwipePage> {
       allowedGenders = ['Male', 'male', 'man', 'Man'];
     }
 
-    return matches.where((item) {
+    final blockReasons = <String, int>{};
+    void logBlock(String uid, String reason, [String extra = '']) {
+      blockReasons[reason] = (blockReasons[reason] ?? 0) + 1;
+      _logDiscover('FILTER-BLOCK', uid, reason, extra);
+    }
+
+    final result = matches.where((item) {
       final uid = (item['uid'] ?? '').toString();
       final itemGender = (item['gender'] ?? '').toString();
 
       // Skip profiles that are deleted, missing uid, or blocked
-      if (uid.isEmpty ||
-          blocked.contains(uid) ||
-          DeletedUserHelper.isDeleted(item)) {
+      if (uid.isEmpty) {
+        return false;
+      }
+      if (blocked.contains(uid)) {
+        logBlock(uid, 'in_blocked_list');
+        return false;
+      }
+      if (DeletedUserHelper.isDeleted(item)) {
+        logBlock(uid, 'deleted');
+        return false;
+      }
+      // Users the current user has already connected with (pending request
+      // sent, OR accepted) are removed from Discover entirely — matching the
+      // original swipe-based app's behavior of hiding matched users from the
+      // discovery feed, instead of merely relabeling the Connect button.
+      if (_connectedOrPendingUserIds.contains(uid)) {
+        logBlock(uid, 'already_connected');
         return false;
       }
 
@@ -332,7 +410,10 @@ class _SwipePageState extends State<SwipePage> {
       if (genderFilter != 'All') {
         final g = _normalizeGender(itemGender);
         final f = _normalizeGender(genderFilter);
-        if (g != f) return false;
+        if (g != f) {
+          logBlock(uid, 'bottom_sheet_gender_filter', 'their=$g wanted=$f');
+          return false;
+        }
       }
 
       final rawDob = item['dateOfBirth'];
@@ -357,9 +438,19 @@ class _SwipePageState extends State<SwipePage> {
       ageLocal ??= _parseInt(item['age'] ?? item['calculatedAge']);
 
       if (ageLocal != null) {
-        if (ageMin != null && ageLocal < ageMin) return false;
-        if (ageMax != null && ageLocal > ageMax) return false;
-        if (ageLocal < ageRange.start || ageLocal > ageRange.end) return false;
+        if (ageMin != null && ageLocal < ageMin) {
+          logBlock(uid, 'age_below_my_min', 'their_age=$ageLocal min=$ageMin');
+          return false;
+        }
+        if (ageMax != null && ageLocal > ageMax) {
+          logBlock(uid, 'age_above_my_max', 'their_age=$ageLocal max=$ageMax');
+          return false;
+        }
+        if (ageLocal < ageRange.start || ageLocal > ageRange.end) {
+          logBlock(uid, 'age_outside_bottom_sheet_range',
+              'their_age=$ageLocal range=${ageRange.start}-${ageRange.end}');
+          return false;
+        }
       }
 
       if (interestTags.isNotEmpty) {
@@ -370,7 +461,10 @@ class _SwipePageState extends State<SwipePage> {
         final hasAny = interestTags.any(
           (tag) => profileInterests.contains(tag.trim().toLowerCase()),
         );
-        if (!hasAny) return false;
+        if (!hasAny) {
+          logBlock(uid, 'no_matching_interest_tags');
+          return false;
+        }
       }
 
       if (motherTongueFilter.isNotEmpty) {
@@ -378,20 +472,32 @@ class _SwipePageState extends State<SwipePage> {
             .toString()
             .trim()
             .toLowerCase();
-        if (mt != motherTongueFilter.trim().toLowerCase()) return false;
+        if (mt != motherTongueFilter.trim().toLowerCase()) {
+          logBlock(uid, 'mother_tongue_mismatch',
+              'their=$mt wanted=$motherTongueFilter');
+          return false;
+        }
       }
 
       // ─ Gender (opposite of current user) ───────────────────────────────
       if (genderFilter == 'All' && allowedGenders.isNotEmpty) {
         final profileGenderNorm = _normalizeGender(itemGender);
         final allowedNorm = allowedGenders.map(_normalizeGender).toSet();
-        if (!allowedNorm.contains(profileGenderNorm)) return false;
+        if (!allowedNorm.contains(profileGenderNorm)) {
+          logBlock(uid, 'opposite_gender_only',
+              'their=$profileGenderNorm allowed=$allowedNorm');
+          return false;
+        }
       }
 
       // ─ Religion (Edit Profile preferredReligion only) ──────────────────
       if (!noReligionPref.contains(preferredReligion)) {
         final r = (item['religion'] ?? '').toString().trim().toLowerCase();
-        if (r != preferredReligion) return false;
+        if (r != preferredReligion) {
+          logBlock(uid, 'religion_mismatch',
+              'their=$r wanted=$preferredReligion');
+          return false;
+        }
       }
 
       // ─ Cooldown ──────────────────────────────────────────────────────────
@@ -402,29 +508,21 @@ class _SwipePageState extends State<SwipePage> {
       // When includeSkipped is true (the "Review skipped" flow) we deliberately
       // bypass the cooldown so the profiles the user passed can resurface.
       final hidden = int.tryParse((hiddenMap[uid] ?? '').toString()) ?? 0;
-      if (!includeSkipped && hidden > now) return false;
-
-      // ─ Interest / like status ────────────────────────────────────────────
-      final ss = sentStatus[uid]?.toLowerCase() ?? '';
-      final rs = receivedStatus[uid]?.toLowerCase() ?? '';
-
-      // After disconnect, interest is declined — show again on Discover.
-      final isDisconnected =
-          ss == 'declined' || rs == 'declined' || ss == 'blocked' || rs == 'blocked';
-
-      if (!isDisconnected) {
-        if (ss == 'accepted' || ss == 'replied' || ss == 'pending') {
-          return false;
-        }
-        if (rs == 'accepted' || rs == 'replied' || rs == 'pending') {
-          return false;
-        }
-        // Swipe "like" is stored separately from interests.
-        if (likedUids.contains(uid)) return false;
+      if (!includeSkipped && hidden > now) {
+        logBlock(uid, 'cooldown_after_pass',
+            'hiddenUntil=$hidden now=$now');
+        return false;
       }
 
+      _logDiscover('PASS', uid, 'ok', 'name=${item['firstName'] ?? ''}');
       return true;
     }).toList();
+
+    if (kDebugMode) {
+      _logDiscover('SUMMARY', 'filter-stage',
+          'in=${matches.length} out=${result.length}', 'blocked=$blockReasons');
+    }
+    return result;
   }
 
   /// Safely parses an int from dynamic (supports int, double, String).
@@ -437,16 +535,6 @@ class _SwipePageState extends State<SwipePage> {
 
   /// Normalises gender strings so that 'Man'/'Male'/'m' all become 'male'
   /// and 'Woman'/'Female'/'f' all become 'female'.
-  bool _interestStatusBlocksDiscover(
-    String? sentStatus,
-    String? receivedStatus,
-  ) {
-    final ss = (sentStatus ?? '').toLowerCase();
-    final rs = (receivedStatus ?? '').toLowerCase();
-    const blocked = {'pending', 'accepted', 'replied'};
-    return blocked.contains(ss) || blocked.contains(rs);
-  }
-
   String _normalizeGender(String raw) {
     final g = raw.trim().toLowerCase();
     if (g == 'male' || g == 'man' || g == 'm') return 'male';
@@ -456,6 +544,9 @@ class _SwipePageState extends State<SwipePage> {
 
   Future<void> _loadProfiles() async {
     if (!mounted) return;
+    // New shuffle order for this load (so "every time they come" the order
+    // varies). Stream re-emits reuse this seed, so cards don't jump mid-browse.
+    _discoverSeed = DateTime.now().microsecondsSinceEpoch;
     // Only show a loading spinner on the very first load when we have no profiles yet.
     // After that, updates happen silently so the UI stays responsive.
     if (!_discoverStreamStarted && _profiles.isEmpty) {
@@ -523,44 +614,68 @@ class _SwipePageState extends State<SwipePage> {
         .toSet();
     final fetched = <UserModel>[];
     final seen = <String>{};
+    final blockReasons = <String, int>{};
+    void blocked(String uid, String reason, [String extra = '']) {
+      blockReasons[reason] = (blockReasons[reason] ?? 0) + 1;
+      _logDiscover('BLOCK', uid, reason, extra);
+    }
 
     for (final doc in snapshot.docs) {
       if (doc.id == _currentUser!.uid) continue;
       final data = doc.data();
-      if (DeletedUserHelper.isDeleted(data)) continue;
-
-      // Profile completion filter: skip incomplete profiles (< 60%)
-      final completion = UserService.instance.calculateProfileCompletion(data);
-      if (completion < _minProfileCompletion) continue;
+      if (DeletedUserHelper.isDeleted(data)) {
+        blocked(doc.id, 'deleted_flag');
+        continue;
+      }
 
       UserModel user;
       try {
         user = UserModel.fromMap(<String, dynamic>{...data, 'uid': doc.id});
       } catch (e, st) {
+        blocked(doc.id, 'parse_error', '$e');
         debugPrint('SwipePage: skip profile ${doc.id}: $e\n$st');
         continue;
       }
-      if (!user.registrationCompleted) continue;
-      if (user.isDeleted || user.status.toLowerCase() == 'deleted') continue;
+      if (!user.registrationCompleted) {
+        blocked(doc.id, 'registration_incomplete');
+        continue;
+      }
+      if (user.isDeleted || user.status.toLowerCase() == 'deleted') {
+        blocked(doc.id, 'deleted_status', 'status=${user.status}');
+        continue;
+      }
 
-      // IMAGE MODERATION: Filter out pending/rejected users from the Discover stream
-      if (user.profileApprovalStatus.toLowerCase() != 'approved') continue;
+      // Admin profile approval + approved intro video required for Discover.
+      if (!ProfileVisibilityHelper.isDiscoverVisible(data)) {
+        blocked(doc.id, 'not_admin_verified',
+            'profileApprovalStatus=${user.profileApprovalStatus} introVideoStatus=${user.introVideoStatus}');
+        continue;
+      }
 
       if (targetNorm.isNotEmpty) {
         final g = _normalizeGender(user.gender);
-        if (!targetNorm.contains(g)) continue;
+        if (!targetNorm.contains(g)) {
+          blocked(doc.id, 'gender_mismatch',
+              'their_gender=$g wanted=$targetNorm');
+          continue;
+        }
       }
 
-      if (seen.add(user.uid)) fetched.add(user);
+      if (seen.add(user.uid)) {
+        fetched.add(user);
+        _logDiscover('PASS', user.uid, 'ok', 'name=${user.firstName}');
+      }
     }
 
     _lastRawCandidates = fetched;
     if (kDebugMode) {
-      debugPrint('SwipePage: stream fetched=${fetched.length} candidates');
+      _logDiscover('SUMMARY', 'stream-stage', 'fetched=${fetched.length}',
+          'blocked=$blockReasons');
     }
     final filtered = _applyDartFilters(fetched, _currentUser!);
     final ranked = _rankUsers(filtered, _currentUser!);
-    final boosted = _applySubscriptionBoost(ranked, _currentUser!);
+    final ordered = _orderDiscover(ranked);
+    final boosted = _applySubscriptionBoost(ordered, _currentUser!);
     _mergeDiscoverProfiles(boosted);
   }
 
@@ -568,7 +683,8 @@ class _SwipePageState extends State<SwipePage> {
     if (_currentUser == null || _lastRawCandidates.isEmpty) return;
     final filtered = _applyDartFilters(_lastRawCandidates, _currentUser!);
     final ranked = _rankUsers(filtered, _currentUser!);
-    final boosted = _applySubscriptionBoost(ranked, _currentUser!);
+    final ordered = _orderDiscover(ranked);
+    final boosted = _applySubscriptionBoost(ordered, _currentUser!);
     _mergeDiscoverProfiles(boosted);
   }
 
@@ -598,7 +714,17 @@ class _SwipePageState extends State<SwipePage> {
 
     final keptSet = kept.map((p) => p.uid).toSet();
     final added = incoming.where((p) => !keptSet.contains(p.uid)).toList();
-    final merged = [...kept, ...added];
+    // Surface newly-arrived profiles right AFTER the current card (top of the
+    // remaining stack) instead of dumping them at the tail where users never
+    // reach. On the first load `kept` is empty, so this is just the ordered list.
+    final insertAt = kept.isEmpty
+        ? 0
+        : (_currentPage + 1).clamp(0, kept.length);
+    final merged = [
+      ...kept.sublist(0, insertAt),
+      ...added,
+      ...kept.sublist(insertAt),
+    ];
 
     var newPage = _currentPage;
     if (currentUid != null) {
@@ -615,22 +741,6 @@ class _SwipePageState extends State<SwipePage> {
       _currentPage = newPage;
     });
 
-    // Eagerly pre-cache the first 3 cards as soon as we have data
-    if (merged.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        for (int i = 0; i < merged.length && i < 3; i++) {
-          final photos = _photosOf(merged[i].toMap()..['uid'] = merged[i].uid);
-          for (final url in photos.take(2)) {
-            precacheImage(
-              CachedNetworkImageProvider(url),
-              context,
-            );
-          }
-        }
-      });
-    }
-
     if (pageChanged && _pageController.hasClients && merged.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_pageController.hasClients) return;
@@ -640,13 +750,11 @@ class _SwipePageState extends State<SwipePage> {
     }
   }
 
-  static const double _minProfileCompletion = 0.6; // 60% minimum to appear in feed
-
   List<UserModel> _applyDartFilters(
     List<UserModel> users,
     UserModel currentUser,
   ) {
-    if (kDebugMode) debugPrint('SwipePage: dartFilter in=${users.length}');
+    if (kDebugMode) _logDiscover('SUMMARY', 'dart-stage', 'in=${users.length}');
     int dropped = 0;
     // Guard: if maxAge is misconfigured (≤ minAge or ≤ 18), ignore age filter
     final minAge = currentUser.minAgePreference;
@@ -659,7 +767,7 @@ class _SwipePageState extends State<SwipePage> {
     final result = users.where((user) {
       if (user.uid == currentUser.uid) {
         dropped++;
-        debugPrint('  DROP self: ${user.uid}');
+        _logDiscover('DROP', user.uid, 'self');
         return false;
       }
       if (user.uid.isEmpty) {
@@ -669,20 +777,25 @@ class _SwipePageState extends State<SwipePage> {
       // Filter deleted profiles early
       if (user.isDeleted || user.status.toLowerCase() == 'deleted') {
         dropped++;
-        debugPrint('  DROP deleted: ${user.uid}');
+        _logDiscover('DROP', user.uid, 'deleted', 'status=${user.status}');
         return false;
       }
       // Hide private / non-discoverable profiles
       if (user.profileVisibility == 'Private' ||
           user.profileVisibility == 'Curated Matches Only') {
         dropped++;
+        _logDiscover('DROP', user.uid, 'profile_visibility',
+            'visibility=${user.profileVisibility}');
         return false;
       }
       final userAge = user.age;
       if (userAge > 0 && (userAge < minAge || userAge > maxAge)) {
         dropped++;
-        debugPrint(
-          '  DROP age: ${user.uid} age=$userAge, range=$minAge-$maxAge',
+        _logDiscover(
+          'DROP',
+          user.uid,
+          'age_out_of_range',
+          'age=$userAge, range=$minAge-$maxAge',
         );
         return false;
       }
@@ -700,21 +813,49 @@ class _SwipePageState extends State<SwipePage> {
       if (!_noReligionPref.contains(preferredReligion)) {
         if (user.religion.trim().toLowerCase() != preferredReligion) {
           dropped++;
-          if (kDebugMode)
-            debugPrint(
-              '  DROP religion: ${user.uid} religion=${user.religion}, pref=${currentUser.preferredReligion}',
-            );
+          _logDiscover(
+            'DROP',
+            user.uid,
+            'religion_mismatch',
+            'religion=${user.religion}, pref=${currentUser.preferredReligion}',
+          );
           return false;
         }
       }
 
-      if (kDebugMode) debugPrint('  PASS: ${user.uid} name=${user.firstName}');
+      // Hard dealbreaker constraints (marriage non-negotiables)
+      if (currentUser.dealbreakers.isNotEmpty) {
+        final ok = DealbreakerMatcher.satisfies(
+          myDealbreakers: currentUser.dealbreakers,
+          candidate: user.toMap(),
+          myProfile: currentUser.toMap(),
+        );
+        if (!ok) {
+          dropped++;
+          _logDiscover('DROP', user.uid, 'dealbreaker_mismatch');
+          return false;
+        }
+      }
+
+      // Pause / break — never show in Discover
+      final intent = (user.toMap()['intentStatus'] ?? '').toString();
+      if (intent == 'taking_break' || intent == 'pause_matching') {
+        dropped++;
+        _logDiscover('DROP', user.uid, 'intent_paused', intent);
+        return false;
+      }
+
+      _logDiscover('PASS', user.uid, 'ok', 'name=${user.firstName}');
       return true;
     }).toList();
-    if (kDebugMode)
-      debugPrint(
-        'SwipePage: dartFilter out=${result.length}, dropped=$dropped',
+    if (kDebugMode) {
+      _logDiscover(
+        'SUMMARY',
+        'dart-stage',
+        'out=${result.length}',
+        'dropped=$dropped',
       );
+    }
     return result;
   }
 
@@ -823,12 +964,6 @@ class _SwipePageState extends State<SwipePage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final likesSnap = await FirebaseFirestore.instance
-        .collection('likes')
-        .doc(uid)
-        .collection('likedUsers')
-        .get();
-    likedUids = likesSnap.docs.map((doc) => doc.id).toSet();
     final userDoc = await FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
@@ -837,45 +972,21 @@ class _SwipePageState extends State<SwipePage> {
     blockedUids = Set<String>.from(data['blockedUids'] ?? <String>[]);
   }
 
-  Future<void> _onLike(String likedUid) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    await FirebaseFirestore.instance
-        .collection('likes')
-        .doc(uid)
-        .collection('likedUsers')
-        .doc(likedUid)
-        .set({'timestamp': FieldValue.serverTimestamp()});
-
-    final reverseCheck = await FirebaseFirestore.instance
-        .collection('likes')
-        .doc(likedUid)
-        .collection('likedUsers')
-        .doc(uid)
-        .get();
-
-    if (reverseCheck.exists) {
-      await _createMatch(uid, likedUid);
+  /// Orders the Discover feed: brand-new profiles (joined in the last 7 days)
+  /// come FIRST, then everyone else. Each group is shuffled with the current
+  /// session seed so the order varies between sessions but stays stable while
+  /// the user is browsing (no card jumping on stream re-emits).
+  List<UserModel> _orderDiscover(List<UserModel> users) {
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
+    final rng = Random(_discoverSeed);
+    final fresh = <UserModel>[];
+    final rest = <UserModel>[];
+    for (final u in users) {
+      (u.createdAt.isAfter(cutoff) ? fresh : rest).add(u);
     }
-  }
-
-  Future<void> _createMatch(String uid1, String uid2) async {
-    final chatId = uid1.compareTo(uid2) < 0 ? '${uid1}_$uid2' : '${uid2}_$uid1';
-
-    await FirebaseFirestore.instance.collection('matches').doc(chatId).set({
-      'users': [uid1, uid2],
-      'timestamp': FieldValue.serverTimestamp(),
-      'chatId': chatId,
-      'lastMessage': '',
-      'lastMessageTime': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
-    // 📊 Analytics: track match creation
-    unawaited(analytics.logEvent(
-      name: 'match_created',
-      parameters: {'match_chat_id': chatId},
-    ));
+    fresh.shuffle(rng);
+    rest.shuffle(rng);
+    return [...fresh, ...rest];
   }
 
   List<UserModel> _applySubscriptionBoost(
@@ -913,7 +1024,7 @@ class _SwipePageState extends State<SwipePage> {
           elevation: 0,
           systemOverlayStyle: SystemUiOverlayStyle.light,
           title: const Text(
-            'Discover',
+            'Explore',
             style: TextStyle(
               color: Colors.white,
               fontSize: 22,
@@ -953,170 +1064,137 @@ class _SwipePageState extends State<SwipePage> {
                 ? Map<String, dynamic>.from(hiddenRaw)
                 : <String, dynamic>{};
 
-            return StreamBuilder<Map<String, String>>(
-              stream: _sentInterestStatusStream,
-              builder: (context, ss) {
-                final sentStatus = ss.data ?? {};
-                return StreamBuilder<Map<String, String>>(
-                  stream: _receivedInterestStatusStream,
-                  builder: (context, rs) {
-                    final recvStatus = rs.data ?? {};
-                    final savedIds = ((profile['savedMatchIds'] ?? []) as List)
-                        .map((e) => e.toString())
-                        .where((e) => e.isNotEmpty)
-                        .toSet();
+            // Show loading indicator only on fresh start with no profiles yet
+            if (_isLoading && _profiles.isEmpty) {
+              return const Center(
+                child: CircularProgressIndicator(
+                  color: AppColors.goldMedium,
+                ),
+              );
+            }
 
-                    // Show loading indicator only on fresh start with no profiles yet
-                    if (_isLoading && _profiles.isEmpty) {
-                      return const Center(
-                        child: CircularProgressIndicator(
-                          color: AppColors.goldMedium,
+            // A not-yet-approved account can't see anyone else's profile in
+            // Discover — mirrors the same admin-approval gates that decide
+            // whether THIS user would be visible to others, applied here to
+            // gate what they can see. Seed/demo accounts are pre-approved so
+            // this never affects them.
+            if (ps.hasData && !ProfileVisibilityHelper.isAccountApprovedForDiscover(profile)) {
+              return const _AwaitingApprovalState();
+            }
+
+            final savedIds =
+                ((profile['savedMatchIds'] as List<dynamic>?) ?? [])
+                    .map((e) => e.toString())
+                    .toSet();
+
+            final rankedMaps = _profiles.map((u) {
+              final m = u.toMap();
+              m['uid'] = u.uid; // toMap() doesn't include uid — add it explicitly
+              return m;
+            }).toList();
+            final matches = _applyFilters(rankedMaps, profile, hiddenMap);
+
+            if (matches.isEmpty) {
+              // Fresh deck is exhausted. If the user skipped anyone, show
+              // an "all caught up" card with a one-tap way to revisit only
+              // those skipped profiles (liked / matched / blocked people
+              // are never included). Otherwise show the standard empty state.
+              final skipped = _applyFilters(
+                rankedMaps,
+                profile,
+                hiddenMap,
+                includeSkipped: true,
+              );
+              if (skipped.isNotEmpty) {
+                return _ResetDeckCard(
+                  onReset: () => _resetDeck(hiddenMap),
+                );
+              }
+              return _EmptyDiscoverState();
+            }
+
+            // Keep the next card's video buffering in the background so it's
+            // ready the instant the user scrolls to it. Deferred to the next
+            // frame so an about-to-become-active `_ReelCard` gets a chance to
+            // adopt (consume) the current preload via didUpdateWidget/
+            // _initVideo before we potentially advance/dispose it here.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _updatePreload(matches);
+            });
+
+            return PageView.builder(
+              controller: _pageController,
+              scrollDirection: Axis.vertical,
+              physics: const PageScrollPhysics(),
+              onPageChanged: (i) async {
+                if (i > _currentPage) {
+                  final swipeCheck =
+                      await SubscriptionLimitsService.instance.canSwipe();
+                  if (!swipeCheck.allowed) {
+                    _showSwipeUpgradeSheet();
+                    _pageController.jumpToPage(_currentPage);
+                    return;
+                  }
+                  await SubscriptionLimitsService.instance.recordSwipe();
+                }
+                setState(() => _currentPage = i);
+                _checkEmailLinkPopup();
+              },
+              itemCount: matches.length,
+              itemBuilder: (context, index) {
+                final item = matches[index];
+                final uid = (item['uid'] ?? '').toString();
+                final isSaved = savedIds.contains(uid);
+                final isPreloadTarget =
+                    uid.isNotEmpty && uid == _preloadUid;
+                return _ReelCard(
+                  key: ValueKey(uid),
+                  match: item,
+                  isActive: index == _currentPage && widget.isTabActive && !_routeCovered,
+                  isSaved: isSaved,
+                  preloadedController:
+                      isPreloadTarget ? _preloadController : null,
+                  preloadedInitFuture:
+                      isPreloadTarget ? _preloadInitFuture : null,
+                  onPreloadConsumed:
+                      isPreloadTarget ? () => _consumePreload(uid) : null,
+                  onSkip: () => _dismissProfile(uid, hiddenMap, matches),
+                  onSave: () => _toggleSaved(uid, isSaved),
+                  onTap: () {
+                    if (uid.isNotEmpty) {
+                      MatchService.instance.recordProfileView(
+                        viewedUserId: uid,
+                      );
+                    }
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => MatchProfileDetailPage(profile: item),
+                      ),
+                    );
+                  },
+                  onConnect: () async {
+                    if (uid.isEmpty) return;
+                    final name = (item['name'] ?? '').toString();
+                    final photo = (item['profilePicture'] ??
+                            item['photoUrl'] ??
+                            item['profilePhoto'] ??
+                            '')
+                        .toString();
+                    final sent = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ConnectRecordPage(
+                          receiverId: uid,
+                          receiverName: name,
+                          receiverPhotoUrl: photo,
                         ),
-                      );
-                    }
-
-                    final rankedMaps = _profiles.map((u) {
-                      final m = u.toMap();
-                      m['uid'] = u
-                          .uid; // toMap() doesn't include uid — add it explicitly
-                      return m;
-                    }).toList();
-                    final matches = _applyFilters(
-                      rankedMaps,
-                      profile,
-                      hiddenMap,
-                      sentStatus,
-                      recvStatus,
+                      ),
                     );
-
-                    if (matches.isEmpty) {
-                      // Fresh deck is exhausted. If the user skipped anyone, show
-                      // an "all caught up" card with a one-tap way to revisit only
-                      // those skipped profiles (liked / matched / blocked people
-                      // are never included). Otherwise show the standard empty state.
-                      final skipped = _applyFilters(
-                        rankedMaps,
-                        profile,
-                        hiddenMap,
-                        sentStatus,
-                        recvStatus,
-                        includeSkipped: true,
-                      );
-                      if (skipped.isNotEmpty) {
-                        return _ResetDeckCard(
-                          onReset: () => _resetDeck(hiddenMap),
-                        );
-                      }
-                      return _EmptyDiscoverState();
+                    if (sent == true && mounted) {
+                      _showMessage('Connection request sent.');
+                      _nextCard(matches);
                     }
-
-                    return PageView.builder(
-                      controller: _pageController,
-                      scrollDirection: Axis.vertical,
-                      physics: const PageScrollPhysics(),
-                      onPageChanged: (i) async {
-                        if (i > _currentPage) {
-                          final swipeCheck =
-                              await SubscriptionLimitsService.instance
-                                  .canSwipe();
-                          if (!swipeCheck.allowed) {
-                            _showSwipeUpgradeSheet();
-                            _pageController.jumpToPage(_currentPage);
-                            return;
-                          }
-                          await SubscriptionLimitsService.instance
-                              .recordSwipe();
-                        }
-                        setState(() => _currentPage = i);
-                        _precacheNext(matches, i);
-                        _checkEmailLinkPopup();
-                      },
-                      itemCount: matches.length,
-                      itemBuilder: (context, index) {
-                        final item = matches[index];
-                        final uid = (item['uid'] ?? '').toString();
-                        final interestLocked = _isInterestLocked(uid) ||
-                            _interestStatusBlocksDiscover(
-                              sentStatus[uid],
-                              recvStatus[uid],
-                            );
-                        return _ReelCard(
-                          key: ValueKey(uid),
-                          match: item,
-                          photos: _photosOf(item),
-                          interestStatus: sentStatus[uid] ?? '',
-                          interestLocked: interestLocked,
-                          isSaved: savedIds.contains(uid),
-                          onTap: () async {
-                            if (uid.isNotEmpty) {
-                              MatchService.instance.recordProfileView(
-                                viewedUserId: uid,
-                              );
-                            }
-                            final interestSent = await Navigator.push<bool>(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => MatchProfileDetailPage(
-                                  profile: item,
-                                  popOnInterestSent: true,
-                                ),
-                              ),
-                            );
-                            if (interestSent == true && mounted) {
-                              likedUids.add(uid);
-                              _interestActionLocks.remove(uid);
-                              _showMessage('Interest sent! 💛');
-                              setState(() {});
-                              _nextCard(matches);
-                            }
-                          },
-                          onDismiss: () async {
-                            if (uid.isEmpty) return;
-                            // Pass = 7-day cooldown (the profile can resurface
-                            // later) rather than a permanent hide — keeps the
-                            // pool from drying up for active/premium users.
-                            const cooldown = Duration(days: 7);
-                            final hidden = Map<String, dynamic>.from(
-                                profile['hiddenMatches'] ?? {});
-                            hidden[uid] = DateTime.now()
-                                .add(cooldown)
-                                .millisecondsSinceEpoch;
-                            await UserService.instance.updateCurrentUserProfile(
-                              {'hiddenMatches': hidden},
-                            );
-                            if (!mounted) return;
-                            _showMessage('Skipped for now.');
-                            _nextCard(matches);
-                          },
-                          onToggleSave: () async {
-                            if (uid.isEmpty) return;
-                            final cur =
-                                ((profile['savedMatchIds'] ?? []) as List)
-                                    .map((e) => e.toString())
-                                    .toSet();
-                            final wasSaved = cur.contains(uid);
-                            if (wasSaved) {
-                              cur.remove(uid);
-                            } else {
-                              cur.add(uid);
-                            }
-                            await UserService.instance.updateCurrentUserProfile(
-                              {'savedMatchIds': cur.toList()},
-                            );
-                            if (!mounted) return;
-                            _showMessage(
-                              wasSaved
-                                  ? 'Removed from saved.'
-                                  : 'Profile saved!',
-                            );
-                          },
-                          onLike: () => _sendInterestFromSwipe(
-                            uid: uid,
-                            matches: matches,
-                          ),
-                        );
-                      },
-                    );
                   },
                 );
               },
@@ -1132,66 +1210,119 @@ class _SwipePageState extends State<SwipePage> {
     showLinearMessage(context, message, isError: isError);
   }
 
-  bool _isInterestLocked(String uid) {
-    if (uid.isEmpty) return true;
-    return likedUids.contains(uid) || _interestActionLocks.contains(uid);
-  }
-
-  Future<void> _sendInterestFromSwipe({
-    required String uid,
-    required List<Map<String, dynamic>> matches,
-  }) async {
-    if (_isInterestLocked(uid)) return;
-
-    _interestActionLocks.add(uid);
-    likedUids.add(uid);
-    if (mounted) setState(() {});
-
-    try {
-      HapticFeedback.mediumImpact();
-      final result =
-          await InterestService.instance.sendInterest(toUserId: uid);
-      if (!mounted) return;
-
-      if (result == InterestSendResult.trialLimitReached) {
-        likedUids.remove(uid);
-        _showSwipeUpgradeSheet();
-        return;
-      }
-
-      if (result == InterestSendResult.sent) {
-        await _onLike(uid);
-        if (!mounted) return;
-        // 📊 Analytics: track swipe right / interest sent
-        unawaited(analytics.logEvent(
-          name: 'swipe_right',
-          parameters: {'target_uid': uid},
-        ));
-        _showMessage('Interest sent! 💛');
-      } else if (result == InterestSendResult.pending) {
-        _showMessage('Interest already pending');
-      } else if (result == InterestSendResult.alreadyAccepted) {
-        _showMessage('Already connected! You can message now.');
-      }
-
-      _nextCard(matches);
-    } catch (e) {
-      likedUids.remove(uid);
-      if (mounted) {
-        _showMessage('Could not send interest. Please try again.', isError: true);
-      }
-    } finally {
-      _interestActionLocks.remove(uid);
-      if (mounted) setState(() {});
-    }
-  }
-
   void _nextCard(List<Map<String, dynamic>> matches) {
     if (_currentPage < matches.length - 1) {
       _pageController.nextPage(
         duration: const Duration(milliseconds: 400),
         curve: Curves.easeInOut,
       );
+    }
+  }
+
+  /// Restored "Skip" (✕) action. Reuses the same `hiddenMatches` cooldown map
+  /// already read in [_applyFilters] (`hidden > now` check) and expired in
+  /// [_resetDeck] — this just writes a fresh 7-day-out timestamp for `uid` so
+  /// the profile drops out of Discover until the cooldown lapses, then
+  /// advances the reel to the next card (same as the Connect flow does).
+  Future<void> _dismissProfile(
+    String uid,
+    Map<String, dynamic> hiddenMap,
+    List<Map<String, dynamic>> matches,
+  ) async {
+    if (uid.isEmpty) return;
+    final until =
+        DateTime.now().add(const Duration(days: 7)).millisecondsSinceEpoch;
+    final updated = Map<String, dynamic>.from(hiddenMap)..[uid] = until;
+    _nextCard(matches);
+    try {
+      await UserService.instance.updateCurrentUserProfile(
+        {'hiddenMatches': updated},
+      );
+    } catch (e) {
+      debugPrint('SwipePage: dismiss profile error: $e');
+    }
+  }
+
+  /// Restored "Save" (bookmark) action. Reuses the exact `savedMatchIds`
+  /// list field already read/written by `saved_profiles_page.dart` — toggles
+  /// membership of `uid` in that list on the current user's profile.
+  Future<void> _toggleSaved(String uid, bool currentlySaved) async {
+    if (uid.isEmpty) return;
+    try {
+      final myProfile = await UserService.instance.getCurrentUserProfile();
+      final cur = ((myProfile?['savedMatchIds'] ?? []) as List)
+          .map((e) => e.toString())
+          .toSet();
+      if (currentlySaved) {
+        cur.remove(uid);
+      } else {
+        cur.add(uid);
+      }
+      await UserService.instance.updateCurrentUserProfile(
+        <String, dynamic>{'savedMatchIds': cur.toList()},
+      );
+      if (mounted) {
+        _showMessage(currentlySaved ? 'Removed from saved.' : 'Profile saved.');
+      }
+    } catch (e) {
+      debugPrint('SwipePage: toggle saved error: $e');
+    }
+  }
+
+  // ── Next-card video preloading ───────────────────────────────────────────
+  /// Keeps at most one preloaded [VideoPlayerController] buffered ahead of
+  /// [_currentPage] so the next card's video is already initializing by the
+  /// time the user scrolls to it. Safe to call repeatedly (e.g. on every
+  /// build/page change) — it no-ops unless the target changes.
+  void _updatePreload(List<Map<String, dynamic>> matches) {
+    final nextIndex = _currentPage + 1;
+    if (nextIndex >= matches.length) {
+      _clearPreload();
+      return;
+    }
+    final nextItem = matches[nextIndex];
+    final nextUid = (nextItem['uid'] ?? '').toString();
+    if (nextUid.isEmpty || nextUid == _preloadUid) return;
+    final nextUrl = (nextItem['introVideoUrl'] ?? '').toString();
+    _clearPreload();
+    if (nextUrl.isEmpty) return;
+    _preloadUid = nextUid;
+    try {
+      final controller = VideoPlayerController.networkUrl(Uri.parse(nextUrl));
+      _preloadController = controller;
+      // Timeout guards against a hung network init leaving this buffered
+      // controller (and, transitively, the card that later adopts it) stuck
+      // forever; catchError keeps a failed/timed-out preload from becoming
+      // an unhandled async error, since the failure is (re)detected and
+      // surfaced by the consuming `_ReelCard` via `.value.hasError` / its
+      // own timeout on `preloadedInitFuture`.
+      _preloadInitFuture =
+          controller.initialize().timeout(_kVideoInitTimeout).catchError((_) {});
+    } catch (_) {
+      _preloadController = null;
+      _preloadInitFuture = null;
+      _preloadUid = null;
+    }
+  }
+
+  /// Disposes any buffered-but-unused preloaded controller (e.g. the user
+  /// scrolled past it without landing on that card, or scrolled further
+  /// before it was consumed). No-op if a `_ReelCard` already took ownership
+  /// (it clears these fields via [_consumePreload] first).
+  void _clearPreload() {
+    _preloadController?.dispose();
+    _preloadController = null;
+    _preloadInitFuture = null;
+    _preloadUid = null;
+  }
+
+  /// Called by a `_ReelCard` when it adopts the preloaded controller matching
+  /// its uid, so the parent stops tracking (and won't later dispose) it.
+  void _consumePreload(String uid) {
+    if (uid == _preloadUid) {
+      _preloadController = null;
+      _preloadInitFuture = null;
+      _preloadUid = null;
     }
   }
 
@@ -1220,81 +1351,9 @@ class _SwipePageState extends State<SwipePage> {
   }
 
   Future<void> _checkEmailLinkPopup() async {
-    final prefs = await SharedPreferences.getInstance();
-    final hasSeen = prefs.getBool('has_seen_email_link_popup') ?? false;
-
-    if (hasSeen) return;
-
-    final linkedProviders = AuthService.instance.getLinkedProviderIds();
-    final hasEmailOrGoogle =
-        linkedProviders.contains('password') ||
-        linkedProviders.contains('google.com');
-
-    if (hasEmailOrGoogle) {
-      // Already linked, mark as seen and return
-      await prefs.setBool('has_seen_email_link_popup', true);
-      return;
-    }
-
-    // Show popup
-    await prefs.setBool('has_seen_email_link_popup', true);
-    if (!mounted) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(4),
-          ), // Linear, not modern rounded
-          backgroundColor: const Color(0xFF141414),
-          title: const Text(
-            'Account Security',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          content: const Text(
-            'Secure your account by linking an Email or Google account. This ensures you never lose access to your matches.',
-            style: TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text(
-                'Later',
-                style: TextStyle(color: Colors.white38),
-              ),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.goldMedium,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(4),
-                ), // Linear look
-              ),
-              onPressed: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const SettingsPage(scrollToSecurity: true),
-                  ),
-                );
-              },
-              child: const Text(
-                'Go to Settings',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        );
-      },
-    );
+    // Soft one-time prompt removed — MainDashboard shows a mandatory
+    // Google + Email linking dialog every time until both are linked.
+    return;
   }
 
   void _showSwipeUpgradeSheet() {
@@ -1654,7 +1713,12 @@ class _SwipePageState extends State<SwipePage> {
                             20,
                             16,
                             20,
-                            MediaQuery.of(context).viewInsets.bottom + 20,
+                            // Clear BOTH the keyboard (viewInsets) AND the system
+                            // gesture / home-indicator area (viewPadding) so the
+                            // last chips aren't hidden behind the swipe zone.
+                            MediaQuery.of(context).viewInsets.bottom +
+                                MediaQuery.of(context).viewPadding.bottom +
+                                24,
                           ),
                           children: [
                             if (access.tier == UserTier.trial)
@@ -2099,65 +2163,292 @@ class _SwipePageState extends State<SwipePage> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── FULL-SCREEN REEL CARD (with horizontal photo PageView) ──────────────────
+// ─── FULL-SCREEN REEL CARD (full-bleed intro-video, autoplay/loop) ───────────
 // ═══════════════════════════════════════════════════════════════════════════════
 class _ReelCard extends StatefulWidget {
   final Map<String, dynamic> match;
-  final List<String> photos;
-  final String interestStatus;
-  final bool interestLocked;
+  final bool isActive;
   final bool isSaved;
+  // A controller the parent already started buffering for THIS card (because
+  // it was the "next" card while another was active), plus the Future from
+  // its single `.initialize()` call. Null when nothing was preloaded for it.
+  final VideoPlayerController? preloadedController;
+  final Future<void>? preloadedInitFuture;
+  // Tells the parent this card has taken ownership of the preloaded
+  // controller above, so the parent stops tracking (and won't dispose) it.
+  final VoidCallback? onPreloadConsumed;
   final VoidCallback onTap;
-  final VoidCallback onDismiss;
-  final VoidCallback onToggleSave;
-  final Future<void> Function() onLike;
+  final VoidCallback onConnect;
+  final VoidCallback? onSkip;
+  final VoidCallback? onSave;
 
   const _ReelCard({
     super.key,
     required this.match,
-    required this.photos,
-    required this.interestStatus,
-    this.interestLocked = false,
-    required this.isSaved,
+    required this.isActive,
+    this.isSaved = false,
+    this.preloadedController,
+    this.preloadedInitFuture,
+    this.onPreloadConsumed,
     required this.onTap,
-    required this.onDismiss,
-    required this.onToggleSave,
-    required this.onLike,
+    required this.onConnect,
+    this.onSkip,
+    this.onSave,
   });
 
   @override
   State<_ReelCard> createState() => _ReelCardState();
 }
 
-class _ReelCardState extends State<_ReelCard>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _heartController;
-  late final Animation<double> _heartScale;
-  final PageController _photoController = PageController();
-  int _photoIndex = 0;
-  bool _sendingInterest = false;
+class _ReelCardState extends State<_ReelCard> {
+  // Persists the user's last mute preference across cards/sessions.
+  static const String _muteKey = 'discover_video_muted';
+
+  VideoPlayerController? _videoController;
+  bool _videoError = false;
+  bool _muted = true;
+
+  // Watches for a mid-playback stall (e.g. a network hiccup ExoPlayer/AVPlayer
+  // never recovers from) that the initial-load timeout in `_initVideo()` can't
+  // catch, since that timeout only guards the first `initialize()` call. Ticks
+  // every 5s; if the reported position hasn't advanced for two consecutive
+  // ticks while the controller believes it's actively playing, the video is
+  // treated as stuck and routed into the same "Tap to retry" overlay already
+  // used for load failures, rather than leaving the card silently frozen.
+  Timer? _stallWatchdog;
+  Duration _lastStallCheckPosition = Duration.zero;
+  int _stallTicks = 0;
+
+  // Monotonically-increasing generation id, bumped at the start of every
+  // `_initVideo()` call. Lets overlapping calls (e.g. the user scrolling
+  // quickly back and forth re-triggers init while a previous call is still
+  // awaiting a slow network initialize()) detect they've been superseded
+  // and safely dispose their own controller instead of racing to write
+  // `_videoController`/`setState` — this is what prevents a double-init
+  // leak or a disposed controller ending up referenced by the widget.
+  int _initGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _heartController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 350),
-    );
-    _heartScale =
-        TweenSequence<double>([
-          TweenSequenceItem(tween: Tween(begin: 1.0, end: 1.5), weight: 50),
-          TweenSequenceItem(tween: Tween(begin: 1.5, end: 1.0), weight: 50),
-        ]).animate(
-          CurvedAnimation(parent: _heartController, curve: Curves.easeInOut),
-        );
+    _loadMutePref().then((_) {
+      if (mounted && widget.isActive) _initVideo();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ReelCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_videoUrl(widget.match) != _videoUrl(oldWidget.match)) {
+      _disposeVideo();
+      if (widget.isActive) _initVideo();
+      return;
+    }
+    if (widget.isActive && !oldWidget.isActive) {
+      final controller = _videoController;
+      if (controller == null) {
+        _initVideo();
+      } else {
+        controller.seekTo(Duration.zero);
+        controller.play();
+        _stallTicks = 0;
+        _lastStallCheckPosition = Duration.zero;
+        if (_stallWatchdog == null) _startStallWatchdog();
+      }
+    } else if (!widget.isActive && oldWidget.isActive) {
+      _videoController?.pause();
+    }
   }
 
   @override
   void dispose() {
-    _heartController.dispose();
-    _photoController.dispose();
+    _disposeVideo();
     super.dispose();
+  }
+
+  String _videoUrl(Map<String, dynamic> m) =>
+      (m['introVideoUrl'] ?? '').toString();
+
+  Future<void> _loadMutePref() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final muted = prefs.getBool(_muteKey) ?? true;
+      if (mounted) setState(() => _muted = muted);
+    } catch (_) {
+      // Best-effort only — default stays muted.
+    }
+  }
+
+  Future<void> _initVideo() async {
+    final url = _videoUrl(widget.match);
+    // Bump the generation FIRST (and synchronously — no `await` above this
+    // line) so this call immediately supersedes any still-in-flight call
+    // for this same card. That earlier call's own `_stale()` checks (below)
+    // will start returning true, so it disposes whatever controller it was
+    // holding instead of touching `_videoController`/state — there is never
+    // more than one "winning" controller per card.
+    final myGeneration = ++_initGeneration;
+    bool stale() => !mounted || myGeneration != _initGeneration;
+
+    if (url.isEmpty) {
+      if (mounted) setState(() => _videoError = true);
+      return;
+    }
+
+    // If the parent already started buffering this exact card's video while
+    // it was the "next" card, adopt that controller instead of starting a
+    // fresh network fetch from zero.
+    final preloaded = widget.preloadedController;
+    if (preloaded != null) {
+      widget.onPreloadConsumed?.call();
+      try {
+        // `preloadedInitFuture` is already timeout-capped where it's created
+        // (see `_updatePreload`), but this second timeout also covers the
+        // case where adoption itself stalls waiting on that future.
+        await widget.preloadedInitFuture?.timeout(_kVideoInitTimeout);
+        if (stale()) {
+          preloaded.dispose();
+          return;
+        }
+        if (preloaded.value.hasError) {
+          preloaded.dispose();
+          setState(() => _videoError = true);
+          return;
+        }
+        await preloaded.setLooping(true);
+        await preloaded.setVolume(_muted ? 0 : 1);
+        if (stale()) {
+          preloaded.dispose();
+          return;
+        }
+        _disposeVideo();
+        setState(() {
+          _videoController = preloaded;
+          _videoError = false;
+        });
+        if (widget.isActive) preloaded.play();
+        _startStallWatchdog();
+        return;
+      } on TimeoutException {
+        debugPrint('ReelCard: preloaded video init timed out for $url');
+        preloaded.dispose();
+        if (!stale()) setState(() => _videoError = true);
+        return;
+      } catch (e) {
+        debugPrint('ReelCard: preloaded video adopt error: $e');
+        preloaded.dispose();
+        // Fall through to a normal init below.
+      }
+    }
+
+    VideoPlayerController? controller;
+    try {
+      controller = VideoPlayerController.networkUrl(Uri.parse(url));
+      await controller.initialize().timeout(_kVideoInitTimeout);
+      if (stale()) {
+        controller.dispose();
+        return;
+      }
+      await controller.setLooping(true);
+      await controller.setVolume(_muted ? 0 : 1);
+      if (stale()) {
+        controller.dispose();
+        return;
+      }
+      _disposeVideo();
+      setState(() {
+        _videoController = controller;
+        _videoError = false;
+      });
+      if (widget.isActive) controller.play();
+      _startStallWatchdog();
+    } on TimeoutException {
+      debugPrint('ReelCard: video init timed out for $url');
+      controller?.dispose();
+      if (!stale()) setState(() => _videoError = true);
+    } catch (e) {
+      debugPrint('ReelCard: video init error: $e');
+      controller?.dispose();
+      if (!stale()) setState(() => _videoError = true);
+    }
+  }
+
+  /// "Tap to retry" affordance after a timed-out/failed init — resets the
+  /// error state and re-runs `_initVideo()` from scratch (a fresh network
+  /// fetch, since the failed controller was already disposed).
+  void _retryVideo() {
+    if (!mounted) return;
+    setState(() => _videoError = false);
+    _initVideo();
+  }
+
+  void _startStallWatchdog() {
+    _stallWatchdog?.cancel();
+    _stallTicks = 0;
+    _lastStallCheckPosition = _videoController?.value.position ?? Duration.zero;
+    _stallWatchdog = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _checkForStall(),
+    );
+  }
+
+  void _checkForStall() {
+    final controller = _videoController;
+    if (!mounted || controller == null || !controller.value.isInitialized) {
+      _stallWatchdog?.cancel();
+      return;
+    }
+    if (controller.value.hasError) {
+      _handleStall();
+      return;
+    }
+    // Only a card that's supposed to be actively advancing can be "stuck" —
+    // an inactive/paused card sitting still is expected, not a stall.
+    if (!widget.isActive || !controller.value.isPlaying) {
+      _stallTicks = 0;
+      _lastStallCheckPosition = controller.value.position;
+      return;
+    }
+    final position = controller.value.position;
+    if (position == _lastStallCheckPosition) {
+      _stallTicks++;
+      if (_stallTicks >= 2) {
+        _handleStall();
+        return;
+      }
+    } else {
+      _stallTicks = 0;
+    }
+    _lastStallCheckPosition = position;
+  }
+
+  /// Position hasn't moved for ~10s while the controller believes it's
+  /// playing — treat exactly like a load failure: drop the frozen controller
+  /// and surface the existing "Tap to retry" overlay instead of leaving the
+  /// card silently stuck on its last frame forever.
+  void _handleStall() {
+    debugPrint('ReelCard: video stalled for ${_videoUrl(widget.match)}');
+    _disposeVideo();
+    if (mounted) setState(() => _videoError = true);
+  }
+
+  void _disposeVideo() {
+    _stallWatchdog?.cancel();
+    _stallWatchdog = null;
+    _videoController?.dispose();
+    _videoController = null;
+  }
+
+  Future<void> _toggleMute() async {
+    final next = !_muted;
+    setState(() => _muted = next);
+    await _videoController?.setVolume(next ? 0 : 1);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_muteKey, next);
+    } catch (_) {
+      // Best-effort only.
+    }
   }
 
   int? _age() {
@@ -2200,12 +2491,6 @@ class _ReelCardState extends State<_ReelCard>
     return out;
   }
 
-  // Effective pages: real photos + upgrade prompt if photos > 0
-  int get _totalPages => widget.photos.isEmpty ? 1 : widget.photos.length + 1;
-
-  bool get _isUpgradePage =>
-      widget.photos.isNotEmpty && _photoIndex == widget.photos.length;
-
   @override
   Widget build(BuildContext context) {
     final name = (widget.match['name'] ?? 'Unknown').toString();
@@ -2218,56 +2503,14 @@ class _ReelCardState extends State<_ReelCard>
         .trim();
     final traits = _traits();
     final isVerified = _isVerifiedMatch();
-    final status = widget.interestStatus.toLowerCase();
-    final hasLiked = widget.interestLocked ||
-        _sendingInterest ||
-        ['pending', 'sent', 'accepted', 'replied'].contains(status);
-
-    final hidePhotos = widget.match['showPhotosToEveryone'] == false;
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        // ─── Horizontal photo PageView ───
-        PageView.builder(
-          controller: _photoController,
-          scrollDirection: Axis.horizontal,
-          physics: hidePhotos
-              ? const NeverScrollableScrollPhysics()
-              : const PageScrollPhysics(),
-          onPageChanged: (i) => setState(() => _photoIndex = i),
-          itemCount: hidePhotos ? 1 : _totalPages,
-          itemBuilder: (ctx, i) {
-            if (hidePhotos) {
-              return GestureDetector(
-                onTap: widget.onTap,
-                child: ProfileVisibilityHelper.hiddenPhotoPlaceholder(
-                  iconSize: 100,
-                ),
-              );
-            }
-            // Last page = upgrade prompt
-            if (widget.photos.isNotEmpty && i == widget.photos.length) {
-              return _UpgradePhotoPage();
-            }
-            // Photo page
-            final url = widget.photos.isNotEmpty ? widget.photos[i] : '';
-            return GestureDetector(
-              onTap: widget.onTap,
-              child: url.isNotEmpty
-                  ? CachedNetworkImage(
-                      imageUrl: url,
-                      fit: BoxFit.cover,
-                      // Very fast fade so the transition feels polished
-                      fadeInDuration: const Duration(milliseconds: 150),
-                      fadeOutDuration: const Duration(milliseconds: 50),
-                      // Shimmer-style placeholder — no spinner, no blank white
-                      placeholder: (_, __) => _ShimmerPlaceholder(),
-                      errorWidget: (_, __, ___) => _noPhoto(),
-                    )
-                  : _noPhoto(),
-            );
-          },
+        // ─── Full-bleed intro-video (autoplay/loop, muted by default) ───
+        GestureDetector(
+          onTap: widget.onTap,
+          child: _buildVideoLayer(),
         ),
 
         // ─── Gradient overlays ───
@@ -2291,170 +2534,166 @@ class _ReelCardState extends State<_ReelCard>
           ),
         ),
 
-        // ─── Photo dot indicators (top) ───
-        if (_totalPages > 1)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 60,
-            left: 0,
-            right: 0,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(_totalPages, (i) {
-                final isUpgrade =
-                    widget.photos.isNotEmpty && i == widget.photos.length;
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  width: _photoIndex == i ? 20 : 6,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: _photoIndex == i
-                        ? (isUpgrade ? AppColors.goldMedium : Colors.white)
-                        : Colors.white.withOpacity(0.35),
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                );
-              }),
+        // ─── Tap-to-unmute control (top-right) ───
+        Positioned(
+          top: MediaQuery.of(context).padding.top + 12,
+          right: 16,
+          child: GestureDetector(
+            onTap: _toggleMute,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.45),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                _muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
           ),
+        ),
 
-        // ─── Bottom info (hidden on upgrade page) ───
-        if (!_isUpgradePage)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: IgnorePointer(
-              ignoring: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            age != null ? '$name, $age' : name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.2,
-                              shadows: [
-                                Shadow(blurRadius: 8, color: Colors.black54),
-                              ],
-                            ),
+        // ─── Bottom info ───
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: IgnorePointer(
+            ignoring: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          age != null ? '$name, $age' : name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.2,
+                            shadows: [
+                              Shadow(blurRadius: 8, color: Colors.black54),
+                            ],
                           ),
                         ),
-                        if (isVerified) ...[
-                          const SizedBox(width: 8),
-                          const Icon(
-                            Icons.verified,
-                            color: AppColors.goldMedium,
-                            size: 22,
-                          ),
-                        ],
+                      ),
+                      if (isVerified) ...[
+                        const SizedBox(width: 8),
+                        const Icon(
+                          Icons.verified,
+                          color: AppColors.goldMedium,
+                          size: 22,
+                        ),
                       ],
+                    ],
+                  ),
+                  if (location.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      location,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.82),
+                        fontSize: 15,
+                        shadows: const [
+                          Shadow(blurRadius: 6, color: Colors.black45),
+                        ],
+                      ),
                     ),
-                    if (location.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        location,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.82),
-                          fontSize: 15,
-                          shadows: const [
-                            Shadow(blurRadius: 6, color: Colors.black45),
-                          ],
-                        ),
+                  ],
+                  if (traits.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: traits
+                          .map((t) => _TraitChip(label: t))
+                          .toList(),
+                    ),
+                  ],
+                  if (bio.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      bio.length > 100 ? '${bio.substring(0, 100)}… ›' : bio,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.78),
+                        fontSize: 14,
+                        height: 1.45,
+                        shadows: const [
+                          Shadow(blurRadius: 6, color: Colors.black45),
+                        ],
                       ),
-                    ],
-                    if (traits.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        children: traits
-                            .map((t) => _TraitChip(label: t))
-                            .toList(),
-                      ),
-                    ],
-                    if (bio.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        bio.length > 100 ? '${bio.substring(0, 100)}… ›' : bio,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.78),
-                          fontSize: 14,
-                          height: 1.45,
-                          shadows: const [
-                            Shadow(blurRadius: 6, color: Colors.black45),
-                          ],
-                        ),
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                    const SizedBox(height: 22),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  const SizedBox(height: 22),
 
-                    // Action buttons
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _ActionBtn(
+                  // ─── Restored Skip / Save / Connect row. Connect stays the
+                  // most prominent action (expanded, filled gold pill);
+                  // Skip and Save flank it as smaller circular icon buttons
+                  // matching the same gold/dark card styling. ───
+                  Row(
+                    children: [
+                      if (widget.onSkip != null) ...[
+                        _CircleActionButton(
                           icon: Icons.close_rounded,
-                          iconColor: const Color(0xFFE74C3C),
-                          bgColor: Colors.white.withOpacity(0.12),
-                          size: 58,
-                          iconSize: 26,
-                          onTap: widget.onDismiss,
+                          onTap: widget.onSkip,
+                          tooltip: 'Skip',
                         ),
-                        _ActionBtn(
+                        const SizedBox(width: 10),
+                      ],
+                      if (widget.onSave != null) ...[
+                        _CircleActionButton(
                           icon: widget.isSaved
                               ? Icons.bookmark_rounded
                               : Icons.bookmark_border_rounded,
                           iconColor: widget.isSaved
                               ? AppColors.goldMedium
-                              : Colors.white.withOpacity(0.85),
-                          bgColor: Colors.white.withOpacity(0.12),
-                          size: 58,
-                          iconSize: 24,
-                          onTap: widget.onToggleSave,
+                              : Colors.white,
+                          onTap: widget.onSave,
+                          tooltip: widget.isSaved ? 'Unsave' : 'Save',
                         ),
-                        ScaleTransition(
-                          scale: _heartScale,
-                          child: _ActionBtn(
-                            icon: hasLiked
-                                ? Icons.favorite_rounded
-                                : Icons.favorite_border_rounded,
-                            iconColor: Colors.white,
-                            bgColor: AppColors.goldMedium,
-                            size: 58,
-                            iconSize: 26,
-                            glowing: true,
-                            onTap: () async {
-                              if (hasLiked) return;
-                              setState(() => _sendingInterest = true);
-                              _heartController.forward(from: 0);
-                              try {
-                                await widget.onLike();
-                              } finally {
-                                if (mounted) {
-                                  setState(() => _sendingInterest = false);
-                                }
-                              }
-                            },
+                        const SizedBox(width: 10),
+                      ],
+                      Expanded(
+                        child: SizedBox(
+                          height: 52,
+                          child: ElevatedButton.icon(
+                            onPressed: widget.onConnect,
+                            icon: const Icon(
+                              Icons.forum_rounded,
+                              size: 20,
+                            ),
+                            label: const Text('Connect'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.goldMedium,
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(30),
+                              ),
+                              textStyle: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                              ),
+                            ),
                           ),
                         ),
-                      ],
-                    ),
-                  ],
-                ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
+        ),
 
         // ─── Scroll-down hint ───
         Positioned(
@@ -2473,102 +2712,174 @@ class _ReelCardState extends State<_ReelCard>
     );
   }
 
-  Widget _noPhoto() => Container(
+  /// The user's real profile photo (main `profilePicture`, or the first
+  /// entry of `photos` as a fallback) — preferred over the auto-generated
+  /// video-frame thumbnail below since it's more recognizable/meaningful.
+  String _profilePhotoUrl() {
+    final profilePicture = (widget.match['profilePicture'] ?? '').toString();
+    if (profilePicture.isNotEmpty) return profilePicture;
+    final photos = widget.match['photos'];
+    if (photos is List && photos.isNotEmpty) {
+      return photos.first.toString();
+    }
+    return '';
+  }
+
+  String _thumbnailUrl() =>
+      (widget.match['introVideoThumbnailUrl'] ?? '').toString();
+
+  /// Instant-loading placeholder shown while the video buffers (and the
+  /// permanent layer if there's no video at all). Preference order: the
+  /// user's real profile photo, then the auto-generated video-frame
+  /// thumbnail, then a plain dark container (never a broken-image icon).
+  Widget _buildThumbnailLayer() {
+    final profileUrl = _profilePhotoUrl();
+    if (profileUrl.isNotEmpty) {
+      return Image.network(
+        profileUrl,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _buildVideoThumbnailLayer(),
+      );
+    }
+    return _buildVideoThumbnailLayer();
+  }
+
+  Widget _buildVideoThumbnailLayer() {
+    final thumbUrl = _thumbnailUrl();
+    if (thumbUrl.isEmpty) {
+      return _noVideo();
+    }
+    return Image.network(
+      thumbUrl,
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => _noVideo(),
+    );
+  }
+
+  Widget _buildVideoLayer() {
+    final controller = _videoController;
+    final videoReady =
+        !_videoError && controller != null && controller.value.isInitialized;
+    final hasUrl = _videoUrl(widget.match).isNotEmpty;
+
+    if (!hasUrl) {
+      // No playable video at all — thumbnail (or the plain placeholder) is
+      // the permanent layer.
+      return _buildThumbnailLayer();
+    }
+
+    if (_videoError) {
+      // The video failed to load or timed out — never leave the card stuck
+      // silently on the thumbnail forever; give the user a clear way to
+      // retry instead.
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          _buildThumbnailLayer(),
+          _buildRetryOverlay(),
+        ],
+      );
+    }
+
+    // Thumbnail-first: show the thumbnail immediately, then cross-fade to
+    // the live video once its controller has finished initializing.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _buildThumbnailLayer(),
+        AnimatedOpacity(
+          opacity: videoReady ? 1 : 0,
+          duration: const Duration(milliseconds: 250),
+          child: videoReady
+              ? FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(
+                    width: controller.value.size.width,
+                    height: controller.value.size.height,
+                    child: VideoPlayer(controller),
+                  ),
+                )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRetryOverlay() {
+    return GestureDetector(
+      onTap: _retryVideo,
+      child: Container(
+        color: Colors.black.withOpacity(0.25),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.55),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.refresh_rounded,
+                color: Colors.white,
+                size: 32,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Tap to retry',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _noVideo() => Container(
     color: const Color(0xFF111111),
     child: const Icon(Icons.person, color: Colors.white12, size: 100),
   );
 }
 
-// ─── Upgrade prompt (last horizontal page) ───
-class _UpgradePhotoPage extends StatelessWidget {
+// ─── Small circular icon button used for the restored Skip/Save actions,
+// styled to match the card's dark/gold theme (same treatment as the
+// existing mute toggle). ───
+class _CircleActionButton extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final VoidCallback? onTap;
+  final String? tooltip;
+
+  const _CircleActionButton({
+    required this.icon,
+    this.iconColor = Colors.white,
+    this.onTap,
+    this.tooltip,
+  });
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF0D0D0D),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 36),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 88,
-                height: 88,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.goldMedium.withOpacity(0.1),
-                  border: Border.all(
-                    color: AppColors.goldMedium.withOpacity(0.4),
-                    width: 1.5,
-                  ),
-                ),
-                child: const Icon(
-                  Icons.add_photo_alternate_outlined,
-                  color: AppColors.goldMedium,
-                  size: 40,
-                ),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'Want to see more?',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Add more photos of yourself to unlock\nexclusive profile views.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white54,
-                  fontSize: 15,
-                  height: 1.5,
-                ),
-              ),
-              const SizedBox(height: 32),
-              GestureDetector(
-                onTap: () {
-                  // Navigate to Edit Profile so the user can upload photos
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const EditProfilePage()),
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 32,
-                    vertical: 14,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFC8960C), AppColors.goldMedium],
-                    ),
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.goldMedium.withOpacity(0.35),
-                        blurRadius: 20,
-                        offset: const Offset(0, 6),
-                      ),
-                    ],
-                  ),
-                  child: const Text(
-                    'Add My Photos',
-                    style: TextStyle(
-                      color: Colors.black,
-                      fontSize: 15,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+    final button = GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 52,
+        height: 52,
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.45),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white.withOpacity(0.2)),
         ),
+        child: Icon(icon, color: iconColor, size: 24),
       ),
     );
+    if (tooltip == null) return button;
+    return Tooltip(message: tooltip!, child: button);
   }
 }
 
@@ -2595,103 +2906,47 @@ class _TraitChip extends StatelessWidget {
   );
 }
 
-// ─── Action button ───
-class _ActionBtn extends StatelessWidget {
-  final IconData icon;
-  final Color iconColor;
-  final Color bgColor;
-  final double size, iconSize;
-  final bool glowing;
-  final VoidCallback onTap;
-
-  const _ActionBtn({
-    required this.icon,
-    required this.iconColor,
-    required this.bgColor,
-    required this.size,
-    required this.iconSize,
-    required this.onTap,
-    this.glowing = false,
-  });
+// ─── Empty state ───
+// ─── Shown instead of the feed while the current user's own account is
+// still awaiting admin approval (profile, intro video, and/or ID
+// verification) — they can't see or connect with anyone until that clears.
+class _AwaitingApprovalState extends StatelessWidget {
+  const _AwaitingApprovalState();
 
   @override
-  Widget build(BuildContext context) => GestureDetector(
-    onTap: onTap,
-    child: Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: bgColor,
-        shape: BoxShape.circle,
-        boxShadow: glowing
-            ? [
-                BoxShadow(
-                  color: AppColors.goldMedium.withOpacity(0.4),
-                  blurRadius: 22,
-                  spreadRadius: 2,
-                ),
-              ]
-            : null,
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.hourglass_top_rounded,
+            color: AppColors.goldMedium.withOpacity(0.5),
+            size: 72,
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            'Your Profile Is Under Review',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "Once our team approves your intro video and profile, you'll be able to see and connect with other members. Government ID is optional and can be added later for a trust badge.",
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 14, height: 1.4),
+          ),
+        ],
       ),
-      child: Icon(icon, color: iconColor, size: iconSize),
     ),
   );
 }
 
-// ─── Shimmer placeholder — shown while an image is loading — no spinner — ───
-class _ShimmerPlaceholder extends StatefulWidget {
-  @override
-  State<_ShimmerPlaceholder> createState() => _ShimmerPlaceholderState();
-}
-
-class _ShimmerPlaceholderState extends State<_ShimmerPlaceholder>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _anim;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
-    _anim = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _anim,
-      builder: (_, __) => Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              const Color(0xFF1A1A1A),
-              Color.lerp(
-                const Color(0xFF1A1A1A),
-                const Color(0xFF2E2E2E),
-                _anim.value,
-              )!,
-              const Color(0xFF1A1A1A),
-            ],
-            stops: const [0.0, 0.5, 1.0],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Empty state ───
 class _EmptyDiscoverState extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Center(

@@ -43,6 +43,7 @@ class _OnboardingStep7VerificationState
       final XFile? photo = await _picker.pickImage(
         source: ImageSource.camera,
         imageQuality: 80,
+        maxWidth: 1280,
         preferredCameraDevice: CameraDevice.front,
       );
       if (photo != null) setState(() => _selfieFile = File(photo.path));
@@ -54,6 +55,7 @@ class _OnboardingStep7VerificationState
       final XFile? image = await _picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 80,
+        maxWidth: 1280,
       );
       if (image != null) setState(() => _idFile = File(image.path));
     } catch (_) {}
