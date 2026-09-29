@@ -6,7 +6,10 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/utils/stream_utils.dart';
 import '../shared/helpers/profile_visibility_helper.dart';
+import '../shared/helpers/subscription_expiry.dart';
 import 'chat_service.dart';
+import 'connection_service.dart';
+import 'push_notification_service.dart';
 
 class UserService {
   UserService._();
@@ -52,11 +55,20 @@ class UserService {
     payload.remove('createdAt');
     final ref = _userRef(uid);
     final existing = await ref.get();
-    if (!existing.exists) {
+    final isCreate = !existing.exists;
+    if (isCreate) {
       payload['createdAt'] = FieldValue.serverTimestamp();
     }
 
     await ref.set(payload, SetOptions(merge: true));
+
+    // The FCM token listener skips users with no profile yet (so it can't
+    // create a stub doc that breaks signup) — save the token now that the
+    // profile exists.
+    if (isCreate && uid == _auth.currentUser?.uid) {
+      unawaited(PushNotificationService.instance.syncTokenForCurrentUser());
+      unawaited(syncAuthProviders());
+    }
   }
 
   Future<void> updateCurrentUserProfile(Map<String, dynamic> updates) async {
@@ -70,11 +82,13 @@ class UserService {
     try {
       final user = _auth.currentUser;
       if (user == null) return;
-      await _userRef(user.uid).set({
+      // update(), not merge-set: must never create a stub profile before
+      // signup writes the real one (see PushNotificationService._persistToken).
+      await _userRef(user.uid).update({
         'isOnline': isOnline,
         'online': isOnline,
         'lastActive': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      });
     } catch (e) {
       print('Error updating online status: $e');
     }
@@ -91,9 +105,12 @@ class UserService {
       // Ensure 'password' is added if the user has an email and didn't exclusively use OAuth
       // (providerData might contain 'password' automatically, but it's good to just sync what Firebase reports)
 
-      await _userRef(
-        user.uid,
-      ).set({'providers': providers}, SetOptions(merge: true));
+      // update(), not merge-set: this runs right after Google/Apple sign-in,
+      // BEFORE the new-user check. Creating a stub doc here made brand-new
+      // users look like existing ones (skipping Terms + DOB) and made the
+      // signup profile write fail firestore.rules. upsertUserProfile() calls
+      // this again once the profile exists.
+      await _userRef(user.uid).update({'providers': providers});
     } catch (e) {
       print('Error syncing auth providers: $e');
     }
@@ -409,7 +426,9 @@ class UserService {
     await _userRef(currentUser.uid).update({
       'blockedUids': FieldValue.arrayUnion([uid]),
     });
-    // Remove from connections (interests) immediately
+    // End the connection (silently) and delete the chat, so the blocked
+    // person no longer sees this conversation either.
+    await ConnectionService.instance.endConnectionOnBlock(uid);
     await _removeFromConnections(currentUser.uid, uid);
   }
 
@@ -423,55 +442,14 @@ class UserService {
     });
   }
 
-  /// Marks all interest documents between [myUid] and [otherUid] as 'blocked'
-  /// so they disappear from the Connections / Matches tab immediately.
+  /// Removes the chat thread between [myUid] and [otherUid] after a block.
+  /// Discover, connections and chats already filter on `blockedUids`.
+  ///
+  /// The legacy `interests` / `likes` / `matches` collections were removed
+  /// from the data model and have no firestore.rules entry, so any query on
+  /// them is denied — touching them here made blockUser() throw
+  /// permission-denied after the block was saved (Guideline 1.2 risk).
   Future<void> _removeFromConnections(String myUid, String otherUid) async {
-    // Interests I sent to them
-    final sent = await _firestore
-        .collection('interests')
-        .where('fromUserId', isEqualTo: myUid)
-        .where('toUserId', isEqualTo: otherUid)
-        .get();
-    // Interests they sent to me
-    final received = await _firestore
-        .collection('interests')
-        .where('fromUserId', isEqualTo: otherUid)
-        .where('toUserId', isEqualTo: myUid)
-        .get();
-
-    final batch = _firestore.batch();
-    for (final doc in [...sent.docs, ...received.docs]) {
-      batch.update(doc.reference, {
-        'status': 'blocked',
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    }
-
-    // 1. Remove from likes collection (both directions)
-    batch.delete(
-      _firestore
-          .collection('likes')
-          .doc(myUid)
-          .collection('likedUsers')
-          .doc(otherUid),
-    );
-    batch.delete(
-      _firestore
-          .collection('likes')
-          .doc(otherUid)
-          .collection('likedUsers')
-          .doc(myUid),
-    );
-
-    // 2. Remove match document
-    final matchId = myUid.compareTo(otherUid) < 0
-        ? '${myUid}_$otherUid'
-        : '${otherUid}_$myUid';
-    batch.delete(_firestore.collection('matches').doc(matchId));
-
-    await batch.commit();
-
-    // Ensure we delete any existing chat thread between the two users
     try {
       await ChatService.instance.deleteChatThreadBetween(myUid, otherUid);
     } catch (_) {
@@ -487,25 +465,6 @@ class UserService {
       'blockedUids': FieldValue.arrayRemove([uid]),
       'ignoredMatchIds': FieldValue.arrayRemove([uid]),
     });
-
-    try {
-      final batch = _firestore.batch();
-      batch.delete(
-        _firestore
-            .collection('likes')
-            .doc(currentUser.uid)
-            .collection('likedUsers')
-            .doc(uid),
-      );
-      batch.delete(
-        _firestore
-            .collection('likes')
-            .doc(uid)
-            .collection('likedUsers')
-            .doc(currentUser.uid),
-      );
-      await batch.commit();
-    } catch (_) {}
   }
 
   Future<void> ignoreUser(String uid) async {
@@ -542,6 +501,9 @@ class UserService {
   /// Paid Stripe premium (excludes in-app free trial).
   bool isPaidPremium(Map<String, dynamic>? profile) {
     if (profile == null || isOnFreeTrial(profile)) return false;
+    // Store subscription past its paid period (+ grace) — cancelled, lapsed
+    // or refunded; the server refresh job downgrades it too.
+    if (storeSubscriptionLapsed(profile)) return false;
 
     final plan = profile['subscriptionPlan']?.toString().toLowerCase() ?? '';
     final topStatus = profile['subscriptionStatus']?.toString().toLowerCase() ?? '';

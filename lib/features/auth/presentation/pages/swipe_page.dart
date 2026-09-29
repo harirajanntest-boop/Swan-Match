@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -19,6 +18,7 @@ import '../../../../shared/widgets/linear_message.dart';
 import '../../../../shared/helpers/deleted_user_helper.dart';
 import '../../../../shared/helpers/profile_visibility_helper.dart';
 import '../../../../shared/helpers/dealbreaker_matcher.dart';
+import '../../../../shared/helpers/discover_ranker.dart';
 import 'notifications_page.dart';
 import 'match_profile_detail_page.dart';
 import 'connect_record_page.dart';
@@ -34,13 +34,6 @@ import '../../../../services/subscription_limits_service.dart';
 // indefinitely, leaving the card stuck on its thumbnail forever with no
 // error state and no way to recover.
 const Duration _kVideoInitTimeout = Duration(seconds: 18);
-
-class ScoredUser {
-  final UserModel user;
-  final int score;
-
-  ScoredUser({required this.user, required this.score});
-}
 
 class SwipePage extends StatefulWidget {
   final void Function({Map<String, dynamic>? profile})? onOpenMatches;
@@ -66,13 +59,17 @@ class SwipePage extends StatefulWidget {
 
 class _SwipePageState extends State<SwipePage> with RouteAware {
   final PageController _pageController = PageController();
+  // Index of the shown card in the *displayed* (filtered) list. The card is
+  // tracked by [_currentUid]; the index is re-derived from it whenever the
+  // list changes (a profile skipped, connected, hidden or newly arrived), so
+  // the user stays on the same person instead of jumping or missing one.
   int _currentPage = 0;
+  String? _currentUid;
+  // Set by Skip, which has already checked and counted the swipe, so the
+  // page change it triggers is not counted a second time.
+  bool _uncountedAdvance = false;
 
   List<UserModel> _profiles = [];
-  // Per-session shuffle seed: keeps the Discover order stable while the user
-  // browses, but re-shuffles on each fresh load/refresh so they don't see the
-  // same fixed order every time.
-  int _discoverSeed = DateTime.now().microsecondsSinceEpoch;
   Set<String> blockedUids = {};
   // Users the current user has already sent a Connect request to (pending
   // or accepted) — used to remove them from the Discover feed entirely (the
@@ -331,7 +328,11 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
     Map<String, dynamic> hiddenMap, {
     bool includeSkipped = false,
   }) {
-    final blocked = List<String>.from(profile['blockedUids'] ?? []);
+    // People I blocked or reported never appear (same rule as the chat list).
+    final blocked = <String>{
+      ...List<String>.from(profile['blockedUids'] ?? []),
+      ...List<String>.from(profile['reportedUids'] ?? []),
+    };
     final now = DateTime.now().millisecondsSinceEpoch;
 
     final discoverFilters = _filterAccess.sanitize(
@@ -544,9 +545,6 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
 
   Future<void> _loadProfiles() async {
     if (!mounted) return;
-    // New shuffle order for this load (so "every time they come" the order
-    // varies). Stream re-emits reuse this seed, so cards don't jump mid-browse.
-    _discoverSeed = DateTime.now().microsecondsSinceEpoch;
     // Only show a loading spinner on the very first load when we have no profiles yet.
     // After that, updates happen silently so the UI stays responsive.
     if (!_discoverStreamStarted && _profiles.isEmpty) {
@@ -644,6 +642,13 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
         blocked(doc.id, 'deleted_status', 'status=${user.status}');
         continue;
       }
+      // Blocking is mutual in Discover: someone who blocked ME must not
+      // appear in my feed either (their doc carries their blockedUids).
+      final theirBlocked = data['blockedUids'];
+      if (theirBlocked is List && theirBlocked.contains(_currentUser!.uid)) {
+        blocked(doc.id, 'blocked_you');
+        continue;
+      }
 
       // Admin profile approval + approved intro video required for Discover.
       if (!ProfileVisibilityHelper.isDiscoverVisible(data)) {
@@ -673,19 +678,16 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
           'blocked=$blockReasons');
     }
     final filtered = _applyDartFilters(fetched, _currentUser!);
-    final ranked = _rankUsers(filtered, _currentUser!);
-    final ordered = _orderDiscover(ranked);
-    final boosted = _applySubscriptionBoost(ordered, _currentUser!);
-    _mergeDiscoverProfiles(boosted);
+    // Best match first. No per-tier cut here: free/trial users are limited by
+    // the server-counted daily swipe allowance (SubscriptionLimitsService
+    // .canSwipe), which is enforced when they move to the next card.
+    _mergeDiscoverProfiles(DiscoverRanker.rank(filtered, _currentUser!));
   }
 
   void _refilterDiscoverFeed() {
     if (_currentUser == null || _lastRawCandidates.isEmpty) return;
     final filtered = _applyDartFilters(_lastRawCandidates, _currentUser!);
-    final ranked = _rankUsers(filtered, _currentUser!);
-    final ordered = _orderDiscover(ranked);
-    final boosted = _applySubscriptionBoost(ordered, _currentUser!);
-    _mergeDiscoverProfiles(boosted);
+    _mergeDiscoverProfiles(DiscoverRanker.rank(filtered, _currentUser!));
   }
 
   /// Updates the swipe stack without resetting position when possible.
@@ -701,10 +703,6 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
     }
 
     final incomingByUid = {for (final p in incoming) p.uid: p};
-    String? currentUid;
-    if (_profiles.isNotEmpty && _currentPage < _profiles.length) {
-      currentUid = _profiles[_currentPage].uid;
-    }
 
     final kept = <UserModel>[];
     for (final p in _profiles) {
@@ -717,35 +715,44 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
     // Surface newly-arrived profiles right AFTER the current card (top of the
     // remaining stack) instead of dumping them at the tail where users never
     // reach. On the first load `kept` is empty, so this is just the ordered list.
+    final currentIdx = _currentUid == null
+        ? -1
+        : kept.indexWhere((p) => p.uid == _currentUid);
     final insertAt = kept.isEmpty
         ? 0
-        : (_currentPage + 1).clamp(0, kept.length);
+        : (currentIdx >= 0 ? currentIdx + 1 : _currentPage + 1)
+            .clamp(0, kept.length);
     final merged = [
       ...kept.sublist(0, insertAt),
       ...added,
       ...kept.sublist(insertAt),
     ];
 
-    var newPage = _currentPage;
-    if (currentUid != null) {
-      final idx = merged.indexWhere((p) => p.uid == currentUid);
-      newPage = idx >= 0 ? idx : newPage.clamp(0, merged.isEmpty ? 0 : merged.length - 1);
-    } else if (merged.isNotEmpty) {
-      newPage = 0;
-    }
-
-    final pageChanged = newPage != _currentPage;
+    // The shown card is re-located by uid in build (_syncCurrentCard).
     setState(() {
       _profiles = merged;
       _isLoading = false;
-      _currentPage = newPage;
     });
+  }
 
-    if (pageChanged && _pageController.hasClients && merged.isNotEmpty) {
+  /// Keeps [_currentPage] pointing at the card the user is looking at
+  /// ([_currentUid]) after the displayed list changed. If that card left the
+  /// list (skipped / connected / hidden), the card now at the same position —
+  /// the next one — becomes current.
+  void _syncCurrentCard(List<Map<String, dynamic>> matches) {
+    final previous = _currentPage;
+    var idx = _currentUid == null
+        ? -1
+        : matches.indexWhere((m) => (m['uid'] ?? '').toString() == _currentUid);
+    if (idx < 0) idx = previous.clamp(0, matches.length - 1);
+    _currentPage = idx;
+    _currentUid = (matches[idx]['uid'] ?? '').toString();
+    if (idx != previous) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_pageController.hasClients) return;
-        final safePage = newPage.clamp(0, merged.length - 1);
-        _pageController.jumpToPage(safePage);
+        if (_pageController.page?.round() != _currentPage) {
+          _pageController.jumpToPage(_currentPage);
+        }
       });
     }
   }
@@ -859,107 +866,6 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
     return result;
   }
 
-  /// Weighted compatibility score (0–100) between the signed-in user (`me`)
-  /// and `other`. Weights total 100 and reflect what matters for serious
-  /// relationships. Used by [_rankUsers] to sort the Discover feed best-first.
-  int _calculateScore(UserModel me, UserModel other) {
-    String norm(String s) => s.trim().toLowerCase();
-    double score = 0;
-
-    // 1. Relationship goal — 25
-    if (me.lookingFor.isNotEmpty && other.lookingFor.isNotEmpty) {
-      score += norm(me.lookingFor) == norm(other.lookingFor) ? 25 : 25 * 0.4;
-    }
-
-    // 2. Age fit — 20 (full inside my preferred range, partial within 3 years)
-    final otherAge = other.age > 0
-        ? other.age
-        : (other.dateOfBirth != null
-            ? DateTime.now().year - other.dateOfBirth!.year
-            : 0);
-    if (otherAge > 0) {
-      if (otherAge >= me.minAgePreference && otherAge <= me.maxAgePreference) {
-        score += 20;
-      } else {
-        final gap = otherAge < me.minAgePreference
-            ? me.minAgePreference - otherAge
-            : otherAge - me.maxAgePreference;
-        if (gap <= 3) score += 20 * (1 - gap / 3) * 0.7;
-      }
-    }
-
-    // 3. Shared interests — 18 (overlap ratio)
-    final mine = me.interests.map(norm).toSet();
-    final theirs = other.interests.map(norm).toSet();
-    if (mine.isNotEmpty && theirs.isNotEmpty) {
-      final shared = mine.intersection(theirs).length;
-      final union = mine.union(theirs).length;
-      if (union > 0) score += 18 * (shared / union);
-    }
-
-    // 4. Religion / community — 12
-    if (me.religion.isNotEmpty &&
-        other.religion.isNotEmpty &&
-        norm(me.religion) == norm(other.religion)) {
-      score += 12;
-    }
-
-    // 5. Location — 10 (same city full, same country partial)
-    if (me.city.isNotEmpty && norm(me.city) == norm(other.city)) {
-      score += 10;
-    } else if (me.country.isNotEmpty &&
-        norm(me.country) == norm(other.country)) {
-      score += 10 * 0.4;
-    }
-
-    // 6. Language — 8 (any shared primary/other language)
-    final myLangs = {norm(me.primaryLanguage), ...me.otherLanguages.map(norm)}
-      ..removeWhere((e) => e.isEmpty);
-    final theirLangs = {
-      norm(other.primaryLanguage),
-      ...other.otherLanguages.map(norm),
-    }..removeWhere((e) => e.isEmpty);
-    if (myLangs.isNotEmpty &&
-        theirLangs.isNotEmpty &&
-        myLangs.intersection(theirLangs).isNotEmpty) {
-      score += 8;
-    }
-
-    // 7. Lifestyle — 7 (smoking + drinking + workout + family-values closeness)
-    double sub = 0;
-    int parts = 0;
-    for (final pair in [
-      [me.smoking, other.smoking],
-      [me.drinking, other.drinking],
-      [me.workout, other.workout],
-    ]) {
-      if (pair[0].isNotEmpty && pair[1].isNotEmpty) {
-        parts++;
-        if (norm(pair[0]) == norm(pair[1])) sub += 1;
-      }
-    }
-    parts++;
-    sub += (1 -
-            (me.familyValuesImportance - other.familyValuesImportance).abs() /
-                5)
-        .clamp(0.0, 1.0);
-    if (parts > 0) score += 7 * (sub / parts);
-
-    return score.clamp(0, 100).round();
-  }
-
-  List<UserModel> _rankUsers(List<UserModel> users, UserModel currentUser) {
-    final scored = users
-        .map(
-          (user) =>
-              ScoredUser(user: user, score: _calculateScore(currentUser, user)),
-        )
-        .toList();
-
-    scored.sort((a, b) => b.score.compareTo(a.score));
-    return scored.map((item) => item.user).toList();
-  }
-
   Future<void> _loadExclusionLists() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -970,35 +876,6 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
         .get();
     final data = userDoc.data() ?? <String, dynamic>{};
     blockedUids = Set<String>.from(data['blockedUids'] ?? <String>[]);
-  }
-
-  /// Orders the Discover feed: brand-new profiles (joined in the last 7 days)
-  /// come FIRST, then everyone else. Each group is shuffled with the current
-  /// session seed so the order varies between sessions but stays stable while
-  /// the user is browsing (no card jumping on stream re-emits).
-  List<UserModel> _orderDiscover(List<UserModel> users) {
-    final cutoff = DateTime.now().subtract(const Duration(days: 7));
-    final rng = Random(_discoverSeed);
-    final fresh = <UserModel>[];
-    final rest = <UserModel>[];
-    for (final u in users) {
-      (u.createdAt.isAfter(cutoff) ? fresh : rest).add(u);
-    }
-    fresh.shuffle(rng);
-    rest.shuffle(rng);
-    return [...fresh, ...rest];
-  }
-
-  List<UserModel> _applySubscriptionBoost(
-    List<UserModel> ranked,
-    UserModel currentUser,
-  ) {
-    final plan = currentUser.subscriptionPlan.toLowerCase();
-    final isPremium = plan == 'trial' || plan == 'gold' || plan == 'premium';
-    if (!isPremium) {
-      return ranked.take(10).toList();
-    }
-    return ranked;
   }
 
   List<String> _getTargetGenders(UserModel currentUser) {
@@ -1113,6 +990,8 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
               return _EmptyDiscoverState();
             }
 
+            _syncCurrentCard(matches);
+
             // Keep the next card's video buffering in the background so it's
             // ready the instant the user scrolls to it. Deferred to the next
             // frame so an about-to-become-active `_ReelCard` gets a chance to
@@ -1127,7 +1006,9 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
               scrollDirection: Axis.vertical,
               physics: const PageScrollPhysics(),
               onPageChanged: (i) async {
-                if (i > _currentPage) {
+                if (i > _currentPage && _uncountedAdvance) {
+                  _uncountedAdvance = false;
+                } else if (i > _currentPage) {
                   final swipeCheck =
                       await SubscriptionLimitsService.instance.canSwipe();
                   if (!swipeCheck.allowed) {
@@ -1137,7 +1018,13 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
                   }
                   await SubscriptionLimitsService.instance.recordSwipe();
                 }
-                setState(() => _currentPage = i);
+                if (!mounted) return;
+                setState(() {
+                  _currentPage = i;
+                  if (i < matches.length) {
+                    _currentUid = (matches[i]['uid'] ?? '').toString();
+                  }
+                });
                 _checkEmailLinkPopup();
               },
               itemCount: matches.length,
@@ -1176,11 +1063,14 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
                   onConnect: () async {
                     if (uid.isEmpty) return;
                     final name = (item['name'] ?? '').toString();
-                    final photo = (item['profilePicture'] ??
-                            item['photoUrl'] ??
-                            item['profilePhoto'] ??
-                            '')
-                        .toString();
+                    final photo =
+                        ProfileVisibilityHelper.shouldHidePhotos(item)
+                            ? ''
+                            : (item['profilePicture'] ??
+                                    item['photoUrl'] ??
+                                    item['profilePhoto'] ??
+                                    '')
+                                .toString();
                     final sent = await Navigator.push<bool>(
                       context,
                       MaterialPageRoute(
@@ -1193,7 +1083,10 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
                     );
                     if (sent == true && mounted) {
                       _showMessage('Connection request sent.');
-                      _nextCard(matches);
+                      // The connected profile usually leaves the feed while
+                      // the record page is open, and the next one has already
+                      // moved into its place — only advance if it hasn't.
+                      if (_currentUid == uid) _nextCard(matches);
                     }
                   },
                 );
@@ -1230,10 +1123,28 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
     List<Map<String, dynamic>> matches,
   ) async {
     if (uid.isEmpty) return;
+    // Skipping moves on to the next profile, so it uses a daily swipe like
+    // scrolling does (otherwise Skip got around the free/trial limit).
+    final swipeCheck = await SubscriptionLimitsService.instance.canSwipe();
+    if (!swipeCheck.allowed) {
+      _showSwipeUpgradeSheet();
+      return;
+    }
+    await SubscriptionLimitsService.instance.recordSwipe();
+    if (!mounted) return;
     final until =
         DateTime.now().add(const Duration(days: 7)).millisecondsSinceEpoch;
     final updated = Map<String, dynamic>.from(hiddenMap)..[uid] = until;
-    _nextCard(matches);
+    // Finish moving to the next card BEFORE hiding the skipped one: hiding it
+    // mid-animation shifts the list under the scroll and lands one too far.
+    if (_currentPage < matches.length - 1 && _pageController.hasClients) {
+      _uncountedAdvance = true;
+      await _pageController.nextPage(
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOut,
+      );
+      _uncountedAdvance = false;
+    }
     try {
       await UserService.instance.updateCurrentUserProfile(
         {'hiddenMatches': updated},
@@ -1343,7 +1254,10 @@ class _SwipePageState extends State<SwipePage> with RouteAware {
       {'hiddenMatches': updated},
     );
     if (!mounted) return;
-    setState(() => _currentPage = 0);
+    setState(() {
+      _currentPage = 0;
+      _currentUid = null;
+    });
     if (_pageController.hasClients) {
       _pageController.jumpToPage(0);
     }
@@ -2716,6 +2630,9 @@ class _ReelCardState extends State<_ReelCard> {
   /// entry of `photos` as a fallback) — preferred over the auto-generated
   /// video-frame thumbnail below since it's more recognizable/meaningful.
   String _profilePhotoUrl() {
+    // "Show my photos to everyone" turned off: use the intro-video frame
+    // instead, like the profile page, saved list and chats do.
+    if (ProfileVisibilityHelper.shouldHidePhotos(widget.match)) return '';
     final profilePicture = (widget.match['profilePicture'] ?? '').toString();
     if (profilePicture.isNotEmpty) return profilePicture;
     final photos = widget.match['photos'];

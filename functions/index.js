@@ -3,6 +3,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 
 admin.initializeApp();
+const iapEntitlements = require('./iap_entitlements');
 
 /** Collect FCM tokens from fcmTokens array and legacy fcmToken field. */
 function collectFcmTokens(userData) {
@@ -18,6 +19,32 @@ function collectFcmTokens(userData) {
     tokens.add(legacy.trim());
   }
   return [...tokens];
+}
+
+// FCM error codes meaning the token is permanently dead. Other send errors
+// (unavailable, internal, quota) are temporary — removing the token for those
+// silently cut working devices off.
+const DEAD_FCM_TOKEN_CODES = new Set([
+  'messaging/registration-token-not-registered',
+  'messaging/invalid-registration-token',
+]);
+
+/**
+ * Removes only permanently-dead tokens (per sendErrors[i] for fcmTokens[i]),
+ * including the legacy single `fcmToken` field when it is one of them.
+ */
+async function removeDeadFcmTokens(uid, userData, fcmTokens, sendErrors) {
+  const dead = fcmTokens.filter(
+    (_, i) => sendErrors[i] && DEAD_FCM_TOKEN_CODES.has(sendErrors[i].code),
+  );
+  if (dead.length === 0) return;
+  const update = { fcmTokens: admin.firestore.FieldValue.arrayRemove(...dead) };
+  const legacy = typeof userData?.fcmToken === 'string' ? userData.fcmToken.trim() : '';
+  if (legacy && dead.includes(legacy)) {
+    update.fcmToken = admin.firestore.FieldValue.delete();
+  }
+  console.log(`[fcm] Removing ${dead.length} dead token(s) for ${uid}`);
+  await admin.firestore().collection('users').doc(uid).update(update);
 }
 
 exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async (event) => {
@@ -59,7 +86,8 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
     }
 
     // 2. Send one notification per token (v9 Admin SDK pattern)
-    const sendPromises = fcmTokens.map(token =>
+    const sendErrors = [];
+    const sendPromises = fcmTokens.map((token, i) =>
       admin.messaging().send({
         token,
         notification: { title, body: message },
@@ -78,7 +106,8 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
           payload: { aps: { sound: 'default', badge: 1 } },
         },
       }).catch(err => {
-        console.error(`[onNotificationCreated] Failed for token ${token.substring(0, 20)}...: ${err.message}`);
+        console.error(`[onNotificationCreated] Failed for token ${token.substring(0, 20)}...: ${err.code} ${err.message}`);
+        sendErrors[i] = err;
         return null;
       })
     );
@@ -87,14 +116,8 @@ exports.onNotificationCreated = onDocumentCreated('notifications/{docId}', async
     const successCount = results.filter(r => r !== null).length;
     console.log(`[onNotificationCreated] Sent ${successCount}/${fcmTokens.length} notifications`);
 
-    // 3. Clean up invalid tokens
-    const invalidTokens = fcmTokens.filter((_, i) => results[i] === null);
-    if (invalidTokens.length > 0) {
-      console.log(`[onNotificationCreated] Removing ${invalidTokens.length} invalid tokens`);
-      await admin.firestore().collection('users').doc(toUserId).update({
-        fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens)
-      });
-    }
+    // 3. Clean up permanently dead tokens only
+    await removeDeadFcmTokens(toUserId, userData, fcmTokens, sendErrors);
   } catch (error) {
     console.error('[onNotificationCreated] Fatal error:', error.message, error.code);
   }
@@ -151,7 +174,8 @@ exports.onMessageCreated = onDocumentCreated('chats/{chatId}/messages/{messageId
     }
 
     // Send one message per token for best compatibility
-    const sendPromises = fcmTokens.map(token =>
+    const sendErrors = [];
+    const sendPromises = fcmTokens.map((token, i) =>
       admin.messaging().send({
         token,
         notification: { title: senderName, body: messageText || '📩 New message' },
@@ -173,6 +197,7 @@ exports.onMessageCreated = onDocumentCreated('chats/{chatId}/messages/{messageId
         },
       }).catch(err => {
         console.error(`[onMessageCreated] Failed for token ${token.substring(0, 20)}...: ${err.code} ${err.message}`);
+        sendErrors[i] = err;
         return null;
       })
     );
@@ -181,14 +206,8 @@ exports.onMessageCreated = onDocumentCreated('chats/{chatId}/messages/{messageId
     const successCount = results.filter(r => r !== null).length;
     console.log(`[onMessageCreated] Sent ${successCount}/${fcmTokens.length} notifications successfully`);
 
-    // Clean up invalid tokens
-    const invalidTokens = fcmTokens.filter((_, i) => results[i] === null);
-    if (invalidTokens.length > 0) {
-      console.log(`[onMessageCreated] Removing ${invalidTokens.length} invalid tokens`);
-      await admin.firestore().collection('users').doc(receiverId).update({
-        fcmTokens: admin.firestore.FieldValue.arrayRemove(...invalidTokens)
-      });
-    }
+    // Clean up permanently dead tokens only
+    await removeDeadFcmTokens(receiverId, userData, fcmTokens, sendErrors);
   } catch (error) {
     console.error('[onMessageCreated] Fatal error:', error.message, error.code);
   }
@@ -864,11 +883,17 @@ function decodeJwsPayload(jws) {
   }
 }
 
-/** Verifies an iOS transaction via the App Store Server API (prod then sandbox). */
+/**
+ * Verifies an iOS subscription via the App Store Server API (prod then sandbox).
+ * Returns { checked, valid, entitled, productId, expiresMs, originalTransactionId,
+ * status, revoked }. `checked` = Apple actually answered (so a "not entitled"
+ * verdict is definitive); network/5xx errors leave it false.
+ */
 async function verifyAppleTransaction(transactionId, signingKey) {
-  if (!transactionId) return { valid: false };
+  if (!transactionId) return { checked: false, valid: false };
   const { AppStoreServerAPIClient, Environment } =
     require('@apple/app-store-server-library');
+  let notFound = 0;
   for (const env of [Environment.PRODUCTION, Environment.SANDBOX]) {
     try {
       const client = new AppStoreServerAPIClient(
@@ -879,44 +904,104 @@ async function verifyAppleTransaction(transactionId, signingKey) {
         for (const lt of group.lastTransactions || []) {
           const tx = decodeJwsPayload(lt.signedTransactionInfo);
           if (!tx) continue;
-          const expiresMs = Number(tx.expiresDate || 0);
+          const renewal = decodeJwsPayload(lt.signedRenewalInfo) || {};
+          const status = typeof lt.status === 'number' ? lt.status : null;
+          // Refunded / revoked purchases never grant access.
+          const revoked = !!tx.revocationDate || status === 5;
+          let expiresMs = Number(tx.expiresDate || 0);
+          // In Apple's billing grace period access continues until the grace end.
+          if (status === 4 && renewal.gracePeriodExpiresDate) {
+            expiresMs = Math.max(expiresMs, Number(renewal.gracePeriodExpiresDate));
+          }
+          const entitled = !revoked && (status !== null
+            ? iapEntitlements.appleStatusEntitled(status)
+            : expiresMs > Date.now());
           return {
-            valid: expiresMs > Date.now(),
+            checked: true,
+            valid: entitled,
+            entitled,
             productId: tx.productId,
             expiresMs,
+            originalTransactionId: tx.originalTransactionId || lt.originalTransactionId || null,
+            status,
+            revoked,
           };
         }
       }
+      // Apple answered but has no subscription for this transaction.
+      return { checked: true, valid: false, entitled: false };
     } catch (e) {
+      if (e && e.httpStatusCode === 404) notFound++;
       console.log(`Apple verify (${env}) error: ${e.message || e}`);
     }
   }
-  return { valid: false };
+  // Unknown to both environments = definitive; anything else = try later.
+  return notFound === 2
+    ? { checked: true, valid: false, entitled: false }
+    : { checked: false, valid: false };
 }
 
-/** Verifies an Android purchase token via the Play Developer API. */
+/**
+ * Verifies an Android subscription purchase token via the Play Developer API.
+ * Same verdict shape as verifyAppleTransaction.
+ */
 async function verifyGooglePurchase(purchaseToken) {
-  if (!purchaseToken) return { valid: false };
+  if (!purchaseToken) return { checked: false, valid: false };
   const { google } = require('googleapis');
-  const auth = new google.auth.GoogleAuth({
-    scopes: ['https://www.googleapis.com/auth/androidpublisher'],
-  });
-  const authClient = await auth.getClient();
-  const androidpublisher = google.androidpublisher({ version: 'v3', auth: authClient });
-  const res = await androidpublisher.purchases.subscriptionsv2.get({
-    packageName: ANDROID_PACKAGE,
-    token: purchaseToken,
-  });
-  const data = res.data || {};
-  const active =
-    data.subscriptionState === 'SUBSCRIPTION_STATE_ACTIVE' ||
-    data.subscriptionState === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD';
+  let data;
+  try {
+    const auth = new google.auth.GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+    });
+    const authClient = await auth.getClient();
+    const androidpublisher = google.androidpublisher({ version: 'v3', auth: authClient });
+    const res = await androidpublisher.purchases.subscriptionsv2.get({
+      packageName: ANDROID_PACKAGE,
+      token: purchaseToken,
+    });
+    data = res.data || {};
+  } catch (e) {
+    const code = Number(e && (e.code || (e.response && e.response.status)));
+    console.log(`Google verify error: ${code} ${e.message || e}`);
+    // 404/410 = token unknown or long expired — definitive.
+    return code === 404 || code === 410
+      ? { checked: true, valid: false, entitled: false }
+      : { checked: false, valid: false };
+  }
   const li = (data.lineItems || [])[0] || {};
   const expiresMs = li.expiryTime ? new Date(li.expiryTime).getTime() : 0;
+  const state = data.subscriptionState;
+  // CANCELED = auto-renew turned off; still entitled until the period ends.
+  const canceled = state === 'SUBSCRIPTION_STATE_CANCELED';
+  const entitled =
+    state === 'SUBSCRIPTION_STATE_ACTIVE' ||
+    state === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD' ||
+    (canceled && expiresMs > Date.now());
   // With one subscription (`swan_premium`) + base plans, the productId no longer
   // tells the tier — the BASE PLAN id does (`monthly` / `sixmonth` / `yearly`).
   const basePlanId = li.offerDetails && li.offerDetails.basePlanId;
-  return { valid: active, productId: li.productId, planId: basePlanId, expiresMs };
+  return {
+    checked: true, valid: entitled, entitled, canceled,
+    productId: li.productId, planId: basePlanId, expiresMs,
+  };
+}
+
+/** Store check used by the periodic refresh job (adds the plan name). */
+async function verifyStorePurchase(source, ids, signingKey) {
+  let r;
+  if (source === 'app_store') {
+    r = await verifyAppleTransaction(ids.originalTransactionId || ids.transactionId, signingKey);
+  } else if (source === 'google_play') {
+    r = await verifyGooglePurchase(ids.purchaseToken);
+  } else {
+    return { checked: false };
+  }
+  if (r && r.checked && (r.planId || r.productId)) {
+    const plan = iapPlanFromProductId(r.planId || r.productId);
+    r.planName = plan.name;
+    r.planPeriod = plan.period;
+  }
+  return r;
 }
 
 /**
@@ -955,18 +1040,49 @@ exports.verifyIapPurchase = onCall(
     }
 
     const verifiedProductId = result.productId || productId;
+    const db = admin.firestore();
+
+    // One purchase = one account. Claim it for the caller; reject if another
+    // account already owns it (a transaction id read off someone's public
+    // profile, or a second account restoring on the same phone).
+    const claimKey = iapEntitlements.claimKeyFor(source, {
+      originalTransactionId: result.originalTransactionId,
+      transactionId,
+      purchaseToken: source === 'google_play' ? verificationData : null,
+    });
+    if (claimKey) {
+      try {
+        await iapEntitlements.claimPurchase(db, {
+          uid,
+          key: claimKey,
+          source,
+          productId: verifiedProductId,
+          transactionId: transactionId || null,
+          originalTransactionId: result.originalTransactionId || null,
+          purchaseToken: source === 'google_play' ? verificationData : null,
+          expiresMs: result.expiresMs || null,
+        });
+      } catch (e) {
+        if (e instanceof iapEntitlements.PurchaseOwnedByAnotherAccount) {
+          console.warn(`[verifyIapPurchase] uid=${uid} tried to claim ${claimKey} owned by another account`);
+          throw new HttpsError('already-exists',
+            'This subscription is already linked to another Swan Match account.');
+        }
+        throw e;
+      }
+    }
     // Prefer the base plan id (Android) for the tier; fall back to the product
     // id (iOS product ids still encode the tier, e.g. `swan_premium_6month`).
     const plan = iapPlanFromProductId(result.planId || verifiedProductId);
-    const db = admin.firestore();
 
     const updateData = {
       subscriptionPlan: 'premium',
       subscriptionStatus: 'active',
       subscriptionName: plan.name,
       subscriptionPeriod: plan.period,
-      cancelAtPeriodEnd: false,
+      cancelAtPeriodEnd: result.canceled === true,
       iapSource: source,
+      ...(claimKey ? { iapClaimKey: claimKey } : {}),
       iapProductId: verifiedProductId,
       premiumActivatedAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -988,6 +1104,25 @@ exports.verifyIapPurchase = onCall(
 
     console.log(`[verifyIapPurchase] premium granted uid=${uid} source=${source} product=${verifiedProductId}`);
     return { isPremium: true, plan: plan.name, expiresAt: result.expiresMs || null };
+  },
+);
+
+/**
+ * refreshIapSubscriptions — scheduled. Re-checks App Store / Google Play
+ * subscriptions whose paid period ends within 36h (or has ended) and either
+ * records the renewal or downgrades the account to free (cancelled, lapsed,
+ * refunded). Before this, a store subscription never expired.
+ * Store outages are skipped (retried next run), never treated as expiry.
+ */
+exports.refreshIapSubscriptions = onSchedule(
+  { schedule: 'every 12 hours', secrets: [appStoreIapKey], timeoutSeconds: 300 },
+  async () => {
+    const signingKey = (appStoreIapKey.value() || '').trim();
+    const stats = await iapEntitlements.refreshDueIapSubscriptions(
+      admin.firestore(),
+      (source, ids) => verifyStorePurchase(source, ids, signingKey),
+    );
+    console.log(`[refreshIapSubscriptions] ${JSON.stringify(stats)}`);
   },
 );
 
@@ -1862,6 +1997,65 @@ exports.submitReport = onCall(async (request) => {
 // ============================================================================
 
 /** When a report is created, check if the reported user has 3+ reports and auto-suspend. */
+/**
+ * Counts the reports that may auto-suspend [reportedUid]. Previously every
+ * report counted — one account could file 5 reports (or 3 "P1") and get
+ * anyone suspended. Now:
+ *  - one vote per reporter (repeat reports from the same person count once);
+ *  - only reporters whose own profile is admin-approved (and not suspended
+ *    or deleted) count, so throwaway accounts can't vote;
+ *  - only reports an admin hasn't Closed;
+ *  - only reports filed after the user's last suspension / reinstatement,
+ *    so a reinstated user isn't re-suspended by the old reports.
+ * Reports are created only by the submitReport / reportConnectionVideo
+ * callables (firestore.rules), so priority is always server-assigned.
+ */
+async function countAutoSuspendVotes(db, reportedUid) {
+  const userSnap = await db.collection('users').doc(reportedUid).get();
+  const user = userSnap.exists ? userSnap.data() : {};
+  const alreadySuspended = String(user.account || '').toLowerCase() === 'suspended';
+  const millis = (ts) => (ts && typeof ts.toMillis === 'function' ? ts.toMillis() : 0);
+  const since = Math.max(millis(user.suspendedAt), millis(user.unsuspendedAt));
+
+  const snapshot = await db.collection('reports')
+    .where('reportedUid', '==', reportedUid)
+    .get();
+
+  const reporterHasP1 = new Map();
+  for (const doc of snapshot.docs) {
+    const r = doc.data();
+    const reporter = r.reportedBy;
+    if (!reporter || typeof reporter !== 'string' || reporter === reportedUid) continue;
+    const status = String(r.status || 'Open').toLowerCase();
+    if (status === 'closed') continue;
+    // Server timestamps are always set by the callables; a missing one
+    // (just-written) is treated as "now".
+    const filedAt = millis(r.reportedAt) || millis(r.createdAt) || Date.now();
+    if (filedAt <= since) continue;
+    const isP1 = r.priority === 'P1' || r.priority === 1;
+    reporterHasP1.set(reporter, reporterHasP1.get(reporter) === true || isP1);
+  }
+
+  const reporterIds = [...reporterHasP1.keys()];
+  let reporterCount = 0;
+  let p1ReporterCount = 0;
+  for (let i = 0; i < reporterIds.length; i += 100) {
+    const refs = reporterIds.slice(i, i + 100).map((id) => db.collection('users').doc(id));
+    const snaps = await db.getAll(...refs);
+    for (const s of snaps) {
+      if (!s.exists) continue;
+      const d = s.data();
+      const approved = String(d.profileApprovalStatus || '').toLowerCase() === 'approved';
+      const suspended = String(d.account || '').toLowerCase() === 'suspended';
+      const deleted = d.isDeleted === true || String(d.status || '').toLowerCase() === 'deleted';
+      if (!approved || suspended || deleted) continue;
+      reporterCount++;
+      if (reporterHasP1.get(s.id)) p1ReporterCount++;
+    }
+  }
+  return { reporterCount, p1ReporterCount, alreadySuspended };
+}
+
 exports.onReportCreated = onDocumentCreated('reports/{reportId}', async (event) => {
   const report = event.data?.data();
   if (!report) return;
@@ -1870,20 +2064,12 @@ exports.onReportCreated = onDocumentCreated('reports/{reportId}', async (event) 
   if (!reportedUid) return;
 
   try {
-    const snapshot = await admin.firestore()
-      .collection('reports')
-      .where('reportedUid', '==', reportedUid)
-      .get();
+    const { reporterCount: reportCount, p1ReporterCount: p1Count, alreadySuspended } =
+      await countAutoSuspendVotes(admin.firestore(), reportedUid);
 
-    const reportCount = snapshot.size;
-    const p1Reports = snapshot.docs.filter(doc => {
-      const data = doc.data();
-      return data.priority === 'P1' || data.priority === 1;
-    });
-    const p1Count = p1Reports.length;
-
-    // Auto-suspend at 3+ P1 reports OR 5+ total reports
-    if (p1Count >= 3 || reportCount >= 5) {
+    // Auto-suspend at 3+ distinct approved reporters with a P1 report, OR 5+
+    // distinct approved reporters overall (see countAutoSuspendVotes).
+    if (!alreadySuspended && (p1Count >= 3 || reportCount >= 5)) {
       const reason = p1Count >= 3 
         ? `Auto-suspended: received ${p1Count} P1 (Critical) reports` 
         : `Auto-suspended: received ${reportCount} total reports`;
@@ -1938,23 +2124,61 @@ exports.logSessionActivity = onCall(async (request) => {
   }
 
   const db = admin.firestore();
+  const { FieldValue } = require('firebase-admin/firestore');
+  const userRef = db.collection('users').doc(uid);
+
+  // update() only — never set/merge: this runs at app start, possibly before
+  // signup has written the profile. Creating a stub users/{uid} doc here
+  // would turn the signup profile write into a rules-denied update.
+  const updateUserIfExists = async (data) => {
+    try {
+      await userRef.update(data);
+    } catch (err) {
+      if (err.code !== 5) throw err; // 5 = NOT_FOUND: no profile yet, skip
+    }
+  };
 
   try {
-    // 1. Check if the device is currently associated with any banned/suspended users
-    const bannedDevices = await db.collection('users')
-      .where('lastLoginDeviceId', '==', deviceId)
-      .where('account', '==', 'Suspended')
-      .limit(1)
-      .get();
+    // 1. Is this device associated with any suspended account?
+    // Device → accounts mapping lives in the server-only deviceIndex
+    // collection (no client access in firestore.rules), NOT on the profile
+    // doc, which every signed-in user can read.
+    const deviceDocId = String(deviceId).replace(/\//g, '_').slice(0, 700);
+    const deviceRef = db.collection('deviceIndex').doc(deviceDocId);
+    const deviceSnap = await deviceRef.get();
+    const otherUids = ((deviceSnap.exists && deviceSnap.get('uids')) || [])
+      .filter((u) => u !== uid)
+      .slice(-30);
+    let matchesSuspended = false;
+    if (otherUids.length > 0) {
+      const snaps = await db.getAll(...otherUids.map((u) => db.collection('users').doc(u)));
+      matchesSuspended = snaps.some((s) => s.exists && s.get('account') === 'Suspended');
+    }
+    if (!matchesSuspended) {
+      // Transitional: accounts not yet migrated still carry the old
+      // lastLoginDeviceId on their profile. Remove once the
+      // migrate_private_data script has been run in --apply mode.
+      const legacy = await db.collection('users')
+        .where('lastLoginDeviceId', '==', deviceId)
+        .where('account', '==', 'Suspended')
+        .limit(1)
+        .get();
+      matchesSuspended = !legacy.empty;
+    }
 
-    if (!bannedDevices.empty) {
+    if (matchesSuspended) {
       console.warn(`[logSessionActivity] WARNING: Banned device login attempt: deviceId=${deviceId} uid=${uid}`);
       // Mark this account as flagged for matching a banned device fingerprint
-      await db.collection('users').doc(uid).update({
+      await updateUserIfExists({
         deviceMatchesSuspendedFingerprint: true,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       });
     }
+
+    await deviceRef.set({
+      uids: FieldValue.arrayUnion(uid),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
 
     // 2. Securely append to the securityLogs subcollection
     const logRef = db.collection('users').doc(uid).collection('securityLogs').doc();
@@ -1965,16 +2189,18 @@ exports.logSessionActivity = onCall(async (request) => {
       osVersion: osVersion || 'unknown',
       deviceId: deviceId,
       sessionTrigger: sessionTrigger || 'app_start',
-      lastActive: admin.firestore.FieldValue.serverTimestamp(),
+      lastActive: FieldValue.serverTimestamp(),
     });
 
-    // 3. Keep lightweight, readable last login info directly on the primary user document
-    await db.collection('users').doc(uid).update({
-      lastLoginIp: ip,
-      lastLoginDeviceId: deviceId,
-      lastLoginDeviceModel: model,
-      lastActiveAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    // 3. Activity timestamp only. IP / device details stay in the securityLogs
+    // subcollection (owner + admin only) — the profile doc is readable by
+    // every signed-in user, so they are removed from it here.
+    await updateUserIfExists({
+      lastLoginIp: FieldValue.delete(),
+      lastLoginDeviceId: FieldValue.delete(),
+      lastLoginDeviceModel: FieldValue.delete(),
+      lastActiveAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     });
 
     console.log(`[logSessionActivity] Logged session for uid=${uid} deviceId=${deviceId} IP=${ip} trigger=${sessionTrigger}`);
@@ -3112,6 +3338,10 @@ function computeUserTierServerSide(userData) {
   }
   if (isOnFreeTrial) return 'trial';
 
+  // A store subscription whose paid period ended (beyond the grace window)
+  // is no longer Premium, even if the refresh job hasn't run yet.
+  if (iapEntitlements.storeSubscriptionLapsed(userData)) return 'free';
+
   // Paid Stripe premium (excludes in-app free trial).
   const statuses = [];
   if (status) statuses.push(status);
@@ -3180,6 +3410,10 @@ function checkAndStageDailyConnectsIncrement(transaction, usageRef, usageSnap, t
   const update = { dailyConnects: currentDailyConnects + 1 };
   if (shouldReset) {
     update.lastResetAt = admin.firestore.FieldValue.serverTimestamp();
+    // lastResetAt is shared with the app's daily swipe counter: starting a
+    // new window here must also clear the swipes, or they'd stay used up
+    // for another 24h (the app only resets when the window has expired).
+    update.dailySwipes = 0;
   }
   transaction.set(usageRef, update, { merge: true });
 }
@@ -3305,6 +3539,13 @@ exports.submitConnectionRequest = onCall(async (request) => {
     }
     const receiverData = receiverSnap.data() || {};
     if (receiverData.introVideoStatus !== 'approved') {
+      throw new HttpsError('failed-precondition', 'This user is not available to connect with right now.');
+    }
+    // A block in either direction stops new requests (same neutral message,
+    // so the sender can't tell they were blocked).
+    const senderBlocked = senderSnap.exists ? (senderSnap.data() || {}).blockedUids : null;
+    if ((Array.isArray(receiverData.blockedUids) && receiverData.blockedUids.includes(uid)) ||
+        (Array.isArray(senderBlocked) && senderBlocked.includes(receiverId))) {
       throw new HttpsError('failed-precondition', 'This user is not available to connect with right now.');
     }
 
@@ -3495,6 +3736,11 @@ exports.disconnectConnection = onCall(async (request) => {
   }
   const uid = request.auth.uid;
   const { connectionId } = request.data || {};
+  // silent = the caller is BLOCKING the other person: end a pending or
+  // accepted connection and do NOT notify them (a "Connection Ended"
+  // notification from the blocker would alert the blocked user and link
+  // back to the blocker's profile).
+  const silent = request.data?.silent === true;
 
   if (!connectionId || typeof connectionId !== 'string') {
     throw new HttpsError('invalid-argument', 'connectionId is required.');
@@ -3519,7 +3765,8 @@ exports.disconnectConnection = onCall(async (request) => {
     if (uid !== senderId && uid !== receiverId) {
       throw new HttpsError('permission-denied', 'You are not a participant in this connection.');
     }
-    if (data.status !== 'accepted') {
+    const endable = silent ? ['accepted', 'pending'] : ['accepted'];
+    if (!endable.includes(data.status)) {
       throw new HttpsError('failed-precondition', 'Only an active (accepted) connection can be disconnected.');
     }
 
@@ -3531,7 +3778,9 @@ exports.disconnectConnection = onCall(async (request) => {
     });
   });
 
-  console.log(`[disconnectConnection] uid=${uid} disconnected connectionId=${connectionId}`);
+  console.log(`[disconnectConnection] uid=${uid} disconnected connectionId=${connectionId}${silent ? ' (block, silent)' : ''}`);
+
+  if (silent) return { success: true };
 
   // Notify the other participant — unlike respondToConnection's silent
   // decline (which fires before the two people ever chatted), this ends an
@@ -3772,31 +4021,11 @@ exports.onIntroVideoStatusChanged = onDocumentUpdated('users/{uid}', async (even
     console.error(`[onIntroVideoStatusChanged] Failed to stamp introVideoStatusUpdatedAt for ${uid}: ${err.message}`);
   }
 
-  const status = after.introVideoStatus;
-  if (status !== 'approved' && status !== 'rejected') {
-    return;
-  }
-
-  const title = status === 'approved' ? 'Intro Video Approved' : 'Intro Video Needs Attention';
-  const message = status === 'approved'
-    ? 'Your intro video was approved! You are now visible in Discover.'
-    : (after.introVideoRejectionReason
-        ? `Your intro video was not approved: ${after.introVideoRejectionReason}`
-        : 'Your intro video was not approved. Please review and re-upload.');
-
-  try {
-    await admin.firestore().collection('notifications').add({
-      toUserId: uid,
-      fromUserId: 'system',
-      title,
-      message,
-      type: status === 'approved' ? 'intro_video_approved' : 'intro_video_rejected',
-      introVideoRejectionReason: status === 'rejected' ? (after.introVideoRejectionReason || null) : null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    console.error(`[onIntroVideoStatusChanged] Failed to create notification for ${uid}: ${err.message}`);
-  }
+  // No user notification here: the admin panel's Video Moderation Queue —
+  // the only place that approves/rejects intro videos — already sends one
+  // ("Video Approved!" / "Video Rejected" / "Please Re-record Your Video").
+  // Sending another from this trigger gave users two notifications (and two
+  // pushes) for every decision.
 });
 
 // ─── Swan AI (Groq dev / OpenAI prod) ───────────────────────────────────────

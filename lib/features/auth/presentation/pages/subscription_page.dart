@@ -11,6 +11,12 @@ import '../../../../shared/widgets/gold_button.dart';
 import '../../../../services/iap_service.dart';
 import '../../../../services/user_service.dart';
 
+/// Auto-renewal disclosure shown under the plans (App Store Guideline 3.1.2):
+/// names the store the user is actually paying through.
+String get _renewalTerms => Platform.isIOS
+    ? "Payment will be charged to your Apple ID account at confirmation of purchase. The subscription automatically renews unless it is cancelled at least 24 hours before the end of the current period. Your account will be charged for renewal within 24 hours prior to the end of the current period. You can manage and cancel your subscription in your App Store account settings."
+    : "Payment will be charged to your Google Play account at confirmation of purchase. The subscription automatically renews unless it is cancelled at least 24 hours before the end of the current period. You can manage and cancel your subscription in the Google Play Store under Payments & subscriptions.";
+
 class SubscriptionPage extends StatefulWidget {
   const SubscriptionPage({super.key});
 
@@ -494,7 +500,7 @@ class _SubscriptionPageState extends State<SubscriptionPage>
                           child: Column(
                             children: [
                               Text(
-                                "Subscription automatically renews unless auto-renew is turned off at least 24-hours before the end of the current period. Payment will be charged to your iTunes/Google Play account. Subscriptions can be managed and cancelled in your account settings.",
+                                _renewalTerms,
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   color: Colors.white.withOpacity(0.35),
@@ -642,6 +648,9 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
         );
       };
       IapService.instance.products.addListener(_onIapProductsChanged);
+      // Rebuild while a purchase is being verified/activated, so Continue is
+      // disabled until then (see _isActivatingPurchase).
+      IapService.instance.purchasePending.addListener(_onIapProductsChanged);
       await IapService.instance.init();
       if (!mounted) return;
       _profileSubscription ??= UserService.instance
@@ -716,8 +725,14 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   void dispose() {
     _profileSubscription?.cancel();
     IapService.instance.products.removeListener(_onIapProductsChanged);
+    IapService.instance.purchasePending.removeListener(_onIapProductsChanged);
     super.dispose();
   }
+
+  /// True from the moment a purchase starts until the server has verified it
+  /// and premium is granted (a few seconds after Apple's sheet closes). Buying
+  /// again in that window made StoreKit throw storekit_duplicate_product_object.
+  bool get _isActivatingPurchase => IapService.instance.purchasePending.value;
 
   void _syncPremiumFromProfile(Map<String, dynamic>? profile) {
     final signature = _profileSignature(profile);
@@ -776,6 +791,8 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
       (profile['freeTrialEndsAt'] ?? '').toString(),
       (profile['cancelAtPeriodEnd'] ?? '').toString(),
       (profile['billingPeriodEnd'] ?? '').toString(),
+      (profile['iapProductId'] ?? '').toString(),
+      (profile['subscriptionName'] ?? '').toString(),
     ].join('|');
   }
 
@@ -815,6 +832,9 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
       profile['subscriptionPriceId'] ??
       profile['stripePriceId'] ??
       profile['priceId'] ??
+      // In-app purchases (verifyIapPurchase) store the store product id,
+      // e.g. swan_premium_6month — it encodes the plan.
+      profile['iapProductId'] ??
       ''
     ).toString();
   }
@@ -842,23 +862,28 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
   int? _planIndexForTitle(String title) {
     switch (title) {
       case '1 Month':
+      case 'Monthly': // name written by verifyIapPurchase / Stripe webhook
         return 0;
       case '6 Months':
+      case 'Six Month':
         return 1;
       case '12 Months':
+      case 'Yearly':
         return 2;
       default:
         return null;
     }
   }
 
+  /// Whether [planIndex] is the plan the user actually PAID for. Never falls
+  /// back to the tapped/selected plan — that made the "Current Plan" label
+  /// follow the user's taps. Unknown plan → no label at all.
   bool _isPlanCurrent(int planIndex) {
     if (!_isPaidPremium || _isOnFreeTrial) return false;
     final byPrice = _planIndexForPriceId(_currentPriceId);
     if (byPrice != null) return byPrice == planIndex;
     final byTitle = _planIndexForTitle(_currentPlanTitle);
-    if (byTitle != null) return byTitle == planIndex;
-    return _selectedPlanIndex == planIndex;
+    return byTitle == planIndex;
   }
 
   String _planTitleForPriceId(String priceId) {
@@ -1040,9 +1065,17 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
         );
       }
     } catch (e) {
+      // Store errors are technical (e.g. PlatformException(...)) — log them,
+      // show the user something readable.
+      debugPrint('Subscription purchase error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          const SnackBar(
+            content: Text(
+              'The purchase couldn\'t be started. Please try again in a moment.',
+            ),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
@@ -1391,7 +1424,9 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                         borderRadius: BorderRadius.circular(30),
                       ),
                       child: ElevatedButton(
-                        onPressed: _isLoading ? null : _startPayment,
+                        onPressed: (_isLoading || _isActivatingPurchase)
+                            ? null
+                            : _startPayment,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           shadowColor: Colors.transparent,
@@ -1406,22 +1441,40 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                             fontSize: 16,
                           ),
                         ),
-                        child: _isLoading
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.black,
-                                ),
+                        child: _isActivatingPurchase
+                            ? const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.black,
+                                    ),
+                                  ),
+                                  SizedBox(width: 10),
+                                  Text('Activating…'),
+                                ],
                               )
-                            : const Text('Continue'),
+                            : _isLoading
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Colors.black,
+                                    ),
+                                  )
+                                : const Text('Continue'),
                       ),
                     ),
                   ),
                   const SizedBox(height: 14),
                   GestureDetector(
-                    onTap: _isLoading ? null : _restorePurchase,
+                    onTap: (_isLoading || _isActivatingPurchase)
+                        ? null
+                        : _restorePurchase,
                     child: Text(
                       'Restore Purchase',
                       style: TextStyle(
@@ -1439,7 +1492,7 @@ class _SwanProSubscriptionBodyState extends State<_SwanProSubscriptionBody> {
                     child: Column(
                       children: [
                         Text(
-                          "Subscription automatically renews unless auto-renew is turned off at least 24-hours before the end of the current period. Payment will be charged to your iTunes/Google Play account. Subscriptions can be managed and cancelled in your account settings.",
+                          _renewalTerms,
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.35),

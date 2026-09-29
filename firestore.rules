@@ -38,46 +38,119 @@ service cloud.firestore {
       );
     }
 
+    // ── users/{userId} helpers ────────────────────────────────────────────
+    // Fields only the backend (Admin SDK, which bypasses these rules) or an
+    // admin may ever change: billing/IAP state, moderation results, and the
+    // security fingerprint written by logSessionActivity.
+    function serverOnlyUserKeys() {
+      return ['account', 'isVerified',
+        'stripeCustomerId', 'stripeSubscriptionId',
+        'lastCheckoutSessionId', 'lastInvoiceId',
+        'subscription', 'paymentStatus', 'customerEmail',
+        'customerName', 'billingPeriodStart', 'billingPeriodEnd',
+        'subscriptionPriceId', 'subscriptionName',
+        'cancelAtPeriodEnd', 'premiumActivatedAt',
+        'iapSource', 'iapProductId', 'iapTransactionId', 'iapClaimKey',
+        // Rejection reason is admin-only, always — the owner never writes it,
+        // not even to clear it on resubmit.
+        'introVideoRejectionReason',
+        'deviceMatchesSuspendedFingerprint', 'isSeedAccount',
+        'lastLoginIp', 'lastLoginDeviceId', 'lastLoginDeviceModel'];
+    }
+
+    function userChangedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // Verification badges: the owner may clear one (e.g. on re-upload) but
+    // only an admin may ever set it to true.
+    function verificationFlagOk(field) {
+      return !userChangedKeys().hasAny([field]) ||
+        request.resource.data.get(field, false) == false;
+    }
+
+    // The one and only free trial: never after a previous trial, and at most
+    // 7 days long (+1 day of client clock tolerance). FreeTrialPage writes
+    // plan/status/startedAt/endsAt together in one update.
+    function isFirstTrialStart() {
+      let d = request.resource.data;
+      return !('freeTrialStartedAt' in resource.data) &&
+        !('trialEndedAt' in resource.data) &&
+        d.get('subscriptionPlan', '') == 'trial' &&
+        d.get('subscriptionStatus', '') == 'trialing' &&
+        d.get('freeTrialStartedAt', null) is timestamp &&
+        d.get('freeTrialEndsAt', null) is timestamp &&
+        d.freeTrialEndsAt <= request.time + duration.value(8, 'd');
+    }
+
+    // Clearing the trial once a paid plan replaces it
+    // (UserService.endTrialAfterPaidUpgrade). Must not leave a trial plan
+    // behind, or plan 'trial' with no end date would never expire.
+    function isTrialCleared() {
+      let d = request.resource.data;
+      return !('freeTrialEndsAt' in d) &&
+        !('freeTrialStartedAt' in d) &&
+        ('trialEndedAt' in d) &&
+        d.get('subscriptionPlan', 'free') != 'trial' &&
+        d.get('subscriptionStatus', 'free') != 'trialing';
+    }
+
+    function trialChangeOk() {
+      let k = userChangedKeys();
+      let d = request.resource.data;
+      let touchesTrial =
+        k.hasAny(['freeTrialEndsAt', 'freeTrialStartedAt']) ||
+        (k.hasAny(['subscriptionPlan']) && d.get('subscriptionPlan', '') == 'trial') ||
+        (k.hasAny(['subscriptionStatus']) && d.get('subscriptionStatus', '') == 'trialing');
+      return !touchesTrial || isFirstTrialStart() || isTrialCleared();
+    }
+
+    // A brand-new profile must start in the default, unpaid, unverified,
+    // pending state — the same values every signup path writes.
+    function isSafeNewUser() {
+      let d = request.resource.data;
+      return !d.keys().hasAny(
+          serverOnlyUserKeys().removeAll(['account', 'isVerified', 'subscriptionName'])) &&
+        !d.keys().hasAny(['freeTrialEndsAt', 'freeTrialStartedAt', 'trialEndedAt']) &&
+        d.get('account', 'active') == 'active' &&
+        d.get('isVerified', false) == false &&
+        d.get('subscriptionName', 'Free') == 'Free' &&
+        d.get('idVerified', false) == false &&
+        d.get('profileVerified', false) == false &&
+        d.get('incomeVerified', false) == false &&
+        d.get('professionalVerified', false) == false &&
+        d.get('profileApprovalStatus', 'pending') == 'pending' &&
+        d.get('verificationStatus', 'pending') == 'pending' &&
+        d.get('introVideoStatus', '') in ['', 'pending'] &&
+        d.get('subscriptionPlan', 'free') == 'free' &&
+        d.get('subscriptionStatus', 'free') == 'free';
+    }
+
     match /users/{userId} {
       allow read: if isSignedIn();
-      allow create: if isOwner(userId);
-      allow update: if (isOwner(userId) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(
-        ['account', 'isVerified',
-         'stripeCustomerId', 'stripeSubscriptionId',
-         'lastCheckoutSessionId', 'lastInvoiceId',
-         'subscription', 'paymentStatus', 'customerEmail',
-         'customerName', 'billingPeriodStart', 'billingPeriodEnd',
-         'subscriptionPriceId', 'subscriptionName',
-         'cancelAtPeriodEnd', 'premiumActivatedAt',
-         'iapSource', 'iapProductId', 'iapTransactionId']
-      ) && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['profileApprovalStatus']) ||
-        request.resource.data.profileApprovalStatus == 'pending'
-      ) && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verificationStatus']) ||
-        request.resource.data.verificationStatus == 'pending'
-      ) && (
+      allow create: if isAdmin() || (isOwner(userId) && isSafeNewUser());
+      allow update: if isAdmin() || (isOwner(userId) &&
+        !userChangedKeys().hasAny(serverOnlyUserKeys()) &&
+        verificationFlagOk('idVerified') &&
+        verificationFlagOk('profileVerified') &&
+        verificationFlagOk('incomeVerified') &&
+        verificationFlagOk('professionalVerified') &&
+        (!userChangedKeys().hasAny(['profileApprovalStatus']) ||
+          request.resource.data.profileApprovalStatus == 'pending') &&
+        (!userChangedKeys().hasAny(['verificationStatus']) ||
+          request.resource.data.verificationStatus == 'pending') &&
         // Video-first redesign: the owner may submit/resubmit an intro video
-        // (status -> 'pending') but only isAdmin() (admin-web's direct write)
-        // may ever move it to 'approved'/'rejected'.
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['introVideoStatus']) ||
-        request.resource.data.introVideoStatus == 'pending'
-      ) && (
-        // Rejection reason is admin-only, always — the owner never writes it,
-        // not even to clear it on resubmit (resubmission only touches
-        // introVideoStatus/introVideoUrl/introVideoSubmittedAt).
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['introVideoRejectionReason'])
-      ) && (
-        // The client (owner) may only move itself into non-paid states
-        // (free / trial). Only the backend (Admin SDK, which bypasses these
-        // rules) may ever set 'premium' or 'gold' — closes the free-premium
-        // self-grant hole where a user wrote subscriptionPlan/Status directly.
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscriptionPlan']) ||
-        request.resource.data.subscriptionPlan in ['free', 'trial']
-      ) && (
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscriptionStatus']) ||
-        request.resource.data.subscriptionStatus in ['free', 'trialing', 'expired']
-      )) || isAdmin();
+        // (status -> 'pending') but only an admin may move it to
+        // 'approved'/'rejected'.
+        (!userChangedKeys().hasAny(['introVideoStatus']) ||
+          request.resource.data.introVideoStatus == 'pending') &&
+        // The owner may only move itself into non-paid states. Only the
+        // backend may ever set 'premium' or 'gold'.
+        (!userChangedKeys().hasAny(['subscriptionPlan']) ||
+          request.resource.data.subscriptionPlan in ['free', 'trial']) &&
+        (!userChangedKeys().hasAny(['subscriptionStatus']) ||
+          request.resource.data.subscriptionStatus in ['free', 'trialing', 'expired']) &&
+        trialChangeOk());
       allow delete: if isAdmin();
 
       match /meta/{docId} {
@@ -127,6 +200,28 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // Store purchase → owning account (verifyIapPurchase / refresh job only).
+    // One App Store / Google Play purchase can unlock exactly one account.
+    match /iapClaims/{claimId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Device → account mapping for the banned-device check. Written only by
+    // the logSessionActivity function (Admin SDK); holds device identifiers,
+    // so no client access beyond admins.
+    match /deviceIndex/{deviceId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Admin panel's "shared device" check queries securityLogs across all
+    // users (collection-group query), which needs a recursive-wildcard rule;
+    // the per-user rule under /users/{userId} does not cover it.
+    match /{path=**}/securityLogs/{logId} {
+      allow read: if isAdmin();
+    }
+
     // Predefined Connect-flow topics: admin-authored, client picks one at
     // random from active == true docs.
     match /topics/{topicId} {
@@ -134,10 +229,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Legacy top-level collection — never used by any app version (all chat
+    // traffic lives under chats/{chatId}/messages). Admin-only so it can't be
+    // used as an unmoderated side channel.
     match /messages/{chatId} {
-      allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
+      allow read, write: if isAdmin();
       match /messages/{messageId} {
-        allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
+        allow read, write: if isAdmin();
       }
     }
 
@@ -161,7 +259,28 @@ service cloud.firestore {
         isChatParticipant(resource.data) || isAdmin()
       );
       match /messages/{messageId} {
-        allow read, write: if chatIdInvolvesUser(chatId) || isAdmin();
+        allow read: if chatIdInvolvesUser(chatId) || isAdmin();
+        // Send: only as yourself, only to the other participant, and only
+        // into a chat that exists — chats are created by respondToConnection
+        // on accept, so this enforces the accepted-connection gate.
+        allow create: if isAdmin() || (
+          chatIdInvolvesUser(chatId) &&
+          request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.receiverId is string &&
+          request.resource.data.receiverId != request.auth.uid &&
+          exists(/databases/$(database)/documents/chats/$(chatId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
+          request.resource.data.receiverId in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+        );
+        // Read receipts only: the receiver may flip 'seen'; nobody may edit
+        // message text or sender/receiver.
+        allow update: if isAdmin() || (
+          chatIdInvolvesUser(chatId) &&
+          resource.data.receiverId == request.auth.uid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['seen'])
+        );
+        // Thread cleanup (e.g. after a block) by either participant.
+        allow delete: if chatIdInvolvesUser(chatId) || isAdmin();
       }
     }
 
@@ -176,12 +295,11 @@ service cloud.firestore {
     }
 
     match /reports/{reportId} {
-      allow create: if isSignedIn() &&
-        request.resource.data.reportedBy == request.auth.uid &&
-        request.resource.data.reportedUid is string &&
-        request.resource.data.reportedUid != request.auth.uid &&
-        request.resource.data.keys().hasAll(['reason']) &&
-        request.resource.data.reason.size() > 0;
+      // Reports are created only by the submitReport / reportConnectionVideo
+      // callables (rate-limited, server-assigned priority) — the app never
+      // writes here directly. Direct client writes let one account file
+      // unlimited reports with any priority and auto-suspend anyone.
+      allow create: if isAdmin();
       allow read: if isAdmin() ||
         (isSignedIn() && resource.data.reportedBy == request.auth.uid);
       allow update, delete: if isAdmin();
@@ -198,7 +316,11 @@ service cloud.firestore {
         resource.data.toUserId == request.auth.uid ||
         isAdmin()
       );
-      allow create: if isSignedIn();
+      // You can only record that YOU viewed someone else.
+      allow create: if isSignedIn() &&
+        request.resource.data.fromUserId == request.auth.uid &&
+        request.resource.data.toUserId is string &&
+        request.resource.data.toUserId != request.auth.uid;
       allow update, delete: if isAdmin();
     }
 

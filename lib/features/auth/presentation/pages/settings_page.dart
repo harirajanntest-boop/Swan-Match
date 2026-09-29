@@ -207,6 +207,14 @@ class _SettingsPageState extends State<SettingsPage>
         return;
       }
 
+      // Step 0b: Revoke Sign in with Apple tokens (Guideline 5.1.1(v)). Must
+      // run before the soft-delete, which removes the login server-side.
+      final appleAuthCode = _appleAuthCodeForRevoke;
+      _appleAuthCodeForRevoke = null;
+      if (appleAuthCode != null) {
+        await AuthService.instance.revokeAppleToken(appleAuthCode);
+      }
+
       // Step 1: Soft delete in Firestore - clear personal data
       final now = DateTime.now();
       final scheduledHardDelete = now.add(const Duration(days: 30));
@@ -231,6 +239,8 @@ class _SettingsPageState extends State<SettingsPage>
         'isOnline': false,
         'online': false,
         'fcmTokens': <String>[],
+        // Legacy single-token field is also read by the push functions.
+        'fcmToken': FieldValue.delete(),
       });
 
       // Step 2: Delete Firebase Auth account IMMEDIATELY
@@ -311,15 +321,27 @@ class _SettingsPageState extends State<SettingsPage>
     }
   }
 
+  /// Apple authorization code captured during re-authentication, used to
+  /// revoke the user's Apple tokens when the account is deleted.
+  String? _appleAuthCodeForRevoke;
+
   Future<bool> _reauthenticate() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return false;
 
     final providers = user.providerData.map((p) => p.providerId).toList();
     final isPasswordUser = providers.contains('password');
+    // Apple-linked accounts re-authenticate with Apple (even if they also have
+    // a password): it's the only way to get the code needed to revoke tokens.
+    final isAppleUser = Platform.isIOS && providers.contains('apple.com');
 
     try {
-      if (isPasswordUser) {
+      if (isAppleUser) {
+        final code =
+            await AuthService.instance.reauthenticateWithAppleForDeletion();
+        if (code == null) return false;
+        _appleAuthCodeForRevoke = code;
+      } else if (isPasswordUser) {
         // Prompt for password
         final passwordController = TextEditingController();
         final confirmed = await showDialog<bool>(

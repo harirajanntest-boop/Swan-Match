@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -116,7 +117,9 @@ class PushNotificationService {
         return;
       }
 
-      if (notification != null) {
+      // iOS already shows the push itself while the app is open (see the
+      // presentation options above); a local copy would show it twice.
+      if (notification != null && !Platform.isIOS) {
         _localNotificationsPlugin.show(
           id: notification.hashCode,
           title: notification.title,
@@ -166,21 +169,44 @@ class PushNotificationService {
     // adding the new one, so the user's fcmTokens array never accumulates
     // multiple tokens for the same device — that accumulation is what makes the
     // backend send (and the device receive) duplicate push notifications.
+    //
+    // update() (never set/merge): this runs the instant a new account signs
+    // in, BEFORE signup has written the profile. A merge-set would create a
+    // stub users/{uid} doc, turning the signup profile write into an update
+    // that firestore.rules rejects (permission-denied), and making brand-new
+    // Google/Apple users look like existing ones. If the profile doesn't
+    // exist yet, skip — signup calls syncTokenForCurrentUser() once it does.
     final prefs = await SharedPreferences.getInstance();
     final previous = prefs.getString('fcm_token_local');
-    if (previous != null && previous.isNotEmpty && previous != token) {
-      await users.set(<String, dynamic>{
-        'fcmTokens': FieldValue.arrayRemove([previous]),
-      }, SetOptions(merge: true));
+    try {
+      if (previous != null && previous.isNotEmpty && previous != token) {
+        await users.update(<String, dynamic>{
+          'fcmTokens': FieldValue.arrayRemove([previous]),
+        });
+      }
+
+      await users.update(<String, dynamic>{
+        'fcmTokens': FieldValue.arrayUnion([token]),
+        'fcmToken': token,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } on FirebaseException catch (e) {
+      if (e.code == 'not-found') return;
+      rethrow;
     }
 
-    await users.set(<String, dynamic>{
-      'fcmTokens': FieldValue.arrayUnion([token]),
-      'fcmToken': token,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-
     await prefs.setString('fcm_token_local', token);
+  }
+
+  /// Saves this device's FCM token to the current user's profile. Call right
+  /// after a new profile document is created (the auth-state listener skips
+  /// users whose profile doesn't exist yet).
+  Future<void> syncTokenForCurrentUser() async {
+    try {
+      await _persistToken();
+    } catch (e) {
+      debugPrint('Error syncing FCM token: $e');
+    }
   }
 
   /// Removes this device's token when signing out (call before [FirebaseAuth.signOut]).
@@ -192,14 +218,31 @@ class PushNotificationService {
     try {
       token = await _messaging.getToken();
     } catch (e) {
+      // Still clear the legacy field below even if the token can't be read.
       debugPrint('Error getting FCM token for cleanup: $e');
-      return;
     }
-    if (token == null || token.trim().isEmpty) return;
+    token = token?.trim();
 
-    await _firestore.collection('users').doc(user.uid).set(<String, dynamic>{
-      'fcmTokens': FieldValue.arrayRemove([token]),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    try {
+      // update(), not merge-set: never create a profile doc on sign-out.
+      await _firestore.collection('users').doc(user.uid).update(<String, dynamic>{
+        if (token != null && token.isNotEmpty)
+          'fcmTokens': FieldValue.arrayRemove([token]),
+        // The single legacy `fcmToken` field is also read by the push
+        // functions. Leaving it after sign-out sent this account's pushes
+        // (chat text included) to the next person signed in on this phone.
+        // Other devices stay reachable through the fcmTokens array.
+        'fcmToken': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } on FirebaseException catch (e) {
+      if (e.code != 'not-found') rethrow;
+    }
+    // Forget the locally cached token so the next account on this phone
+    // doesn't try to remove it from its own profile.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('fcm_token_local');
+    } catch (_) {}
   }
 }

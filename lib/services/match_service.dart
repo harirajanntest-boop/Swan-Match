@@ -275,13 +275,21 @@ class MatchService {
       return;
 
     final id = '${user.uid}_$viewedUserId';
-    await _profileViews.doc(id).set(<String, dynamic>{
-      'id': id,
-      'fromUserId': user.uid,
-      'toUserId': viewedUserId,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    try {
+      await _profileViews.doc(id).set(<String, dynamic>{
+        'id': id,
+        'fromUserId': user.uid,
+        'toUserId': viewedUserId,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } on FirebaseException catch (e) {
+      // firestore.rules allow creating a profileViews doc but not updating it
+      // (admin-only), so a repeat view of the same profile is denied. The
+      // view is already recorded — ignore. (Caller doesn't await this, so an
+      // uncaught error would be reported to Crashlytics as fatal.)
+      if (e.code != 'permission-denied') rethrow;
+    }
   }
 
   Stream<List<Map<String, dynamic>>> watchViewedYouMatches() {

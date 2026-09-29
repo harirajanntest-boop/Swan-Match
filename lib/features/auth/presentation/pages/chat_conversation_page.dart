@@ -42,6 +42,11 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
   bool _isSending = false;
   bool _chatRestricted = false;
   String? _chatRestrictionReason;
+  // Either person blocked the other: messaging is off — never shown as a
+  // Premium upsell (sendMessage used to fail silently and this page then
+  // assumed the plan was the reason).
+  bool _isBlocked = false;
+  bool _isPremiumUser = false;
   Map<String, dynamic>? _otherUserProfile;
 
   // ─── STREAM CACHED IN STATE ───
@@ -68,6 +73,7 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
         .snapshots();
     _loadOtherUserProfile();
     _loadChatAccess();
+    _refreshBlockState();
   }
 
   void _loadMessageStream() {
@@ -98,11 +104,32 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
     final check = await SubscriptionLimitsService.instance.canOpenChat(
       widget.otherUserId,
     );
+    final myProfile = await UserService.instance.getCurrentUserProfile();
     if (!mounted) return;
     setState(() {
       _chatRestricted = !check.allowed;
       _chatRestrictionReason = check.reason;
+      _isPremiumUser = UserService.instance.isPremium(myProfile);
     });
+  }
+
+  /// Re-reads both profiles and returns whether either user blocked the other.
+  Future<bool> _refreshBlockState() async {
+    final me = FirebaseAuth.instance.currentUser?.uid;
+    if (me == null) return false;
+    UserService.instance.invalidateCurrentUserCache();
+    final results = await Future.wait([
+      UserService.instance.getUserProfile(widget.otherUserId, forceRefresh: true),
+      UserService.instance.getCurrentUserProfile(),
+    ]);
+    final theirs = results[0]?['blockedUids'];
+    final mine = results[1]?['blockedUids'];
+    final blocked = (theirs is List && theirs.contains(me)) ||
+        (mine is List && mine.contains(widget.otherUserId));
+    if (mounted && blocked != _isBlocked) {
+      setState(() => _isBlocked = blocked);
+    }
+    return blocked;
   }
 
   Future<void> _loadOtherUserProfile() async {
@@ -163,6 +190,13 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
           name: 'message_sent',
           parameters: {'recipient_uid': widget.otherUserId},
         ));
+      } else if (mounted && await _refreshBlockState()) {
+        if (!mounted) return;
+        showLinearMessage(
+          context,
+          'You can\'t message this person.',
+          isError: true,
+        );
       } else if (mounted) {
         final check = await SubscriptionLimitsService.instance.canSendMessageTo(
           widget.otherUserId,
@@ -828,7 +862,41 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
               ),
 
               // ── Input bar (hidden for deleted / restricted users) ──
-              if (_chatRestricted && !_isOtherUserDeleted)
+              if (_isBlocked && !_isOtherUserDeleted)
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                  decoration: BoxDecoration(
+                    color: AppColors.obsidian,
+                    border: Border(
+                      top: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.07),
+                      ),
+                    ),
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.block,
+                          color: Colors.white30,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'You can\'t message this person.',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.4),
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else if (_chatRestricted && !_isOtherUserDeleted)
                 Container(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
                   decoration: BoxDecoration(
@@ -853,14 +921,18 @@ class _ChatConversationPageState extends State<ChatConversationPage> {
                             height: 1.45,
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        TextButton(
-                          onPressed: _showUpgradeSheet,
-                          child: const Text(
-                            'Upgrade to Premium',
-                            style: TextStyle(color: AppColors.goldMedium),
+                        // Only an upsell when the plan is actually the
+                        // reason (e.g. not for "no accepted connection").
+                        if (!_isPremiumUser) ...[
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _showUpgradeSheet,
+                            child: const Text(
+                              'Upgrade to Premium',
+                              style: TextStyle(color: AppColors.goldMedium),
+                            ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),

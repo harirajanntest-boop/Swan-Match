@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/in_app_purchase_android.dart';
 
@@ -34,6 +35,7 @@ class IapService {
   InAppPurchase get _iap => InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _sub;
   bool _initialized = false;
+  bool _ownedElsewhereShown = false;
 
   // ─── Platform-agnostic plan keys (what the UI selects) ────────────────────
   static const String monthlyId = 'monthly';
@@ -140,16 +142,42 @@ class IapService {
       onError?.call('This plan is not available right now. Please try again.');
       return false;
     }
+    // A purchase is still being verified server-side (a few seconds after
+    // Apple's sheet closes) and hasn't been completed with the store yet.
+    // Starting another one now makes StoreKit throw
+    // storekit_duplicate_product_object.
+    if (purchasePending.value) {
+      onError?.call(_activatingMessage);
+      return true;
+    }
     purchasePending.value = true;
     // Auto-renewable subscriptions are bought as non-consumables. For Android,
     // [pd] is the specific base-plan product, so its offer token is used.
     final PurchaseParam param = PurchaseParam(productDetails: pd);
-    return _iap.buyNonConsumable(purchaseParam: param);
+    try {
+      return await _iap.buyNonConsumable(purchaseParam: param);
+    } on PlatformException catch (e) {
+      purchasePending.value = false;
+      if (e.code == 'storekit_duplicate_product_object') {
+        // An earlier transaction for this product was never finished (e.g.
+        // its verification failed last session). Re-deliver it so it gets
+        // verified and completed, instead of showing a raw StoreKit error.
+        onError?.call(_activatingMessage);
+        unawaited(_iap.restorePurchases().catchError((_) {}));
+        return true;
+      }
+      rethrow;
+    }
   }
 
+  static const String _activatingMessage =
+      'Your purchase is being activated — this takes a few seconds.';
+
   /// Restores previously bought subscriptions (required by both stores).
+  /// Does not touch [purchasePending]: when there is nothing to restore the
+  /// store sends no event, which would leave it stuck on (and the buy
+  /// buttons disabled) forever.
   Future<void> restore() async {
-    purchasePending.value = true;
     await _iap.restorePurchases();
   }
 
@@ -207,6 +235,28 @@ class IapService {
       });
       await onPremiumActivated?.call();
       return true;
+    } on FirebaseFunctionsException catch (e) {
+      if (e.code == 'already-exists') {
+        // This store purchase already unlocks a different Swan Match account
+        // (e.g. a second account on the same Apple ID / Google account).
+        // Complete it — it has been delivered to its owner — and say why
+        // this account didn't get Premium (once per session: auto-restore
+        // replays it every time the paywall opens).
+        if (!_ownedElsewhereShown) {
+          _ownedElsewhereShown = true;
+          onError?.call(
+            'This subscription is already linked to another Swan Match '
+            'account. Sign in to that account to use it.',
+          );
+        }
+        return true;
+      }
+      debugPrint('IAP verification error: $e');
+      onError?.call(
+        'We received your purchase but activation is taking a moment. '
+        'It will appear shortly — or tap Restore Purchases.',
+      );
+      return false;
     } catch (e) {
       debugPrint('IAP verification error: $e');
       onError?.call(

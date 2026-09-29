@@ -79,12 +79,15 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
 
       if (snapshot.docs.isEmpty) return;
 
-      final batch = FirebaseFirestore.instance.batch();
-      for (var doc in snapshot.docs) {
-        batch.delete(doc.reference);
+      // Firestore caps a batch at 500 writes — commit in chunks.
+      for (var i = 0; i < snapshot.docs.length; i += 450) {
+        final batch = FirebaseFirestore.instance.batch();
+        for (final doc in snapshot.docs.skip(i).take(450)) {
+          batch.delete(doc.reference);
+        }
+        await batch.commit();
       }
-      await batch.commit();
-      
+
       if (mounted) {
         showLinearMessage(context, "Notifications cleared.");
       }
@@ -107,14 +110,17 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
 
       if (unreadDocs.isEmpty) return;
 
-      final batch = FirebaseFirestore.instance.batch();
-      for (var doc in unreadDocs) {
-        batch.update(doc.reference, {
-          'isRead': true,
-          'seenAt': FieldValue.serverTimestamp(),
-        });
+      // Firestore caps a batch at 500 writes — commit in chunks.
+      for (var i = 0; i < unreadDocs.length; i += 450) {
+        final batch = FirebaseFirestore.instance.batch();
+        for (final doc in unreadDocs.skip(i).take(450)) {
+          batch.update(doc.reference, {
+            'isRead': true,
+            'seenAt': FieldValue.serverTimestamp(),
+          });
+        }
+        await batch.commit();
       }
-      await batch.commit();
     } catch (e) {
       debugPrint("Error marking notifications as seen: $e");
     }
@@ -309,7 +315,14 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
                                   .toString(),
                               'time': _timeAgo(when),
                               'isNew': item['isRead'] != true,
-                              'isSystem': (item['isSystem'] ?? false) == true,
+                              // System = not from a real person. Cloud Function
+                              // notifications (intro video approved/rejected,
+                              // report received) don't set isSystem but send
+                              // fromUserId 'system' — they must not get the
+                              // "View profile / View Interest" buttons.
+                              'isSystem': (item['isSystem'] ?? false) == true ||
+                                  _isSystemSender(
+                                      (item['fromUserId'] ?? '').toString()),
                               'fromUserId':
                                   (item['fromUserId'] ?? '').toString(),
                             },
@@ -326,6 +339,11 @@ class _NotificationsPageState extends State<NotificationsPage> with SingleTicker
         ),
       ),
     );
+  }
+
+  static bool _isSystemSender(String fromUserId) {
+    final id = fromUserId.trim().toLowerCase();
+    return id.isEmpty || id == 'system' || id == 'admin';
   }
 
   String _timeAgo(DateTime dateTime) {

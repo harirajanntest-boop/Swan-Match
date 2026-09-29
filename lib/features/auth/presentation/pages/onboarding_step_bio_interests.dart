@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 /// "Bio & Interests" onboarding step, inserted between Intent & Preferences
 /// and Intro Video. Bio and interests remain optional, matching the "keep
@@ -49,6 +50,9 @@ class _OnboardingStepBioInterestsState
   late TextEditingController _bioCtrl;
   late List<String> _selectedInterests;
   String? _localPhotoPath;
+  // Set once Continue is tapped without a photo: the photo turns red.
+  bool _showErrors = false;
+  final _photoKey = GlobalKey();
   bool _pickingPhoto = false;
 
   // Kept identical to edit_profile_page.dart's `_interestOptions` for
@@ -82,6 +86,26 @@ class _OnboardingStepBioInterestsState
   }
 
   void _saveAndNext() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    // Continue is always tappable (a greyed-out button didn't tell users
+    // why) — say what's missing and take them to it.
+    if (_localPhotoPath == null) {
+      setState(() => _showErrors = true);
+      showLinearMessage(
+        context,
+        'Please add a profile photo to continue',
+        isError: true,
+      );
+      final target = _photoKey.currentContext;
+      if (target != null) {
+        Scrollable.ensureVisible(
+          target,
+          duration: const Duration(milliseconds: 300),
+          alignment: 0.1,
+        );
+      }
+      return;
+    }
     widget.data.bio = _bioCtrl.text.trim();
     widget.data.interests = List<String>.from(_selectedInterests);
     widget.onNext();
@@ -182,7 +206,7 @@ class _OnboardingStepBioInterestsState
           ),
           const SizedBox(height: 6),
           const Text(
-            'Share a bit about yourself and what you enjoy — totally optional.',
+            'Add a profile photo, then share a bit about yourself — bio and interests are optional.',
             style: TextStyle(
               color: OnboardingColors.textSecondary,
               fontSize: 14,
@@ -195,7 +219,8 @@ class _OnboardingStepBioInterestsState
           // here, the most natural "About You" step, rather than only later
           // via Profile > Edit Profile).
           Text(
-            'Add a profile photo',
+            'Profile photo (required)',
+            key: _photoKey,
             style: TextStyle(
               color: OnboardingColors.primaryGold.withOpacity(0.9),
               fontSize: 13,
@@ -215,7 +240,9 @@ class _OnboardingStepBioInterestsState
                       shape: BoxShape.circle,
                       color: OnboardingColors.fieldBackground,
                       border: Border.all(
-                        color: OnboardingColors.primaryGold.withOpacity(0.6),
+                        color: _showErrors && _localPhotoPath == null
+                            ? Colors.redAccent
+                            : OnboardingColors.primaryGold.withOpacity(0.6),
                         width: 2,
                       ),
                     ),
@@ -274,9 +301,11 @@ class _OnboardingStepBioInterestsState
             const SizedBox(height: 10),
             Center(
               child: Text(
-                'A profile photo is required to continue.',
+                'Tap the circle to add a photo — required to continue.',
                 style: TextStyle(
-                  color: Colors.redAccent.withOpacity(0.9),
+                  color: _showErrors
+                      ? Colors.redAccent
+                      : OnboardingColors.textSecondary,
                   fontSize: 12,
                 ),
               ),
@@ -343,7 +372,6 @@ class _OnboardingStepBioInterestsState
 
           NextButton(
             label: 'Continue',
-            enabled: _localPhotoPath != null,
             onPressed: _saveAndNext,
           ),
           const SizedBox(height: 24),

@@ -7,6 +7,7 @@ import 'package:video_player/video_player.dart';
 
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 /// Trimmed per the simplified onboarding spec: the photo-grid review and the
 /// profession/education summary are gone (those fields are no longer
@@ -45,6 +46,11 @@ class _OnboardingStep7ReviewState extends State<OnboardingStep7Review> {
   static const int _verificationStep = 5;
 
   late bool _termsAccepted;
+  // Set once Submit is tapped with something missing: those items turn red.
+  bool _showErrors = false;
+  final _videoKey = GlobalKey();
+  final _verificationKey = GlobalKey();
+  final _termsKey = GlobalKey();
 
   OnboardingData get data => widget.data;
 
@@ -84,6 +90,40 @@ class _OnboardingStep7ReviewState extends State<OnboardingStep7Review> {
       File(data.idVerificationUrl).existsSync();
 
   bool get _hasVerification => _hasSelfie;
+
+  /// Submit is always tappable (a greyed-out button didn't tell users why):
+  /// list what's missing, highlight it and scroll to the first item.
+  void _handleSubmit() {
+    if (widget.isLoading) return;
+    final missing = <String>[
+      if (!_hasVideo) 'record your intro video',
+      if (!_hasVerification) 'take your selfie',
+      if (!_termsAccepted) 'accept the Terms & Privacy Policy',
+    ];
+    if (missing.isEmpty) {
+      widget.onComplete();
+      return;
+    }
+    setState(() => _showErrors = true);
+    showLinearMessage(
+      context,
+      'Please ${missing.join(', ')} to continue',
+      isError: true,
+    );
+    final firstKey = !_hasVideo
+        ? _videoKey
+        : !_hasVerification
+            ? _verificationKey
+            : _termsKey;
+    final target = firstKey.currentContext;
+    if (target != null) {
+      Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 300),
+        alignment: 0.1,
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -159,24 +199,33 @@ class _OnboardingStep7ReviewState extends State<OnboardingStep7Review> {
           const SizedBox(height: 14),
 
           // Card 4: Intro Video preview (replaces the old photo-grid section)
-          _buildVideoCard(context),
+          KeyedSubtree(key: _videoKey, child: _buildVideoCard(context)),
           const SizedBox(height: 14),
 
           // Card 5: Verification (selfie required; government ID optional) preview
-          _buildVerificationCard(context),
+          KeyedSubtree(
+            key: _verificationKey,
+            child: _buildVerificationCard(context),
+          ),
           const SizedBox(height: 12),
 
           if (!_hasVideo) ...[
-            const Text(
+            Text(
               'Record your intro video to continue.',
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              style: TextStyle(
+                color: _showErrors ? Colors.redAccent : Colors.orangeAccent,
+                fontSize: 12,
+              ),
             ),
             const SizedBox(height: 12),
           ],
           if (!_hasVerification) ...[
-            const Text(
+            Text(
               'Capture your selfie to continue. Government ID is optional.',
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              style: TextStyle(
+                color: _showErrors ? Colors.redAccent : Colors.orangeAccent,
+                fontSize: 12,
+              ),
             ),
             const SizedBox(height: 12),
           ],
@@ -185,11 +234,16 @@ class _OnboardingStep7ReviewState extends State<OnboardingStep7Review> {
           // persisted to `data.termsAccepted`/`termsAcceptedAt` immediately
           // (not deferred to a later handler).
           Container(
+            key: _termsKey,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: OnboardingColors.fieldBackground,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withOpacity(0.08)),
+              border: Border.all(
+                color: _showErrors && !_termsAccepted
+                    ? Colors.redAccent
+                    : Colors.white.withOpacity(0.08),
+              ),
             ),
             child: Row(
               children: [
@@ -238,18 +292,20 @@ class _OnboardingStep7ReviewState extends State<OnboardingStep7Review> {
           ),
           if (!_termsAccepted) ...[
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'Please accept the Terms of Service and Privacy Policy to continue.',
-              style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              style: TextStyle(
+                color: _showErrors ? Colors.redAccent : Colors.orangeAccent,
+                fontSize: 12,
+              ),
             ),
           ],
           const SizedBox(height: 16),
 
           NextButton(
             label: 'Submit for Review',
-            enabled: _hasVideo && _hasVerification && _termsAccepted,
             isLoading: widget.isLoading,
-            onPressed: widget.onComplete,
+            onPressed: _handleSubmit,
           ),
           const SizedBox(height: 24),
         ],

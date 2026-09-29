@@ -68,14 +68,16 @@ class ChatService {
 			sentAt: now,
 		);
 
-		await _messagesRef(chatId).doc(id).set(message.toMap());
-
+		// Chat thread first: firestore.rules only accept a message into a chat
+		// doc that already exists with both users as participants.
 		await ensureChatThread(
 				firstUserId: sender.uid,
 				secondUserId: receiverId,
 				seedMessage: text.trim(),
 				lastSenderId: sender.uid,
 		);
+
+		await _messagesRef(chatId).doc(id).set(message.toMap());
 
 		await SubscriptionLimitsService.instance.recordMessagePartner(receiverId);
 		// Chat push is sent by Cloud Function `onMessageCreated` on the message doc.
@@ -97,11 +99,14 @@ class ChatService {
 			final unseen =
 					snap.docs.where((d) => d.data()['seen'] != true).toList();
 			if (unseen.isEmpty) return;
-			final batch = _firestore.batch();
-			for (final d in unseen) {
-				batch.update(d.reference, {'seen': true});
+			// Firestore caps a batch at 500 writes — commit in chunks.
+			for (var i = 0; i < unseen.length; i += 450) {
+				final batch = _firestore.batch();
+				for (final d in unseen.skip(i).take(450)) {
+					batch.update(d.reference, {'seen': true});
+				}
+				await batch.commit();
 			}
-			await batch.commit();
 		} catch (_) {
 			// best-effort — never block the UI on read-receipt writes
 		}

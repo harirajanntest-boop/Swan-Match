@@ -213,7 +213,7 @@ class _FreeTrialPageState extends State<FreeTrialPage>
               ),
               const SizedBox(height: 12),
               Text(
-                'Trial lasts 7 days. Cancel anytime before it ends. Billed through your Apple ID / Google Play account.',
+                'The 7-day trial is free: no payment details are needed and nothing is charged. When it ends you move to the Free plan unless you choose to subscribe.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.4),

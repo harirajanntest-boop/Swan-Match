@@ -168,6 +168,26 @@ class ConnectionService {
 		});
 	}
 
+	/// Ends the (pending or accepted) connection with [otherUserId] because
+	/// the current user BLOCKED them — silently: the blocked person gets no
+	/// "Connection Ended" notification. Without this the connection stayed
+	/// 'accepted', so the blocked person still saw the chat in their Chats /
+	/// Connections tabs. Best-effort: no connection → nothing to do.
+	Future<void> endConnectionOnBlock(String otherUserId) async {
+		final uid = _auth.currentUser?.uid;
+		if (uid == null || otherUserId.isEmpty) return;
+		try {
+			await _functions.httpsCallable('disconnectConnection').call(
+				<String, dynamic>{
+					'connectionId': connectionIdFor(uid, otherUserId),
+					'silent': true,
+				},
+			);
+		} catch (e) {
+			debugPrint('ConnectionService.endConnectionOnBlock: $e');
+		}
+	}
+
 	/// Direct Firestore read — whether the current user has an accepted
 	/// connection with [otherUserId]. Used by `SubscriptionLimitsService` as
 	/// the chat-unlock gate (replaces `JourneyService.chatUnlockStatus`).
@@ -176,7 +196,16 @@ class ConnectionService {
 		if (uid == null || otherUserId.isEmpty) return false;
 
 		final id = connectionIdFor(uid, otherUserId);
-		final doc = await _connections.doc(id).get();
+		final DocumentSnapshot<Map<String, dynamic>> doc;
+		try {
+			doc = await _connections.doc(id).get();
+		} on FirebaseException catch (e) {
+			// firestore.rules reads resource.data.senderId, so a get() on a
+			// connection that doesn't exist is DENIED rather than returning an
+			// empty snapshot. No connection == not accepted.
+			if (e.code == 'permission-denied') return false;
+			rethrow;
+		}
 		final data = doc.data();
 		if (data == null) return false;
 		return (data['status'] ?? '').toString().toLowerCase() == 'accepted';

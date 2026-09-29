@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../services/auth_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -56,8 +57,11 @@ class AccountSuspensionHelper {
             onPressed: () {
               Navigator.pop(ctx);
               if (context.mounted) {
-                Navigator.of(context).push(
+                // Replace the whole stack: nothing of the app may remain
+                // underneath for Back to return to.
+                Navigator.of(context).pushAndRemoveUntil(
                   MaterialPageRoute(builder: (_) => const AppealFormPage()),
+                  (route) => false,
                 );
               }
             },
@@ -66,7 +70,7 @@ class AccountSuspensionHelper {
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              await FirebaseAuth.instance.signOut();
+              await AuthService.instance.signOut(); // clears push token too
               if (context.mounted) {
                 Navigator.of(context).pushAndRemoveUntil(
                   MaterialPageRoute(builder: (_) => const CustomLoginPage()),
@@ -101,7 +105,7 @@ class AccountSuspensionHelper {
           TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              await FirebaseAuth.instance.signOut();
+              await AuthService.instance.signOut(); // clears push token too
               if (context.mounted) {
                 Navigator.of(context).pushAndRemoveUntil(
                   MaterialPageRoute(builder: (_) => const CustomLoginPage()),

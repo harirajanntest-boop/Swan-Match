@@ -114,12 +114,29 @@ class _IntroVideoRecorderState extends State<IntroVideoRecorder>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
+      if (controller == null || !controller.value.isInitialized) return;
+      // A stop is already finishing the take and disposes the camera itself;
+      // disposing it here would throw away the finished recording.
+      if (_stage == _Stage.stopping) return;
       controller.dispose();
       _cameraController = null;
-    } else if (state == AppLifecycleState.resumed && _stage == _Stage.ready) {
+      // Backgrounded mid-recording (call, Control Center, app switch): the
+      // recording is lost with the camera. Drop back to "ready" so resuming
+      // re-opens the camera instead of leaving a timer running with no
+      // camera and no way to stop or retake.
+      if (_stage == _Stage.recording) {
+        _timer?.cancel();
+        _recordedSeconds = 0;
+        _stage = _Stage.ready;
+      }
+      // Rebuild so the disposed controller is no longer in the preview.
+      if (mounted) setState(() {});
+    } else if (state == AppLifecycleState.resumed &&
+        _stage == _Stage.ready &&
+        controller == null) {
+      // The camera was released when the app went to the background.
       _initCamera();
     }
   }
@@ -832,10 +849,13 @@ class _IntroVideoRecorderState extends State<IntroVideoRecorder>
                       padding: const EdgeInsets.all(6),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 200),
+                        // Always a rectangle; only the corner radius animates
+                        // (fully round = circle). Animating BoxShape.circle ⇄
+                        // rectangle interpolates a borderRadius onto a circle,
+                        // which throws — a red error flash on record/stop.
                         decoration: BoxDecoration(
                           color: Colors.redAccent,
-                          shape: isRecording ? BoxShape.rectangle : BoxShape.circle,
-                          borderRadius: isRecording ? BorderRadius.circular(6) : null,
+                          borderRadius: BorderRadius.circular(isRecording ? 6 : 100),
                         ),
                       ),
                     ),

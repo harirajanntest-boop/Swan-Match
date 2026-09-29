@@ -49,7 +49,13 @@ class StorageService {
 				SettableMetadata(contentType: 'image/jpeg'),
 		);
 
-		return ref.getDownloadURL();
+		// Returns the STORAGE PATH, never a download URL. A download URL carries
+		// a token that opens the file for anyone who has the link, and the
+		// profile doc it's saved in is readable by every signed-in user —
+		// selfies and government IDs must only be viewable by admins, which
+		// storage.rules enforce for users/{uid}/verification/** when the file
+		// is opened by path (admin panel: getDownloadURL(ref(storage, path))).
+		return ref.fullPath;
 	}
 
 	/// Uploads a user's intro video to `intro-videos/{uid}/intro.mp4` — this

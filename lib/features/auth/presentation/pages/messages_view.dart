@@ -116,6 +116,9 @@ class _MessagesViewState extends State<MessagesView>
 
               Expanded(
                 child: TabBarView(
+                  // Switch tabs only by tapping Requests / Connections /
+                  // Chats — no horizontal swipe between them.
+                  physics: const NeverScrollableScrollPhysics(),
                   children: [
                     _buildRequestsTab(context),
                     _buildConnectionsTab(context),
@@ -142,7 +145,7 @@ class _MessagesViewState extends State<MessagesView>
         }
         final receivedAll =
             receivedSnapshot.data ?? const <ConnectionModel>[];
-        final received = receivedAll
+        final receivedPending = receivedAll
             .where((c) => c.status.toLowerCase() == 'pending')
             .toList();
 
@@ -150,37 +153,53 @@ class _MessagesViewState extends State<MessagesView>
           stream: _sentConnectionsStream,
           builder: (context, sentSnapshot) {
             final sentAll = sentSnapshot.data ?? const <ConnectionModel>[];
-            final sent = sentAll.where((c) {
-              final status = c.status.toLowerCase();
-              return status == 'pending' || status == 'expired';
-            }).toList();
+            return StreamBuilder<Map<String, dynamic>?>(
+              stream: _myProfileStream,
+              builder: (context, profileSnap) {
+                // People I blocked or reported don't show up here either (same
+                // as Connections and Chats).
+                final myProfile = profileSnap.data ?? const <String, dynamic>{};
+                final hiddenUids = {
+                  ...Set<String>.from(myProfile['blockedUids'] ?? []),
+                  ...Set<String>.from(myProfile['reportedUids'] ?? []),
+                };
+                final received = receivedPending
+                    .where((c) => !hiddenUids.contains(c.senderId))
+                    .toList();
+                final sent = sentAll.where((c) {
+                  final status = c.status.toLowerCase();
+                  return (status == 'pending' || status == 'expired') &&
+                      !hiddenUids.contains(c.receiverId);
+                }).toList();
 
-            if (received.isEmpty && sent.isEmpty) {
-              return const Center(
-                child: _MessageEmptyState(
-                  icon: Icons.forum_outlined,
-                  message: "No requests yet",
-                  subMessage:
-                      "Connection requests you send or receive will show up here.",
-                ),
-              );
-            }
+                if (received.isEmpty && sent.isEmpty) {
+                  return const Center(
+                    child: _MessageEmptyState(
+                      icon: Icons.forum_outlined,
+                      message: "No requests yet",
+                      subMessage:
+                          "Connection requests you send or receive will show up here.",
+                    ),
+                  );
+                }
 
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-              children: [
-                if (received.isNotEmpty) ...[
-                  _sectionLabel('Received'),
-                  ...received.map(
-                    (c) => _ReceivedRequestTile(connection: c),
-                  ),
-                ],
-                if (sent.isNotEmpty) ...[
-                  SizedBox(height: received.isNotEmpty ? 20 : 0),
-                  _sectionLabel('Sent'),
-                  ...sent.map((c) => _SentRequestTile(connection: c)),
-                ],
-              ],
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+                  children: [
+                    if (received.isNotEmpty) ...[
+                      _sectionLabel('Received'),
+                      ...received.map(
+                        (c) => _ReceivedRequestTile(connection: c),
+                      ),
+                    ],
+                    if (sent.isNotEmpty) ...[
+                      SizedBox(height: received.isNotEmpty ? 20 : 0),
+                      _sectionLabel('Sent'),
+                      ...sent.map((c) => _SentRequestTile(connection: c)),
+                    ],
+                  ],
+                );
+              },
             );
           },
         );
@@ -474,6 +493,15 @@ class _MessagesViewState extends State<MessagesView>
 }
 
 // ─── Requests Tab: Received row ───
+/// True when [profile] (another user) has blocked the current user. Their
+/// doc carries their blockedUids, so this needs no extra reads — it covers
+/// pairs blocked before blocking also ended the connection server-side.
+bool _hasBlockedMe(Map<String, dynamic> profile) {
+  final me = FirebaseAuth.instance.currentUser?.uid;
+  final blocked = profile['blockedUids'];
+  return me != null && blocked is List && blocked.contains(me);
+}
+
 class _ReceivedRequestTile extends StatelessWidget {
   final ConnectionModel connection;
 
@@ -493,6 +521,8 @@ class _ReceivedRequestTile extends StatelessWidget {
       stream: UserService.instance.watchUserProfile(connection.senderId),
       builder: (context, snapshot) {
         final profile = snapshot.data ?? const <String, dynamic>{};
+        // Someone who blocked me disappears from all my lists.
+        if (_hasBlockedMe(profile)) return const SizedBox.shrink();
         final name =
             (profile['name'] ?? profile['firstName'] ?? 'Member').toString();
         final photoUrl = _photoFromProfile(profile);
@@ -583,6 +613,8 @@ class _SentRequestTile extends StatelessWidget {
       stream: UserService.instance.watchUserProfile(connection.receiverId),
       builder: (context, snapshot) {
         final profile = snapshot.data ?? const <String, dynamic>{};
+        // Someone who blocked me disappears from all my lists.
+        if (_hasBlockedMe(profile)) return const SizedBox.shrink();
         final name =
             (profile['name'] ?? profile['firstName'] ?? 'Member').toString();
         final photoUrl = _photoFromProfile(profile);
@@ -688,6 +720,8 @@ class _ChatThreadTile extends StatelessWidget {
       stream: UserService.instance.watchUserProfile(otherUserId),
       builder: (context, snapshot) {
         final profile = snapshot.data ?? const <String, dynamic>{};
+        // Someone who blocked me disappears from all my lists.
+        if (_hasBlockedMe(profile)) return const SizedBox.shrink();
         final isDeletedUser = DeletedUserHelper.isDeleted(
           snapshot.hasData ? profile : null,
         );
@@ -1270,6 +1304,8 @@ class _ConnectionTile extends StatelessWidget {
       stream: UserService.instance.watchUserProfile(otherUserId),
       builder: (context, snapshot) {
         final profile = snapshot.data ?? const <String, dynamic>{};
+        // Someone who blocked me disappears from all my lists.
+        if (_hasBlockedMe(profile)) return const SizedBox.shrink();
         final isDeletedUser = DeletedUserHelper.isDeleted(
           snapshot.hasData ? profile : null,
         );

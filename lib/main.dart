@@ -28,8 +28,13 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Pass all uncaught Flutter framework errors to Crashlytics.
-  FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+  // Pass all uncaught Flutter framework errors to Crashlytics — and still
+  // print them to the device log, which replacing onError otherwise silences
+  // (a red error screen then leaves no trace in `adb logcat` / Xcode).
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+  };
 
   // Pass uncaught async errors from the Dart platform layer to Crashlytics.
   PlatformDispatcher.instance.onError = (error, stack) {
@@ -143,6 +148,16 @@ class _SwamMatchAppState extends State<SwamMatchApp> with WidgetsBindingObserver
           debugShowCheckedModeBanner: false,
           title: 'Swan Match',
           navigatorObservers: [appRouteObserver],
+          // App-wide: tapping anywhere outside a text field closes the
+          // keyboard. iOS has no system "back" to dismiss it, and multiline
+          // fields (e.g. Bio) use Return for a new line, so without this the
+          // keyboard stayed open on every page. Buttons and text fields win
+          // the tap first, so they behave exactly as before.
+          builder: (context, child) => GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+            child: child,
+          ),
           theme: ThemeData(
             brightness: Brightness.dark,
             fontFamily: GoogleFonts.poppins().fontFamily,

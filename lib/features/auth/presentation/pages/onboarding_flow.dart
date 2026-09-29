@@ -6,11 +6,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:async';
+import '../../../../services/auth_service.dart';
 import '../../../../services/user_service.dart';
 import '../../../../services/storage_service.dart';
 import '../../../../services/security_monitoring_service.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
+import '../../../../shared/helpers/account_deletion_helper.dart';
 
 import 'onboarding_step1_welcome.dart';
 import 'onboarding_step2_basic_info.dart';
@@ -20,6 +22,7 @@ import 'onboarding_step_intro_video.dart';
 import 'onboarding_step_verification.dart';
 import 'onboarding_step7_review.dart';
 import 'onboarding_pending_review_page.dart';
+import 'custom_login_page.dart';
 // `onboarding_step3_intent.dart`, `onboarding_step4_about_you.dart`,
 // `onboarding_step5_values.dart`, and `onboarding_step6_preferences.dart` are
 // no longer part of the required onboarding flow (replaced by
@@ -45,6 +48,11 @@ class _OnboardingFlowState extends State<OnboardingFlow>
   bool _showProfileReadySuccess = false;
   OnboardingData _onboardingData = OnboardingData();
   String _preparingText = 'Building your Marriage Profile…';
+  // False until the saved draft has been loaded. Autosaving before that
+  // (e.g. the app is backgrounded while loading) would overwrite the user's
+  // saved answers with an empty draft.
+  bool _draftLoaded = false;
+  bool _leaving = false;
 
   // 7-step flow: Welcome → Basic Info → Intent & Preferences → Bio &
   // Interests → Intro Video → Verification → Review ("Bio & Interests" added
@@ -171,14 +179,17 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         }
       }
       await _restoreLocalDraftMedia(user.uid);
+      _draftLoaded = true;
     } catch (e) {
       debugPrint('Error loading progress: $e');
     }
+    if (!mounted) return;
     setState(() => _isLoading = false);
   }
 
   // ─── Save progress to Firestore ─────────────────────────────────────────
   Future<void> _saveProgress() async {
+    if (!_draftLoaded || _leaving) return;
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
@@ -219,6 +230,10 @@ class _OnboardingFlowState extends State<OnboardingFlow>
       // owner may never touch this key, not even to write null. Including
       // it (even unset) trips the rule and denies the ENTIRE write.
       data.remove('introVideoRejectionReason');
+      // Approval status must never change from a draft autosave; any value
+      // other than 'pending' that differs from the stored one is rejected
+      // by firestore.rules and would deny the whole draft write.
+      data.remove('profileApprovalStatus');
 
       await UserService.instance.upsertUserProfile(uid: user.uid, data: data);
     } catch (e) {
@@ -234,6 +249,9 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         duration: const Duration(milliseconds: 350),
         curve: Curves.easeInOut,
       );
+      // The user has filled in this step themselves, so the in-memory draft
+      // is theirs even if loading the saved one failed earlier.
+      _draftLoaded = true;
       _saveProgress();
     }
   }
@@ -537,18 +555,24 @@ class _OnboardingFlowState extends State<OnboardingFlow>
         data['introVideoThumbnailUrl'] = uploadedThumbnailUrl;
       }
 
-      // uploadedSelfieUrl / uploadedIdUrl are guaranteed non-empty here
-      // (checked above) — overwrite the local-path values `toMap()` put in
-      // `data` with the actual uploaded URLs. `verificationStatus` is a
-      // rule-restricted field: the owner may only ever set it to exactly
-      // 'pending' (see firestore.rules), which is exactly what's needed here.
-      data['verificationPhotoUrl'] = uploadedSelfieUrl;
-      if (uploadedIdUrl != null && uploadedIdUrl.isNotEmpty) {
-        data['idVerificationUrl'] = uploadedIdUrl;
-      } else {
-        data['idVerificationUrl'] = '';
-      }
+      // uploadedSelfieUrl / uploadedIdUrl now hold STORAGE PATHS (see
+      // StorageService.uploadVerificationFile), never public download URLs:
+      // the profile doc is readable by every signed-in user, so selfie/ID
+      // links must not be stored in it. Admins open the files by path.
+      // Drop the local-path values `toMap()` put under the legacy *Url keys
+      // (and any old public link from a previous submission).
+      // `verificationStatus` is a rule-restricted field: the owner may only
+      // ever set it to exactly 'pending' (see firestore.rules).
+      data['verificationPhotoPath'] = uploadedSelfieUrl;
+      data['idVerificationPath'] =
+          (uploadedIdUrl != null && uploadedIdUrl.isNotEmpty) ? uploadedIdUrl : '';
+      data['verificationPhotoUrl'] = FieldValue.delete();
+      data['idVerificationUrl'] = FieldValue.delete();
       data['verificationStatus'] = 'pending';
+      // Completing onboarding submits the profile for moderation. 'pending'
+      // is the only value the owner may write (firestore.rules); a stale
+      // loaded value ('approved'/'rejected') would deny the whole write.
+      data['profileApprovalStatus'] = 'pending';
       data['idVerified'] = false;
       data['profileVerified'] = false;
       data['verificationSubmittedAt'] = FieldValue.serverTimestamp();
@@ -785,9 +809,73 @@ class _OnboardingFlowState extends State<OnboardingFlow>
     );
   }
 
+  // Log out / Delete account must be reachable before onboarding is finished
+  // (App Store Guideline 5.1.1(v)).
+  Widget _buildAccountMenu() {
+    return PopupMenuButton<String>(
+      icon: const Icon(Icons.more_vert, color: Colors.white70),
+      color: const Color(0xFF1E1E1E),
+      onSelected: (value) {
+        if (value == 'logout') _logOut();
+        if (value == 'delete') _deleteAccount();
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: 'logout',
+          child: Text('Log out', style: TextStyle(color: Colors.white)),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: Text(
+            'Delete account',
+            style: TextStyle(color: Colors.redAccent),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _goToLogin() {
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const CustomLoginPage()),
+      (route) => false,
+    );
+  }
+
+  Future<void> _logOut() async {
+    // Keep the draft so the user can pick up where they left off.
+    await _saveProgress();
+    _leaving = true;
+    try {
+      await AuthService.instance.signOut();
+    } catch (e) {
+      _leaving = false;
+      _showError(AuthService.instance.readableAuthError(e));
+      return;
+    }
+    _goToLogin();
+  }
+
+  Future<void> _deleteAccount() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    _leaving = true;
+    final deleted = await confirmAndDeleteCurrentAccount(context);
+    if (!deleted) {
+      _leaving = false;
+      return;
+    }
+    if (uid != null) {
+      try {
+        await _clearLocalDraftMedia(uid);
+      } catch (_) {}
+    }
+    _goToLogin();
+  }
+
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 8, 24, 0),
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
       child: Column(
         children: [
           Row(
@@ -823,6 +911,7 @@ class _OnboardingFlowState extends State<OnboardingFlow>
                   ),
                 ),
               ),
+              _buildAccountMenu(),
             ],
           ),
           const SizedBox(height: 12),

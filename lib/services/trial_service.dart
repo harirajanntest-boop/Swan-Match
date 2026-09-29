@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import '../shared/helpers/subscription_expiry.dart';
 import 'user_service.dart';
 
 /// Tracks free-trial usage limits stored in Firestore under
@@ -92,7 +94,9 @@ class TrialService {
         .toLowerCase();
 
     // Paid Premium subscriber
-    if ((plan == 'premium' || plan == 'gold') && status == 'active') {
+    if ((plan == 'premium' || plan == 'gold') &&
+        status == 'active' &&
+        !storeSubscriptionLapsed(data)) {
       return TrialStatus.premium;
     }
 
@@ -111,12 +115,18 @@ class TrialService {
         }
         return TrialStatus.trial;
       } else {
-        // Trial expired — update Firestore
-        await FirebaseFirestore.instance.collection('users').doc(uid).update({
-          'subscriptionStatus': 'expired',
-          'subscriptionPlan': 'free',
-          'subscriptionName': FieldValue.delete(),
-        });
+        // Trial expired — update Firestore. Only rules-permitted fields:
+        // 'subscriptionName' is backend-only in firestore.rules, so deleting it
+        // here got the whole write denied (thrown every 10s by the dashboard
+        // timer). Best-effort: the returned status is correct regardless.
+        try {
+          await FirebaseFirestore.instance.collection('users').doc(uid).update({
+            'subscriptionStatus': 'expired',
+            'subscriptionPlan': 'free',
+          });
+        } catch (e) {
+          debugPrint('Trial expiry write failed: $e');
+        }
         return TrialStatus.trialExpired;
       }
     }

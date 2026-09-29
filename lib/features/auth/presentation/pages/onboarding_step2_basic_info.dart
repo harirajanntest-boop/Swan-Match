@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:swam_match_app/shared/helpers/age_helper.dart';
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 class OnboardingStep2BasicInfo extends StatefulWidget {
   final OnboardingData data;
@@ -29,6 +31,14 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
   String? _gender;
   String _selectedReligion = '';
   List<String> _selectedLanguages = [];
+
+  // Set once the user taps Continue with something missing: from then on
+  // each missing required field is highlighted in red until it's filled.
+  bool _showErrors = false;
+  final _nameKey = GlobalKey();
+  final _dobKey = GlobalKey();
+  final _genderKey = GlobalKey();
+  final _locationKey = GlobalKey();
 
   final List<String> _genders = ['Man', 'Woman', 'Non-binary'];
 
@@ -102,11 +112,17 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
   }
 
   Future<void> _pickDOB() async {
+    // Latest selectable date = still 18+ today. The initial date must not be
+    // after it (showDatePicker asserts), e.g. a DOB carried over from signup.
+    final DateTime lastDate = defaultAdultDob();
+    DateTime initialDate = _dateOfBirth ?? DateTime(2000, 1, 1);
+    if (initialDate.isAfter(lastDate)) initialDate = lastDate;
+    if (initialDate.isBefore(DateTime(1940))) initialDate = DateTime(1940);
     final picked = await showDatePicker(
       context: context,
-      initialDate: _dateOfBirth ?? DateTime(2000, 1, 1),
+      initialDate: initialDate,
       firstDate: DateTime(1940),
-      lastDate: DateTime.now().subtract(const Duration(days: 6570)), // 18 years
+      lastDate: lastDate,
       builder: (context, child) {
         return Theme(
           data: ThemeData.dark().copyWith(
@@ -139,8 +155,53 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
         _selectedLanguages.isNotEmpty;
   }
 
+  bool get _nameMissing => _firstNameCtrl.text.trim().isEmpty;
+  bool get _dobMissing => _dateOfBirth == null || (_calculateAge() ?? 0) < 18;
+  bool get _genderMissing => _gender == null;
+  bool get _cityMissing => _cityCtrl.text.trim().isEmpty;
+  bool get _countryMissing => _countryCtrl.text.trim().isEmpty;
+
+  /// Tells the user exactly what is still missing (the Continue button used
+  /// to just stay disabled, and many users couldn't tell why), highlights
+  /// those fields and scrolls to the first one.
+  void _showMissingFields() {
+    final missing = <String>[
+      if (_nameMissing) 'First Name',
+      if (_dobMissing) 'Date of Birth',
+      if (_genderMissing) 'Gender',
+      if (_cityMissing) 'City',
+      if (_countryMissing) 'Country',
+      if (_selectedLanguages.isEmpty) 'Language',
+    ];
+    setState(() => _showErrors = true);
+    showLinearMessage(
+      context,
+      'Please fill in: ${missing.join(', ')}',
+      isError: true,
+    );
+    final firstKey = _nameMissing
+        ? _nameKey
+        : _dobMissing
+            ? _dobKey
+            : _genderMissing
+                ? _genderKey
+                : _locationKey;
+    final target = firstKey.currentContext;
+    if (target != null) {
+      Scrollable.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 300),
+        alignment: 0.1,
+      );
+    }
+  }
+
   void _saveAndNext() {
-    if (!_isValid) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    if (!_isValid) {
+      _showMissingFields();
+      return;
+    }
     widget.data.firstName = _firstNameCtrl.text.trim();
     widget.data.lastName = _lastNameCtrl.text.trim();
     widget.data.dateOfBirth = _dateOfBirth;
@@ -187,6 +248,8 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
 
           // First Name & Last Name
           Row(
+            key: _nameKey,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: UnderlineTextField(
@@ -194,6 +257,7 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
                   hint: 'John',
                   controller: _firstNameCtrl,
                   onChanged: (_) => setState(() {}),
+                  errorText: _showErrors && _nameMissing ? 'Required' : null,
                 ),
               ),
               const SizedBox(width: 16),
@@ -210,9 +274,10 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
           const SizedBox(height: 20),
 
           // Date of Birth
-          const Text(
+          Text(
             'Date of Birth',
-            style: TextStyle(color: OnboardingColors.textSecondary, fontSize: 13),
+            key: _dobKey,
+            style: const TextStyle(color: OnboardingColors.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: 8),
           InkWell(
@@ -224,9 +289,11 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
                 color: OnboardingColors.fieldBackground,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: _dateOfBirth != null
-                      ? OnboardingColors.primaryGold
-                      : OnboardingColors.unselectedBorder,
+                  color: _showErrors && _dobMissing
+                      ? Colors.redAccent
+                      : _dateOfBirth != null
+                          ? OnboardingColors.primaryGold
+                          : OnboardingColors.unselectedBorder,
                 ),
               ),
               child: Row(
@@ -248,12 +315,20 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
               ),
             ),
           ),
+          if (_showErrors && _dobMissing) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'Please select your date of birth (18+)',
+              style: TextStyle(fontSize: 12, color: Colors.redAccent),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // Gender
-          const Text(
+          Text(
             'Gender',
-            style: TextStyle(color: OnboardingColors.textSecondary, fontSize: 13),
+            key: _genderKey,
+            style: const TextStyle(color: OnboardingColors.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -268,10 +343,19 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
               );
             }).toList(),
           ),
+          if (_showErrors && _genderMissing) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'Please select your gender',
+              style: TextStyle(fontSize: 12, color: Colors.redAccent),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // Location
           Row(
+            key: _locationKey,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: UnderlineTextField(
@@ -279,6 +363,7 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
                   hint: 'New York',
                   controller: _cityCtrl,
                   onChanged: (_) => setState(() {}),
+                  errorText: _showErrors && _cityMissing ? 'Required' : null,
                 ),
               ),
               const SizedBox(width: 12),
@@ -296,6 +381,7 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
                   hint: 'USA',
                   controller: _countryCtrl,
                   onChanged: (_) => setState(() {}),
+                  errorText: _showErrors && _countryMissing ? 'Required' : null,
                 ),
               ),
             ],
@@ -370,9 +456,10 @@ class _OnboardingStep2BasicInfoState extends State<OnboardingStep2BasicInfo> {
           ),
           const SizedBox(height: 36),
 
+          // Always tappable: a greyed-out button gave no hint about what was
+          // missing. Tapping with gaps lists and highlights them instead.
           NextButton(
             label: 'Continue',
-            enabled: _isValid,
             onPressed: _saveAndNext,
           ),
           const SizedBox(height: 24),

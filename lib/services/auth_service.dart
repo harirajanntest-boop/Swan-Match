@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
@@ -377,12 +378,31 @@ class AuthService {
       idToken: auth.idToken,
     );
 
-    // If a user is already logged in, link the Google credential
+    // A session is still open (e.g. an unverified email signup). Link Google
+    // only when it is the same person (same email); a leftover session of a
+    // different account must be signed out, or this Google login would be
+    // attached to someone else's account.
     final current = _auth.currentUser;
     if (current != null) {
-      final result = await current.linkWithCredential(googleCredential);
-      await UserService.instance.syncAuthProviders();
-      return result;
+      final currentEmail = (current.email ?? '').trim().toLowerCase();
+      final googleEmail = account.email.trim().toLowerCase();
+      final sameAccount = currentEmail.isNotEmpty && currentEmail == googleEmail;
+      final hasGoogle =
+          current.providerData.any((p) => p.providerId == 'google.com');
+      if (sameAccount && !hasGoogle) {
+        final result = await current.linkWithCredential(googleCredential);
+        await UserService.instance.syncAuthProviders();
+        return result;
+      }
+      // Same account with Google already linked just signs in again below.
+      if (!sameAccount) {
+        // Stop the old account's pushes on this device, as signOut() does
+        // (without signing out of the Google account just chosen).
+        try {
+          await PushNotificationService.instance.clearTokenForCurrentUser();
+        } catch (_) {}
+        await _auth.signOut();
+      }
     }
 
     if (delayedAuth) {
@@ -436,13 +456,30 @@ class AuthService {
     final rawNonce = _generateNonce();
     final hashedNonce = _sha256(rawNonce);
 
-    final appleCredential = await SignInWithApple.getAppleIDCredential(
-      scopes: [
-        AppleIDAuthorizationScopes.email,
-        AppleIDAuthorizationScopes.fullName,
-      ],
-      nonce: hashedNonce,
-    );
+    final AuthorizationCredentialAppleID appleCredential;
+    try {
+      appleCredential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+        nonce: hashedNonce,
+      );
+    } on SignInWithAppleAuthorizationException catch (e, st) {
+      // Failures here come from Apple's sheet itself (e.g. error 1000
+      // "unknown": no 2FA / not signed in to an Apple ID / Screen Time
+      // restrictions), before Firebase is involved. Report them so
+      // device-specific failures are visible in Crashlytics.
+      if (e.code != AuthorizationErrorCode.canceled) {
+        debugPrint('APPLE_SIGNIN_AUTH_ERROR code=${e.code} msg=${e.message}');
+        unawaited(FirebaseCrashlytics.instance.recordError(
+          e,
+          st,
+          reason: 'Apple sign-in sheet failed: ${e.code.name} ${e.message}',
+        ));
+      }
+      rethrow;
+    }
 
     // Capture the name Apple returns on first sign-in (given + family).
     final given = appleCredential.givenName ?? '';
@@ -460,12 +497,15 @@ class AuthService {
       );
     }
 
-    // Firebase Apple auth expects idToken + rawNonce only.
-    // Do NOT pass authorizationCode as accessToken — that can cause
-    // invalid-credential failures (especially on iPad review devices).
-    final oauthCredential = OAuthProvider('apple.com').credential(
-      idToken: appleCredential.identityToken,
-      rawNonce: rawNonce,
+    // Use the dedicated Apple credential (signInMethod 'apple.com'), which the
+    // iOS plugin maps to FIROAuthProvider.appleCredential(idToken, rawNonce,
+    // fullName). The generic OAuthProvider('apple.com').credential goes down
+    // the generic 'oauth' path and was rejected with invalid-credential.
+    // Do NOT pass authorizationCode as accessToken.
+    final oauthCredential = AppleAuthProvider.credentialWithIDToken(
+      appleCredential.identityToken!,
+      rawNonce,
+      AppleFullPersonName(givenName: given, familyName: family),
     );
 
     // Login / signup must always authenticate (not silently link). Auto-linking
@@ -477,7 +517,22 @@ class AuthService {
       return result;
     }
 
-    final result = await _auth.signInWithCredential(oauthCredential);
+    final UserCredential result;
+    try {
+      result = await _auth.signInWithCredential(oauthCredential);
+    } on FirebaseAuthException catch (e, st) {
+      // Firebase's message pinpoints the cause of an Apple rejection (e.g.
+      // "Invalid OAuth response from apple.com" = bad Team/Key/Services ID in
+      // the Firebase Apple provider; "audience ... does not match" = bundle ID).
+      // Report it so TestFlight failures are diagnosable from Crashlytics.
+      debugPrint('APPLE_SIGNIN_FB_ERROR code=${e.code} msg=${e.message}');
+      unawaited(FirebaseCrashlytics.instance.recordError(
+        e,
+        st,
+        reason: 'Apple sign-in rejected by Firebase: ${e.code} ${e.message}',
+      ));
+      rethrow;
+    }
 
     // Apple only gives the display name the very first time — persist it to the
     // Firebase user so later sessions still have it.
@@ -491,6 +546,57 @@ class AuthService {
 
     await UserService.instance.syncAuthProviders();
     return result;
+  }
+
+  /// Re-authenticates the current user with Apple before account deletion and
+  /// returns Apple's one-time authorization code for [revokeAppleToken].
+  /// Returns null if the user cancels the Apple sheet.
+  Future<String?> reauthenticateWithAppleForDeletion() async {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('No user logged in.');
+
+    final rawNonce = _generateNonce();
+    final AuthorizationCredentialAppleID appleCredential;
+    try {
+      appleCredential = await SignInWithApple.getAppleIDCredential(
+        scopes: const [],
+        nonce: _sha256(rawNonce),
+      );
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (e.code == AuthorizationErrorCode.canceled) return null;
+      rethrow;
+    }
+
+    final idToken = appleCredential.identityToken;
+    if (idToken == null || idToken.isEmpty) {
+      throw Exception('Apple Sign-In could not be completed. Please try again.');
+    }
+
+    await user.reauthenticateWithCredential(
+      AppleAuthProvider.credentialWithIDToken(
+        idToken,
+        rawNonce,
+        AppleFullPersonName(),
+      ),
+    );
+    return appleCredential.authorizationCode;
+  }
+
+  /// Revokes the user's Sign in with Apple tokens (App Store Review Guideline
+  /// 5.1.1(v)). Must run while the user is still signed in, i.e. before
+  /// `user.delete()`. The code is single-use and expires after 5 minutes.
+  /// Best-effort: a failure is reported but never blocks account deletion.
+  Future<void> revokeAppleToken(String authorizationCode) async {
+    try {
+      await _auth.revokeTokenWithAuthorizationCode(authorizationCode);
+    } catch (e, st) {
+      debugPrint('APPLE_REVOKE_ERROR: $e');
+      unawaited(FirebaseCrashlytics.instance.recordError(
+        e,
+        st,
+        reason: 'Apple token revocation failed during account deletion',
+      ));
+    }
   }
 
   Future<UserCredential> linkPendingGoogleCredential() async {
@@ -630,20 +736,15 @@ class AuthService {
 
   /// Human-readable labels for required providers that are not yet linked.
   /// Empty list means the account is fully linked.
-  List<String> getMissingRequiredLinkLabels() {
+  /// Sign-in methods to *suggest* linking (never required). Apple is not
+  /// suggested: it can still be linked from Settings → Security on iOS.
+  List<String> getSuggestedLinkLabels() {
     final linked = getLinkedProviderIds();
     final missing = <String>[];
     if (!linked.contains('google.com')) missing.add('Google');
     if (!linked.contains('password')) missing.add('Email');
-    // Apple Sign-In is iOS-only; require it when available on this device.
-    if (Platform.isIOS && !linked.contains('apple.com')) {
-      missing.add('Apple');
-    }
     return missing;
   }
-
-  bool get hasAllRequiredProvidersLinked =>
-      getMissingRequiredLinkLabels().isEmpty;
 
   /// Registered account email from Firestore, falling back to Firebase Auth.
   Future<String> getRegisteredEmail() async {
@@ -742,9 +843,13 @@ class AuthService {
       );
     }
 
-    final oauthCredential = OAuthProvider('apple.com').credential(
-      idToken: appleCredential.identityToken,
-      rawNonce: rawNonce,
+    final oauthCredential = AppleAuthProvider.credentialWithIDToken(
+      appleCredential.identityToken!,
+      rawNonce,
+      AppleFullPersonName(
+        givenName: appleCredential.givenName,
+        familyName: appleCredential.familyName,
+      ),
     );
 
     try {
@@ -847,7 +952,9 @@ class AuthService {
         case 'missing-email-otp-config':
           return 'Email sign-in is temporarily unavailable. Please use phone or Google to log in.';
         case 'account-exists-with-different-credential':
-          return 'An account already exists with this email. Please log in using your phone number or password.';
+          // Firebase keeps one account per email address, so this is an
+          // existing Swan Match account signing in a new way.
+          return 'This email already has a Swan Match account. Log in with your email and password, then you can link Google or Apple in Settings → Security.';
         case 'wrong-password':
           return 'Incorrect password. Please double-check and try again.';
         case 'user-not-found':

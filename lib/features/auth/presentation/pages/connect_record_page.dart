@@ -49,6 +49,9 @@ enum _Stage {
   cameraError,
   ready,
   recording,
+  // Between "stop" and the preview: the camera is being released, so the
+  // camera preview must no longer be built.
+  stopping,
   preview,
   sending,
 }
@@ -122,12 +125,22 @@ class _ConnectRecordPageState extends State<ConnectRecordPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
+      if (controller == null || !controller.value.isInitialized) return;
       controller.dispose();
       _cameraController = null;
-    } else if (state == AppLifecycleState.resumed && _stage == _Stage.ready) {
+      // Backgrounded mid-recording: the recording is lost with the camera.
+      // Drop back to "ready" so resuming re-opens the camera instead of
+      // leaving the page on an endless spinner.
+      if (_stage == _Stage.recording) {
+        _timer?.cancel();
+        if (mounted) setState(() => _stage = _Stage.ready);
+      }
+    } else if (state == AppLifecycleState.resumed &&
+        _stage == _Stage.ready &&
+        controller == null) {
+      // The camera was released when the app went to the background.
       _initCamera();
     }
   }
@@ -258,20 +271,43 @@ class _ConnectRecordPageState extends State<ConnectRecordPage>
 
   Future<void> _stopRecording() async {
     final controller = _cameraController;
-    if (controller == null || !controller.value.isRecordingVideo) return;
+    if (controller == null ||
+        _stage != _Stage.recording ||
+        !controller.value.isRecordingVideo) {
+      return;
+    }
     _timer?.cancel();
+    // Leave the camera view BEFORE the controller is disposed. Previously the
+    // page stayed on the recording stage while `await controller.dispose()`
+    // ran, so a rebuild in between built CameraPreview on a disposed
+    // controller — the red error screen flashed until the preview loaded.
+    // Same pattern as IntroVideoRecorder._stopRecording.
+    if (mounted) setState(() => _stage = _Stage.stopping);
     try {
-      final file = await controller.stopVideoRecording();
+      // Some vendor camera stacks can hang on stopVideoRecording() with no
+      // exception — bound it so the user always gets a way forward.
+      final file = await controller
+          .stopVideoRecording()
+          .timeout(const Duration(seconds: 15));
       _recordedPath = file.path;
       _fileTooLarge = await _isOverSizeLimit(file.path);
       _attemptsUsed++;
-      await controller.dispose();
       _cameraController = null;
-      await _initPreviewPlayer(file.path);
+      // The preview UI shows a spinner until the player is ready, so advance
+      // now; camera teardown and player setup are best-effort from here.
       if (mounted) setState(() => _stage = _Stage.preview);
+      unawaited(
+        controller.dispose().catchError(
+          (e) => debugPrint('ConnectRecordPage: camera dispose error: $e'),
+        ),
+      );
+      unawaited(_initPreviewPlayer(file.path));
       unawaited(_generateThumbnail(file.path));
     } catch (e) {
       debugPrint('ConnectRecordPage: stop recording error: $e');
+      _cameraController = null;
+      unawaited(controller.dispose().catchError((_) {}));
+      if (mounted) setState(() => _stage = _Stage.cameraError);
     }
   }
 
@@ -303,9 +339,17 @@ class _ConnectRecordPageState extends State<ConnectRecordPage>
 
   Future<void> _initPreviewPlayer(String path) async {
     final controller = VideoPlayerController.file(File(path));
-    await controller.initialize();
-    await controller.setLooping(true);
-    await controller.play();
+    try {
+      await controller.initialize();
+      await controller.setLooping(true);
+      await controller.play();
+    } catch (e) {
+      // Preview playback is best-effort (called unawaited): the recorded file
+      // can still be submitted; the preview area keeps its spinner.
+      debugPrint('ConnectRecordPage: preview player error: $e');
+      await controller.dispose();
+      return;
+    }
     if (!mounted) {
       controller.dispose();
       return;
@@ -460,6 +504,10 @@ class _ConnectRecordPageState extends State<ConnectRecordPage>
       case _Stage.ready:
       case _Stage.recording:
         return _buildCameraView();
+      case _Stage.stopping:
+        return const Center(
+          child: CircularProgressIndicator(color: AppColors.goldMedium),
+        );
       case _Stage.preview:
       case _Stage.sending:
         return _buildPreviewView();
@@ -670,10 +718,14 @@ class _ConnectRecordPageState extends State<ConnectRecordPage>
                           duration: const Duration(milliseconds: 200),
                           width: isRecording ? 30 : 60,
                           height: isRecording ? 30 : 60,
+                          // Always a rectangle; only the corner radius animates
+                          // (fully round = circle). Animating BoxShape.circle ⇄
+                          // rectangle interpolates a borderRadius onto a circle,
+                          // which throws ("borderRadius can only be given for
+                          // rectangular boxes") — the red flash on record/stop.
                           decoration: BoxDecoration(
                             color: Colors.redAccent,
-                            shape: isRecording ? BoxShape.rectangle : BoxShape.circle,
-                            borderRadius: isRecording ? BorderRadius.circular(6) : null,
+                            borderRadius: BorderRadius.circular(isRecording ? 6 : 100),
                           ),
                         ),
                       ],

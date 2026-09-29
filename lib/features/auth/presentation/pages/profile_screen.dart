@@ -251,7 +251,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
             final profile = snapshot.data ?? const <String, dynamic>{};
             return Column(
               children: [
-                if (Navigator.of(context).canPop())
+                // Only when THIS screen was pushed as its own route. As a
+                // MainDashboard tab it must never show: Navigator.canPop() is
+                // also true while a route (e.g. Edit Profile) sits ABOVE the
+                // dashboard, which flashed the arrow after coming back.
+                if (ModalRoute.of(context)?.canPop ?? false)
                   Align(
                     alignment: Alignment.centerLeft,
                     child: IconButton(

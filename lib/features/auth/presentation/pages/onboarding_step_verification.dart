@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../../../models/onboarding_data.dart';
 import '../../../../shared/widgets/onboarding_widgets.dart';
+import '../../../../shared/widgets/linear_message.dart';
 
 /// Onboarding step: capture a selfie (front camera) + a government ID photo
 /// (gallery), required before the profile can be submitted for review.
@@ -55,6 +56,10 @@ class _OnboardingStepVerificationState
   /// (Guideline 5.1.1v — ID must not be required for core use).
   bool get _canContinue => _selfieFile != null;
 
+  // Set once Next is tapped without a selfie: the selfie box turns red.
+  bool _showErrors = false;
+  final _selfieKey = GlobalKey();
+
   Future<void> _takeSelfie() async {
     try {
       final XFile? photo = await _picker.pickImage(
@@ -79,7 +84,25 @@ class _OnboardingStepVerificationState
   }
 
   void _handleNext() {
-    if (!_canContinue) return;
+    // Next is always tappable (a greyed-out button didn't tell users why) —
+    // say what's missing and take them to it.
+    if (!_canContinue) {
+      setState(() => _showErrors = true);
+      showLinearMessage(
+        context,
+        'Please take a selfie to continue — government ID is optional',
+        isError: true,
+      );
+      final target = _selfieKey.currentContext;
+      if (target != null) {
+        Scrollable.ensureVisible(
+          target,
+          duration: const Duration(milliseconds: 300),
+          alignment: 0.1,
+        );
+      }
+      return;
+    }
 
     // Store local file paths; actual upload happens in onboarding completion.
     widget.data.verificationPhotoUrl = _selfieFile!.path;
@@ -178,7 +201,8 @@ class _OnboardingStepVerificationState
                   const SizedBox(height: 24),
 
                   // Selfie Verification
-                  const SectionTitle(
+                  SectionTitle(
+                    key: _selfieKey,
                     title: 'Selfie Verification',
                     subtitle: 'Take a clear selfie to verify your identity',
                   ),
@@ -194,7 +218,9 @@ class _OnboardingStepVerificationState
                         border: Border.all(
                           color: _selfieFile != null
                               ? Colors.green.withOpacity(0.5)
-                              : OnboardingColors.primaryGold.withOpacity(0.3),
+                              : _showErrors
+                                  ? Colors.redAccent
+                                  : OnboardingColors.primaryGold.withOpacity(0.3),
                           width: 2,
                         ),
                       ),
@@ -409,9 +435,12 @@ class _OnboardingStepVerificationState
                   ),
                   if (_selfieFile == null) ...[
                     const SizedBox(height: 16),
-                    const Text(
+                    Text(
                       'A selfie is required to continue. Government ID is optional.',
-                      style: TextStyle(color: Colors.orangeAccent, fontSize: 12),
+                      style: TextStyle(
+                        color: _showErrors ? Colors.redAccent : Colors.orangeAccent,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ],
@@ -421,7 +450,6 @@ class _OnboardingStepVerificationState
           const SizedBox(height: 20),
           NextButton(
             label: 'Next',
-            enabled: _canContinue,
             onPressed: _handleNext,
           ),
           const SizedBox(height: 16),

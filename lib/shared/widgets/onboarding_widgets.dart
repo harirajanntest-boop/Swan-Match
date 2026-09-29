@@ -163,6 +163,8 @@ class UnderlineTextField extends StatefulWidget {
   final int? maxLines;
   final int? maxLength;
   final ValueChanged<String>? onChanged;
+  /// When set, the underline turns red and this message is shown below.
+  final String? errorText;
 
   const UnderlineTextField({
     super.key,
@@ -175,6 +177,7 @@ class UnderlineTextField extends StatefulWidget {
     this.maxLines = 1,
     this.maxLength,
     this.onChanged,
+    this.errorText,
   });
 
   @override
@@ -219,13 +222,31 @@ class _UnderlineTextFieldState extends State<UnderlineTextField> {
             hintText: widget.hint,
             hintStyle: const TextStyle(color: OnboardingColors.textSecondary, fontSize: 16),
             border: InputBorder.none,
-            enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: OnboardingColors.inputUnderline, width: 1)),
-            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: OnboardingColors.primaryGold, width: 2)),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: widget.errorText != null
+                  ? const BorderSide(color: Colors.redAccent, width: 1.5)
+                  : const BorderSide(color: OnboardingColors.inputUnderline, width: 1),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(
+                color: widget.errorText != null
+                    ? Colors.redAccent
+                    : OnboardingColors.primaryGold,
+                width: 2,
+              ),
+            ),
             contentPadding: const EdgeInsets.symmetric(vertical: 12),
             counterText: "",
           ),
           onChanged: widget.onChanged,
         ),
+        if (widget.errorText != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            widget.errorText!,
+            style: const TextStyle(fontSize: 12, color: Colors.redAccent),
+          ),
+        ],
         if (widget.helper != null) ...[
           const SizedBox(height: 8),
           Text(widget.helper!, style: const TextStyle(fontSize: 13, color: OnboardingColors.textSecondary, height: 1.4)),

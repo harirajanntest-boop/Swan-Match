@@ -101,7 +101,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
         if (!mounted) return;
         if (profile != null &&
             UserService.instance.isAccountSuspended(profile)) {
-          await FirebaseAuth.instance.signOut();
+          await AuthService.instance.signOut(); // clears push token too
           if (!mounted) return;
           Navigator.pushReplacement(
             context,

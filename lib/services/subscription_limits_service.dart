@@ -165,8 +165,11 @@ class SubscriptionLimitsService {
 
     if (tier == UserTier.trial) {
       if (hoursSince >= 24) {
+        // lastResetAt is shared with the server's daily Connect counter, so
+        // a new window resets both.
         await ref.set({
           'dailySwipes': 0,
+          'dailyConnects': 0,
           'lastResetAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
         final refreshed = await ref.get();
@@ -186,6 +189,7 @@ class SubscriptionLimitsService {
 
   Map<String, dynamic> _blankUsage() => {
         'dailySwipes': 0,
+        'dailyConnects': 0,
         'dailyInterests': 0,
         'dailyAccepts': 0,
         'totalInterestsSent': 0,
@@ -217,9 +221,11 @@ class SubscriptionLimitsService {
     if (await currentTier() == UserTier.premium) return;
     final ref = _usageRef;
     if (ref == null) return;
+    // Only count the swipe. lastResetAt marks the start of the 24h window
+    // and is moved only by _getOrResetUsage; bumping it here on every swipe
+    // meant the window never ended and the daily allowance never came back.
     await ref.set({
       'dailySwipes': FieldValue.increment(1),
-      'lastResetAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
@@ -300,7 +306,6 @@ class SubscriptionLimitsService {
     if (partners.contains(otherUserId)) return;
     await ref.set({
       'messagePartnerIds': FieldValue.arrayUnion([otherUserId]),
-      'lastResetAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 

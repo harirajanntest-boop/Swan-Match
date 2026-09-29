@@ -131,11 +131,8 @@ class _MainDashboardState extends State<MainDashboard> {
   Future<void> _checkAndShowLinkingPopup() async {
     final profile = await UserService.instance.getCurrentUserProfile();
 
-    // Internal demo/seed accounts (e.g. seeded for launch/demo purposes) have
-    // no real Gmail account behind them, so a genuine Google link is
-    // impossible to complete — exempt them from the mandatory-linking
-    // requirement rather than leaving them permanently stuck on this dialog.
-    // Real user accounts are unaffected.
+    // Internal demo/seed accounts have no real Gmail account behind them, so
+    // a genuine Google link is impossible — never prompt them.
     if (profile != null && profile['isSeedAccount'] == true) return;
 
     // Auto-set registrationCompleted if the user is on the dashboard
@@ -147,10 +144,24 @@ class _MainDashboardState extends State<MainDashboard> {
 
     if (!mounted || _linkingDialogVisible) return;
 
-    final missing = AuthService.instance.getMissingRequiredLinkLabels();
+    final missing = AuthService.instance.getSuggestedLinkLabels();
     if (missing.isEmpty) return;
 
-    // Show every time the user reaches the dashboard without required providers.
+    // Linking is OPTIONAL and suggested at most once per account (per
+    // device). It used to be a mandatory, undismissable dialog shown on every
+    // launch — which trapped App Review (demo account had no Apple link) and
+    // any Apple "Hide My Email" user (a relay address can never match a
+    // Google account), and forced linking is an App Store rejection risk
+    // (Guidelines 4.8 / 5.1.1). Duplicate accounts are already prevented by
+    // Firebase's "one account per email address" setting.
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    final shownKey = 'link_prompt_shown_$uid';
+    if (prefs.getBool(shownKey) == true) return;
+    await prefs.setBool(shownKey, true);
+    if (!mounted) return;
+
     await _showLinkingDialog(missing);
   }
 
@@ -162,10 +173,8 @@ class _MainDashboardState extends State<MainDashboard> {
     try {
       goToSettings = await showDialog<bool>(
             context: context,
-            barrierDismissible: false,
-            builder: (ctx) => PopScope(
-              canPop: false,
-              child: BackdropFilter(
+            barrierDismissible: true,
+            builder: (ctx) => BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
                 child: AlertDialog(
                   backgroundColor: AppColors.obsidian.withOpacity(0.8),
@@ -184,7 +193,7 @@ class _MainDashboardState extends State<MainDashboard> {
                       ),
                       SizedBox(height: 16),
                       Text(
-                        'Mandatory Account Linking',
+                        'Link your sign-in methods',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.white, fontSize: 20),
                       ),
@@ -194,7 +203,7 @@ class _MainDashboardState extends State<MainDashboard> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       const Text(
-                        'To keep your profile secure, link Google, Email, and Apple (on iPhone) using the same email you registered with.',
+                        'Optional: link these to your account so you can log in with any of them. You can do this any time in Settings → Security.',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.white70, fontSize: 14),
                       ),
@@ -228,15 +237,27 @@ class _MainDashboardState extends State<MainDashboard> {
                         left: 16,
                         right: 16,
                       ),
-                      child: GoldGradientButton(
-                        text: 'LINK NOW',
-                        onPressed: () => Navigator.pop(ctx, true),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          GoldGradientButton(
+                            text: 'LINK NOW',
+                            onPressed: () => Navigator.pop(ctx, true),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text(
+                              'Not now',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ),
           ) ??
           false;
     } finally {
@@ -245,17 +266,13 @@ class _MainDashboardState extends State<MainDashboard> {
 
     if (!goToSettings || !mounted) return;
 
+    // No re-prompt on return: linking is optional.
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => const SettingsPage(scrollToSecurity: true),
       ),
     );
-
-    // Re-check when user returns — show again if still incomplete.
-    if (mounted) {
-      await _checkAndShowLinkingPopup();
-    }
   }
 
   /// Shows the "Set My Topic" popup on first login (or any login while it's

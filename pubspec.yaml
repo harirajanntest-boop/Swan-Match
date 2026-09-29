@@ -18,7 +18,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # of the product and file versions while build-number is used as the build suffix.
 # Android versionCode / iOS CFBundleVersion. Override at build time if needed.
 # App Store rejection resubmission: build 11.
-version: 1.0.0+12
+version: 1.0.0+16
 
 environment:
   sdk: ^3.10.7

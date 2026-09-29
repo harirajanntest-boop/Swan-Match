@@ -110,14 +110,7 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
       showLinearMessage(context, 'Please take a new selfie.', isError: true);
       return;
     }
-    if (_idFile == null) {
-      showLinearMessage(
-        context,
-        'Please upload your government ID.',
-        isError: true,
-      );
-      return;
-    }
+    // Government ID is optional (Guideline 5.1.1v) — only the selfie is required.
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -130,15 +123,23 @@ class _VerifyProfilePageState extends State<VerifyProfilePage>
         file: _selfieFile!,
         kind: 'selfie',
       );
-      final idUrl = await StorageService.instance.uploadVerificationFile(
-        uid: uid,
-        file: _idFile!,
-        kind: 'government_id',
-      );
+      final idFile = _idFile;
+      final idUrl = idFile == null
+          ? null
+          : await StorageService.instance.uploadVerificationFile(
+              uid: uid,
+              file: idFile,
+              kind: 'government_id',
+            );
 
+      // Storage PATHS, not public download URLs — only admins may open these
+      // files (see StorageService.uploadVerificationFile). Old public links
+      // from a previous submission are removed.
       await UserService.instance.updateCurrentUserProfile({
-        'verificationPhotoUrl': selfieUrl,
-        'idVerificationUrl': idUrl,
+        'verificationPhotoPath': selfieUrl,
+        'verificationPhotoUrl': FieldValue.delete(),
+        if (idUrl != null) 'idVerificationPath': idUrl,
+        if (idUrl != null) 'idVerificationUrl': FieldValue.delete(),
         'verificationSubmittedAt': FieldValue.serverTimestamp(),
         'verificationStatus': 'pending',
         'profileApprovalStatus': 'pending',
@@ -476,7 +477,7 @@ class _ReuploadSection extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Our team requested new documents. Submit a fresh selfie and government ID.',
+            'Our team requested new documents. Submit a fresh selfie. A government ID is optional.',
             style: TextStyle(
               color: Colors.white.withOpacity(0.65),
               fontSize: 13,
@@ -493,8 +494,10 @@ class _ReuploadSection extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _UploadTile(
-            label: 'Government ID',
-            subtitle: idFile != null ? 'Ready to upload' : 'Choose from gallery',
+            label: 'Government ID (optional)',
+            subtitle: idFile != null
+                ? 'Ready to upload'
+                : 'Optional — choose from gallery or skip',
             icon: Icons.badge_outlined,
             preview: idFile,
             onTap: isSubmitting ? null : onPickId,

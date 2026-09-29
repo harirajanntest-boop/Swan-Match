@@ -14,6 +14,7 @@ import 'package:swam_match_app/features/auth/presentation/pages/custom_login_pag
 import 'package:swam_match_app/features/auth/presentation/pages/onboarding_flow.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/main_dashboard.dart';
 import 'package:swam_match_app/shared/helpers/account_suspension_helper.dart';
+import 'package:swam_match_app/shared/helpers/age_helper.dart';
 import 'package:swam_match_app/features/auth/presentation/pages/verify_email_page.dart';
 
 class CustomSignupPage extends StatefulWidget {
@@ -47,7 +48,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   Future<void> _selectDate(BuildContext context) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: DateTime.now().subtract(const Duration(days: 365 * 18)),
+      initialDate: _selectedDob ?? defaultAdultDob(),
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),
       builder: (context, child) {
@@ -415,7 +416,7 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
   }
 
   Future<void> _showGoogleDobDialog(User user) async {
-    DateTime? tempDob = DateTime.now().subtract(const Duration(days: 365 * 18));
+    DateTime? tempDob = defaultAdultDob();
     
     final result = await showDialog<bool>(
       context: context,
@@ -577,16 +578,14 @@ class _CustomSignupPageState extends State<CustomSignupPage> {
     } on SignInWithAppleAuthorizationException catch (e) {
       if (e.code == AuthorizationErrorCode.canceled) return;
       if (!mounted) return;
-      debugPrint('APPLE_SIGNIN_AUTH_ERROR code=${e.code} msg=${e.message}');
-      _showError(
-        'Apple Sign-In could not be completed (${e.code.name}). Please try again or use email signup.',
-      );
+      // "unknown" (error 1000) is almost always a device/Apple ID setup issue.
+      _showError(e.code == AuthorizationErrorCode.unknown
+          ? 'Apple Sign-In couldn\'t start. Make sure you\'re signed in to your Apple ID in Settings with two-factor authentication on, then try again — or use email signup.'
+          : 'Apple Sign-In could not be completed (${e.code.name}). Please try again or use email signup.');
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
       if (e.code == 'account-exists-with-different-credential') {
-        _showError(
-          'An account already exists with this email using a different sign-in method. Please log in with that method.',
-        );
+        _showError(AuthService.instance.readableAuthError(e));
         return;
       }
       // A rejected Apple credential is a config issue (provider not enabled /

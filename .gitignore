@@ -48,3 +48,9 @@ assets/service_account.json
 # Environment variables
 .env
 .env.local
+
+# Dependencies / build output (never commit; caused the huge-push failure before)
+node_modules/
+tools/node_modules/
+android/build/
+.cursor/
