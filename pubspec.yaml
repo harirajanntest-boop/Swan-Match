@@ -61,7 +61,7 @@ dependencies:
   font_awesome_flutter: ^11.0.0
   in_app_review: ^2.0.11
   firebase_app_check: ^0.3.2+10
-  device_info_plus: ^10.1.0
+  device_info_plus: ^13.3.0
   sign_in_with_apple: ^8.1.0
   crypto: ^3.0.7
   in_app_purchase: ^3.3.0
